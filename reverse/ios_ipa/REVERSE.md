@@ -422,6 +422,41 @@ So there are two real solid-color candidates from the vendor app:
 - `0x45` scene-mode payloads via `sppSetScene:`
 - `0x6f` pure RGB payloads via `sppFillPurityColor:g:b:`
 
+## GIF / Gallery Pipeline Targets
+
+The next animation/content path should target the app's GIF/gallery stack, not broad packet guessing.
+
+Confirmed Objective-C stubs:
+- `_uploadGalleryFor16:MusicData:ReviewFlag:CompletionHandler:`: `0x101023ba0`
+- `messageWithGIFImageData:width:height:`: `0x10105de60`
+- `praseGIFDataToImageArray:`: `0x101067a40`
+- `praseGIFDelay:`: `0x101067a60`
+- `praseGIFDelayTime:`: `0x101067a80`
+- `saveOrUploadGalleryFor16`: `0x1010711c0`
+- `uploadGalleryFor16:MusicData:CompletionHandler:`: `0x1010b1bc0`
+
+Confirmed direct callers:
+- `0x1000974a4 -> saveOrUploadGalleryFor16`
+- `0x1001a5c40 -> praseGIFDataToImageArray:`
+- `0x1001a5c5c -> praseGIFDelay:`
+- `0x100252a94 -> uploadGalleryFor16:MusicData:CompletionHandler:`
+- `0x10041b788 -> _uploadGalleryFor16:MusicData:ReviewFlag:CompletionHandler:`
+- `0x10041b980 -> _uploadGalleryFor16:MusicData:ReviewFlag:CompletionHandler:`
+- `0x100491790 -> praseGIFDataToImageArray:`
+- `0x1004917a8 -> praseGIFDelayTime:`
+- `0x10054ffb8 -> uploadGalleryFor16:MusicData:CompletionHandler:`
+- `0x1005ab248 -> praseGIFDataToImageArray:`
+- `0x1005aba00 -> praseGIFDataToImageArray:`
+- `0x1005aba18 -> praseGIFDelayTime:`
+- `0x10066ef4c -> messageWithGIFImageData:width:height:`
+
+Practical implication:
+- The vendor app clearly has a first-class `16x16` upload/gallery path.
+- The best next reverse-engineering move is to inspect the callers above and recover:
+  - how GIF frames are decoded and timed
+  - what intermediate image/message object `messageWithGIFImageData:width:height:` builds
+  - where that object transitions into BLE/SPP commands for the Ditoo Pro
+
 ## Open Questions
 
 These pieces still need more work:
