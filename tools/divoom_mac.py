@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -39,6 +40,9 @@ DEFAULT_AUDIO_DISABLE_FILE = Path(
 DEFAULT_NATIVE_APP_BUNDLE = ROOT / "build" / "DivoomMenuBar.app"
 DEFAULT_NATIVE_APP_BINARY = DEFAULT_NATIVE_APP_BUNDLE / "Contents" / "MacOS" / "DivoomMenuBar"
 DEFAULT_NATIVE_APP_LOG = Path.home() / "Library" / "Logs" / "DivoomMenuBar.log"
+DEFAULT_NATIVE_IPC_ROOT = Path(tempfile.gettempdir()) / "divoom-menubar-ipc"
+DEFAULT_NATIVE_IPC_REQUESTS = DEFAULT_NATIVE_IPC_ROOT / "requests"
+DEFAULT_NATIVE_IPC_RESULTS = DEFAULT_NATIVE_IPC_ROOT / "results"
 
 
 def discover_ports() -> list[str]:
@@ -843,7 +847,7 @@ def cmd_ios_shortcut(args: argparse.Namespace) -> int:
 def open_native_app() -> dict[str, object]:
     if not DEFAULT_NATIVE_APP_BUNDLE.exists():
         raise FileNotFoundError(f"native app bundle not found: {DEFAULT_NATIVE_APP_BUNDLE}")
-    subprocess.run(["open", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+    subprocess.run(["open", "-g", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
     return {
         "bundle": str(DEFAULT_NATIVE_APP_BUNDLE),
         "display": {"type": "RGB", "pixels": "16x16"},
@@ -854,17 +858,68 @@ def open_native_app() -> dict[str, object]:
 def run_native_headless(mode: str, parameter: str | None = None) -> dict[str, object]:
     if not DEFAULT_NATIVE_APP_BUNDLE.exists():
         raise FileNotFoundError(f"native app bundle not found: {DEFAULT_NATIVE_APP_BUNDLE}")
+    DEFAULT_NATIVE_IPC_REQUESTS.mkdir(parents=True, exist_ok=True)
+    DEFAULT_NATIVE_IPC_RESULTS.mkdir(parents=True, exist_ok=True)
     DEFAULT_NATIVE_APP_LOG.parent.mkdir(parents=True, exist_ok=True)
     DEFAULT_NATIVE_APP_LOG.touch(exist_ok=True)
     start_offset = DEFAULT_NATIVE_APP_LOG.stat().st_size
-    command = ["open", "-W", "-n", str(DEFAULT_NATIVE_APP_BUNDLE), "--args", mode]
-    if parameter is not None:
-        command.append(parameter)
-    result = subprocess.run(command, text=True, capture_output=True)
-    time.sleep(0.2)
-    with DEFAULT_NATIVE_APP_LOG.open("rb") as handle:
-        handle.seek(start_offset)
-        log_tail = handle.read().decode("utf-8", errors="replace").strip()
+    subprocess.run(["open", "-g", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+
+    def dispatch_request() -> tuple[dict[str, object] | None, str]:
+        request_id = str(uuid.uuid4())
+        request_path = DEFAULT_NATIVE_IPC_REQUESTS / f"{request_id}.json"
+        result_path = DEFAULT_NATIVE_IPC_RESULTS / f"{request_id}.json"
+        request_payload = {
+            "id": request_id,
+            "mode": mode,
+            "parameter": parameter,
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        request_path.write_text(json.dumps(request_payload), encoding="utf-8")
+
+        deadline = time.time() + 45
+        result_payload: dict[str, object] | None = None
+        while time.time() < deadline:
+            if result_path.exists():
+                result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+                break
+            time.sleep(0.25)
+
+        with DEFAULT_NATIVE_APP_LOG.open("rb") as handle:
+            handle.seek(start_offset)
+            log_tail = handle.read().decode("utf-8", errors="replace").strip()
+
+        try:
+            request_path.unlink(missing_ok=True)
+            result_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+        return result_payload, log_tail
+
+    result_payload, log_tail = dispatch_request()
+    if result_payload is not None and not bool(result_payload.get("success")):
+        details = str(result_payload.get("details", ""))
+        if "BLE light transport not ready" in details:
+            time.sleep(6)
+            result_payload, log_tail = dispatch_request()
+
+    if result_payload is None:
+        return {
+            "bundle": str(DEFAULT_NATIVE_APP_BUNDLE),
+            "binary": str(DEFAULT_NATIVE_APP_BINARY),
+            "log": str(DEFAULT_NATIVE_APP_LOG),
+            "display": {"type": "RGB", "pixels": "16x16"},
+            "mode": mode,
+            "parameter": parameter,
+            "success": False,
+            "returncode": 2,
+            "stdout": log_tail,
+            "stderr": "Timed out waiting for the running Divoom Menu Bar app to process the IPC request.",
+        }
+
+    success = bool(result_payload.get("success"))
+    exit_code = int(result_payload.get("exitCode", 1))
     return {
         "bundle": str(DEFAULT_NATIVE_APP_BUNDLE),
         "binary": str(DEFAULT_NATIVE_APP_BINARY),
@@ -872,10 +927,10 @@ def run_native_headless(mode: str, parameter: str | None = None) -> dict[str, ob
         "display": {"type": "RGB", "pixels": "16x16"},
         "mode": mode,
         "parameter": parameter,
-        "returncode": result.returncode,
-        "stdout": log_tail,
-        "stderr": result.stderr.strip(),
-        "success": result.returncode == 0,
+        "returncode": exit_code,
+        "stdout": result_payload.get("details", log_tail),
+        "stderr": "",
+        "success": success,
     }
 
 

@@ -1,7 +1,6 @@
 import AppKit
 import Darwin
 import Foundation
-import SwiftUI
 
 enum AppLog {
     private static let logURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
@@ -169,7 +168,6 @@ private final class CommandRunner {
 private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerDelegate {
     private let runner = CommandRunner()
     private let bluetoothDiagnostics = BluetoothDiagnostics()
-    private let controlCenterState = ControlCenterState()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let timestampFormatter: DateFormatter = {
@@ -184,29 +182,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var autoCodexItem = NSMenuItem()
     private var autoClaudeItem = NSMenuItem()
     private var timer: Timer?
+    private var ipcTimer: Timer?
+    private var ipcBusy = false
     private var autoRefreshMode: AutoRefreshMode = .off
     private var statusIconState: StatusIconState = .idle
-    private var controlCenterWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runner.delegate = self
         bluetoothDiagnostics.statusHandler = { [weak self] summary, details in
             self?.updateStatus(summary: summary, success: true, details: details)
-            self?.controlCenterState.transportSummary = details ?? summary
         }
         NSApp.setActivationPolicy(.accessory)
         configureMenu()
         configureStatusItem()
+        configureIPC()
         AppLog.write("applicationDidFinishLaunching")
         bluetoothDiagnostics.requestAccessAndScan()
-        controlCenterState.transportSummary = "Direct BLE transport for the Ditoo Pro 16x16 RGB display"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            self?.showControlCenter()
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        ipcTimer?.invalidate()
     }
 
     func commandDidFinish(label: String, success: Bool, output: String) {
@@ -233,8 +229,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         menu.addItem(titleLine)
         menu.addItem(statusLine)
         menu.addItem(refreshLine)
-        menu.addItem(.separator())
-        menu.addItem(makeItem("Open Control Center", action: #selector(openControlCenter), symbolName: "sparkle.window"))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
@@ -276,6 +270,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
     }
 
+    private func configureIPC() {
+        ensureIPCDirectories()
+        ipcTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.drainIPCQueue()
+            }
+        }
+        ipcTimer?.tolerance = 0.12
+    }
+
     private func makeItem(_ title: String, action: Selector, keyEquivalent: String = "", symbolName: String? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = self
@@ -296,7 +300,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         let detailText = details?.isEmpty == false ? details! : "(no details)"
         AppLog.write("\(prefix) \(summary)\n\(detailText)")
         statusIconState = success ? .ok : .error
-        controlCenterState.lastStatus = "\(prefix) \(summary)"
         updateStatusItemButton(summary: summary, details: details)
     }
 
@@ -342,64 +345,183 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         refreshLine.title = "Auto refresh: \(autoRefreshMode.title)"
         autoCodexItem.state = autoRefreshMode == .codex ? .on : .off
         autoClaudeItem.state = autoRefreshMode == .claude ? .on : .off
-        controlCenterState.autoRefresh = autoRefreshMode.title
     }
 
-    private func showControlCenter() {
-        if let window = controlCenterWindow {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+    private func drainIPCQueue() {
+        guard !ipcBusy else {
             return
         }
 
-        let rootView = ControlCenterView(
-            state: controlCenterState,
-            runAction: { [weak self] action in
-                self?.performControlCenterAction(action)
-            },
-            openResearch: { [weak self] in
-                self?.openResearch()
-            }
-        )
+        ensureIPCDirectories()
+        let requestURLs = (try? FileManager.default.contentsOfDirectory(
+            at: ipcRequestsURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
 
-        let hostingController = NSHostingController(rootView: rootView)
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "Divoom D2 Pro Mac"
-        window.setContentSize(NSSize(width: 470, height: 720))
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.collectionBehavior = [.managed]
-        controlCenterWindow = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        let pending = requestURLs
+            .filter { $0.pathExtension == "json" }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                if leftDate == rightDate {
+                    return lhs.lastPathComponent < rhs.lastPathComponent
+                }
+                return leftDate < rightDate
+            }
+
+        guard let requestURL = pending.first else {
+            return
+        }
+
+        ipcBusy = true
+        handleIPCRequest(at: requestURL)
     }
 
-    private func performControlCenterAction(_ action: ControlCenterAction) {
-        switch action {
-        case .bluetooth:
-            runBluetoothDiagnostics()
-        case .solidRed:
-            runNativeSolidRed()
-        case .solidGreen:
-            runNativeSceneColor(red: 0x00, green: 0xff, blue: 0x66, label: "Native solid green")
-        case .solidBlue:
-            runNativeSceneColor(red: 0x24, green: 0x7c, blue: 0xff, label: "Native solid blue")
-        case .pixelTest:
-            runNativePixelTest()
-        case .signalAnimation:
-            runNativeAnimationSample()
-        case .codexStatus:
-            pushCodexStatus()
-        case .claudeStatus:
-            pushClaudeStatus()
-        case .orbitArt:
-            pushOrbitArt()
-        case .witchSample:
-            pushWitchSample()
-        case .bunnySample:
-            pushBunnySample()
+    private func handleIPCRequest(at requestURL: URL) {
+        let processingURL = requestURL.deletingPathExtension().appendingPathExtension("processing")
+
+        do {
+            if FileManager.default.fileExists(atPath: processingURL.path) {
+                try FileManager.default.removeItem(at: processingURL)
+            }
+            try FileManager.default.moveItem(at: requestURL, to: processingURL)
+
+            let data = try Data(contentsOf: processingURL)
+            let request = try JSONDecoder().decode(IPCRequestPayload.self, from: data)
+            guard let mode = HeadlessMode(rawValue: request.mode) else {
+                writeIPCResult(
+                    IPCResultPayload(
+                        id: request.id,
+                        success: false,
+                        exitCode: 2,
+                        summary: "IPC action failed",
+                        details: "Unknown mode: \(request.mode)",
+                        finishedAt: ISO8601DateFormatter().string(from: Date())
+                    )
+                )
+                try? FileManager.default.removeItem(at: processingURL)
+                ipcBusy = false
+                return
+            }
+
+            let invocation = HeadlessInvocation(mode: mode, parameter: request.parameter)
+            AppLog.write("IPC request id=\(request.id) mode=\(request.mode) parameter=\(request.parameter ?? "<nil>")")
+
+            performIPCInvocation(invocation) { [weak self] result in
+                guard let self else { return }
+                self.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self.writeIPCResult(
+                    IPCResultPayload(
+                        id: request.id,
+                        success: result.success,
+                        exitCode: result.success ? 0 : 1,
+                        summary: result.summary,
+                        details: result.details,
+                        finishedAt: ISO8601DateFormatter().string(from: Date())
+                    )
+                )
+                try? FileManager.default.removeItem(at: processingURL)
+                self.ipcBusy = false
+            }
+        } catch {
+            AppLog.write("IPC handling failed \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: requestURL)
+            try? FileManager.default.removeItem(at: processingURL)
+            ipcBusy = false
+        }
+    }
+
+    private func performIPCInvocation(_ invocation: HeadlessInvocation, completion: @escaping (NativeActionResult) -> Void) {
+        switch invocation.mode {
+        case .diagnostics:
+            bluetoothDiagnostics.refreshStatus(reason: "IPC diagnostics")
+            completion(
+                NativeActionResult(
+                    success: true,
+                    summary: "IPC diagnostics complete",
+                    details: "Bluetooth diagnostics refresh triggered from the running Divoom Menu Bar app."
+                )
+            )
+        case .nativeProbe:
+            bluetoothDiagnostics.runNativeVolumeProbe(completion: completion)
+        case .nativeSolidRed:
+            bluetoothDiagnostics.runNativeSolidRed(completion: completion)
+        case .nativeSceneColor:
+            guard
+                let parameter = invocation.parameter,
+                let (red, green, blue) = parseRGBHex(parameter)
+            else {
+                completion(
+                    NativeActionResult(
+                        success: false,
+                        summary: "IPC scene color failed",
+                        details: "Expected RRGGBB or #RRGGBB for scene color."
+                    )
+                )
+                return
+            }
+            bluetoothDiagnostics.runNativeBLESolidColor(
+                red: red,
+                green: green,
+                blue: blue,
+                brightness: 0x64,
+                threeModeType: 0x00,
+                completion: completion
+            )
+        case .nativePurityRed:
+            bluetoothDiagnostics.runNativeBLEPurityRed(completion: completion)
+        case .nativePurityColor:
+            guard
+                let parameter = invocation.parameter,
+                let (red, green, blue) = parseRGBHex(parameter)
+            else {
+                completion(
+                    NativeActionResult(
+                        success: false,
+                        summary: "IPC purity color failed",
+                        details: "Expected RRGGBB or #RRGGBB for purity color."
+                    )
+                )
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEPurityColor(red: red, green: green, blue: blue, completion: completion)
+        case .nativeLightMode:
+            guard let parameter = invocation.parameter, let rawValue = UInt8(parameter) else {
+                completion(
+                    NativeActionResult(
+                        success: false,
+                        summary: "IPC light mode failed",
+                        details: "Expected a mode byte between 0 and 255."
+                    )
+                )
+                return
+            }
+            bluetoothDiagnostics.runNativeBLESolidColor(
+                red: 0xff,
+                green: 0x00,
+                blue: 0x00,
+                brightness: 0x64,
+                threeModeType: rawValue,
+                completion: completion
+            )
+        case .nativePixelTest:
+            bluetoothDiagnostics.runNativeBLEPixelBadgeTest(completion: completion)
+        case .nativeAnimationSample:
+            bluetoothDiagnostics.runNativeBLEObviousAnimationSample(completion: completion)
+        case .nativeSample:
+            bluetoothDiagnostics.runNativeBLEAnimationSample(completion: completion)
+        }
+    }
+
+    private func writeIPCResult(_ result: IPCResultPayload) {
+        ensureIPCDirectories()
+        let resultURL = ipcResultsURL.appendingPathComponent("\(result.id).json")
+        do {
+            let data = try JSONEncoder().encode(result)
+            try data.write(to: resultURL, options: .atomic)
+        } catch {
+            AppLog.write("writeIPCResult failed \(error.localizedDescription)")
         }
     }
 
@@ -481,10 +603,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         bluetoothDiagnostics.requestAccessAndScan()
     }
 
-    @objc private func openControlCenter() {
-        showControlCenter()
-    }
-
     @objc private func runBluetoothDiagnostics() {
         bluetoothDiagnostics.refreshStatus(reason: "Manual Bluetooth diagnostics")
     }
@@ -501,20 +619,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         bluetoothDiagnostics.runNativeSolidRed { [weak self] result in
             DispatchQueue.main.async {
                 self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
-            }
-        }
-    }
-
-    private func runNativeSceneColor(red: UInt8, green: UInt8, blue: UInt8, label: String) {
-        bluetoothDiagnostics.runNativeBLESolidColor(
-            red: red,
-            green: green,
-            blue: blue,
-            brightness: 0x64,
-            threeModeType: 0x00
-        ) { [weak self] result in
-            DispatchQueue.main.async {
-                self?.updateStatus(summary: label, success: result.success, details: result.details)
             }
         }
     }
@@ -586,6 +690,31 @@ private struct HeadlessInvocation {
         }
         return HeadlessInvocation(mode: mode, parameter: arguments.dropFirst().first)
     }
+}
+
+private let ipcRootURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("divoom-menubar-ipc", isDirectory: true)
+private let ipcRequestsURL = ipcRootURL.appendingPathComponent("requests", isDirectory: true)
+private let ipcResultsURL = ipcRootURL.appendingPathComponent("results", isDirectory: true)
+
+private struct IPCRequestPayload: Codable {
+    let id: String
+    let mode: String
+    let parameter: String?
+    let createdAt: String
+}
+
+private struct IPCResultPayload: Codable {
+    let id: String
+    let success: Bool
+    let exitCode: Int32
+    let summary: String
+    let details: String
+    let finishedAt: String
+}
+
+private func ensureIPCDirectories() {
+    try? FileManager.default.createDirectory(at: ipcRequestsURL, withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(at: ipcResultsURL, withIntermediateDirectories: true)
 }
 
 private func parseRGBHex(_ value: String) -> (UInt8, UInt8, UInt8)? {

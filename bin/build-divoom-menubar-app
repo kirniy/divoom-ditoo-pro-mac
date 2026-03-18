@@ -20,12 +20,10 @@ iconutil -c icns "$ICONSET_DIR" -o "$RESOURCE_DIR/Icon.icns"
   -framework AppKit \
   -framework CoreBluetooth \
   -framework IOBluetooth \
-  -framework SwiftUI \
-  "$ROOT/macos/DivoomMenuBar/ControlCenterView.swift" \
   "$ROOT/macos/DivoomMenuBar/BluetoothSupport.swift" \
   "$ROOT/macos/DivoomMenuBar/main.swift" \
   -o "$BIN_DIR/DivoomMenuBar"
 
-/usr/bin/codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+/usr/bin/codesign --force --sign - -r='designated => identifier "dev.kirniy.divoom.menubar"' "$APP" >/dev/null 2>&1 || true
 
 printf '%s\n' "$APP"
