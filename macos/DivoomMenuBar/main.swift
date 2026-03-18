@@ -160,6 +160,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         menu.addItem(makeItem("Native Probe Volume", action: #selector(runNativeVolumeProbe)))
         menu.addItem(makeItem("Native Send Solid Red", action: #selector(runNativeSolidRed)))
         menu.addItem(makeItem("Native Send Purity Red", action: #selector(runNativePurityRed)))
+        menu.addItem(makeItem("Native Send Pixel Test", action: #selector(runNativePixelTest)))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Open iPhone Shortcuts", action: #selector(openIPhoneShortcuts)))
@@ -353,6 +354,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
     }
 
+    @objc private func runNativePixelTest() {
+        bluetoothDiagnostics.runNativeBLEPixelBadgeTest { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
     @objc private func toggleAutoCodex() {
         setAutoRefreshMode(autoRefreshMode == .codex ? .off : .codex)
     }
@@ -374,8 +383,11 @@ private enum HeadlessMode: String {
     case diagnostics = "--headless-diagnostics"
     case nativeProbe = "--headless-native-probe"
     case nativeSolidRed = "--headless-native-solid-red"
+    case nativeSceneColor = "--headless-native-scene-color"
     case nativePurityRed = "--headless-native-purity-red"
+    case nativePurityColor = "--headless-native-purity-color"
     case nativeLightMode = "--headless-native-light-mode"
+    case nativePixelTest = "--headless-native-pixel-test"
     case nativeSample = "--headless-native-sample"
 }
 
@@ -392,6 +404,18 @@ private struct HeadlessInvocation {
         }
         return HeadlessInvocation(mode: mode, parameter: arguments.dropFirst().first)
     }
+}
+
+private func parseRGBHex(_ value: String) -> (UInt8, UInt8, UInt8)? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let hex = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+    guard hex.count == 6, let packed = UInt32(hex, radix: 16) else {
+        return nil
+    }
+    let red = UInt8((packed >> 16) & 0xff)
+    let green = UInt8((packed >> 8) & 0xff)
+    let blue = UInt8(packed & 0xff)
+    return (red, green, blue)
 }
 
 private final class HeadlessRunner {
@@ -442,8 +466,40 @@ private final class HeadlessRunner {
             bluetoothDiagnostics.runNativeSolidRed { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
+        case .nativeSceneColor:
+            guard
+                let parameter = invocation.parameter,
+                let (red, green, blue) = parseRGBHex(parameter)
+            else {
+                finish(code: 2, message: "Expected RRGGBB or #RRGGBB after --headless-native-scene-color")
+                return
+            }
+            bluetoothDiagnostics.runNativeBLESolidColor(
+                red: red,
+                green: green,
+                blue: blue,
+                brightness: 0x64,
+                threeModeType: 0x00
+            ) { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
         case .nativePurityRed:
             bluetoothDiagnostics.runNativeBLEPurityRed { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativePurityColor:
+            guard
+                let parameter = invocation.parameter,
+                let (red, green, blue) = parseRGBHex(parameter)
+            else {
+                finish(code: 2, message: "Expected RRGGBB or #RRGGBB after --headless-native-purity-color")
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEPurityColor(
+                red: red,
+                green: green,
+                blue: blue
+            ) { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         case .nativeLightMode:
@@ -461,6 +517,10 @@ private final class HeadlessRunner {
                 brightness: 0x64,
                 threeModeType: rawValue
             ) { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativePixelTest:
+            bluetoothDiagnostics.runNativeBLEPixelBadgeTest { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         case .nativeSample:

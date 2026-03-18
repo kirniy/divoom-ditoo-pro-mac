@@ -241,6 +241,40 @@ private func buildPublicCheckerboardTestImage() -> [RGBColor] {
     return colors
 }
 
+private func buildPublicPixelBadgeTestImage() -> [RGBColor] {
+    var colors: [RGBColor] = []
+    colors.reserveCapacity(16 * 16)
+
+    let background = RGBColor(r: 0x05, g: 0x10, b: 0x24)
+    let border = RGBColor(r: 0xff, g: 0xff, b: 0xff)
+    let diagonal = RGBColor(r: 0xff, g: 0x35, b: 0x5e)
+    let cross = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+    let center = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+
+    for y in 0..<16 {
+        for x in 0..<16 {
+            let isBorder = x == 0 || y == 0 || x == 15 || y == 15
+            let isDiagonal = x == y || x == (15 - y)
+            let isCross = x == 7 || x == 8 || y == 7 || y == 8
+            let isCenter = (5...10).contains(x) && (5...10).contains(y)
+
+            if isBorder {
+                colors.append(border)
+            } else if isCenter {
+                colors.append(center)
+            } else if isCross {
+                colors.append(cross)
+            } else if isDiagonal {
+                colors.append(diagonal)
+            } else {
+                colors.append(background)
+            }
+        }
+    }
+
+    return colors
+}
+
 private func chunked(_ data: Data, size: Int) -> [Data] {
     guard size > 0, !data.isEmpty else {
         return data.isEmpty ? [] : [data]
@@ -877,6 +911,78 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             "characteristics=\(characteristics.map { $0.uuid.uuidString }.joined(separator: ","))",
         ]
         sendVariant(characteristicIndex: 0, variantIndex: 0, details: initialDetails)
+    }
+
+    func runNativeBLEPixelBadgeTest(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEStaticImage(
+            colors: buildPublicPixelBadgeTestImage(),
+            label: "pixel-badge-test",
+            completion: completion
+        )
+    }
+
+    private func runNativeBLEStaticImage(
+        colors: [RGBColor],
+        label: String,
+        completion: @escaping (NativeActionResult) -> Void
+    ) {
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            let details = "BLE light transport not ready. State: \(ditooLightState)"
+            AppLog.write("runNativeBLEStaticImage unavailable \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE static image failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let writeType = preferredBLEWriteType(for: characteristic)
+        let imagePayload = buildPublicStaticImageCommandBody(colors: colors)
+        let (brightnessPacket, brightnessMode) = buildBLETransportPacket(
+            characteristic: characteristic,
+            command: 0x74,
+            payload: Data([0x64])
+        )
+        let (imagePacket, imageMode) = buildBLETransportPacket(
+            characteristic: characteristic,
+            command: 0x44,
+            payload: imagePayload
+        )
+        let packets = [brightnessPacket, imagePacket]
+        let packetHex = packets.map(hexString)
+
+        AppLog.write(
+            "runNativeBLEStaticImage label=\(label) peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) packets=\(packets.count) imageBytes=\(imagePayload.count) brightnessMode=\(brightnessMode) imageMode=\(imageMode) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse") tx=\(packetHex.joined(separator: ","))"
+        )
+
+        writeBLEPackets(
+            packets,
+            packetIndex: 0,
+            peripheral: peripheral,
+            characteristic: characteristic,
+            writeType: writeType
+        ) {
+            let details = [
+                "label=\(label)",
+                "peripheral=\(peripheral.identifier.uuidString)",
+                "characteristic=\(characteristic.uuid.uuidString)",
+                "brightnessMode=\(brightnessMode)",
+                "imageMode=\(imageMode)",
+                "writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")",
+                "imageBytes=\(imagePayload.count)",
+                "tx=\(packetHex.joined(separator: ","))",
+            ].joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: true,
+                    summary: "Native BLE static image sent",
+                    details: details
+                )
+            )
+        }
     }
 
     private func handleCentralState() {

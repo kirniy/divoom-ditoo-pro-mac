@@ -889,13 +889,20 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
         "diagnostics": "--headless-diagnostics",
         "probe": "--headless-native-probe",
         "scene-red": "--headless-native-solid-red",
+        "scene-color": "--headless-native-scene-color",
         "purity-red": "--headless-native-purity-red",
+        "purity-color": "--headless-native-purity-color",
+        "pixel-test": "--headless-native-pixel-test",
         "sample": "--headless-native-sample",
     }
     parameter = None
     if args.action == "light-mode":
         mode = "--headless-native-light-mode"
         parameter = str(args.value)
+    elif args.action in {"scene-color", "purity-color"}:
+        red, green, blue = ImageColor.getrgb(args.color)
+        parameter = f"{red:02x}{green:02x}{blue:02x}"
+        mode = mode_map[args.action]
     else:
         mode = mode_map[args.action]
     print(json.dumps(run_native_headless(mode=mode, parameter=parameter), indent=2))
@@ -995,7 +1002,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     native_headless.add_argument(
         "action",
-        choices=["diagnostics", "probe", "scene-red", "purity-red", "light-mode", "sample"],
+        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "sample"],
+    )
+    native_headless.add_argument(
+        "--color",
+        default="#ff0000",
+        help="Named color or hex triplet for scene-color or purity-color",
     )
     native_headless.add_argument(
         "--value",
