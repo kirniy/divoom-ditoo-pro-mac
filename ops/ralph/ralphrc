@@ -1,0 +1,7 @@
+PROJECT_NAME="divoom-d2-pro-mac"
+PROJECT_TYPE="swift-python"
+CLAUDE_CODE_CMD="claude"
+MAX_CALLS_PER_HOUR=80
+CLAUDE_TIMEOUT_MINUTES=25
+CLAUDE_OUTPUT_FORMAT="json"
+ALLOWED_TOOLS="Write,Read,Edit,Bash(git add *),Bash(git commit *),Bash(git diff *),Bash(git log *),Bash(git status),Bash(git status *),Bash(git push *),Bash(git pull *),Bash(git fetch *),Bash(git checkout *),Bash(git branch *),Bash(git stash *),Bash(git merge *),Bash(git tag *),Bash(python *)"

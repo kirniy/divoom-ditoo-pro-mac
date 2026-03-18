@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CACHE_DIR="$ROOT/.cache/ralph-claude-code"
+SESSION_NAME="divoom-ralph"
+CALLS=80
+TIMEOUT=25
+REFRESH=0
+ATTACH=0
+FETCH=1
+LIVE=0
+
+usage() {
+    cat <<'EOF'
+Usage: start-overnight-ralph [options]
+
+Options:
+  --refresh           Refresh .ralph project files from ops/ralph templates
+  --attach            Attach to the tmux session after launching
+  --no-fetch          Reuse cached Ralph instead of pulling latest upstream
+  --session NAME      tmux session name (default: divoom-ralph)
+  --calls NUM         Max Ralph calls per hour (default: 80)
+  --timeout MIN       Claude timeout in minutes (default: 25)
+  --live              Enable Ralph live streaming mode
+  -h, --help          Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --refresh)
+            REFRESH=1
+            shift
+            ;;
+        --attach)
+            ATTACH=1
+            shift
+            ;;
+        --no-fetch)
+            FETCH=0
+            shift
+            ;;
+        --session)
+            SESSION_NAME="$2"
+            shift 2
+            ;;
+        --calls)
+            CALLS="$2"
+            shift 2
+            ;;
+        --timeout)
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        --live)
+            LIVE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+mkdir -p "$ROOT/.cache" "$ROOT/.ralph/specs" "$ROOT/.ralph/docs/generated" "$ROOT/.ralph/logs"
+
+if [[ ! -d "$CACHE_DIR/.git" ]]; then
+    git clone --depth 1 https://github.com/frankbria/ralph-claude-code.git "$CACHE_DIR"
+elif [[ "$FETCH" == "1" ]]; then
+    git -C "$CACHE_DIR" pull --ff-only
+fi
+
+copy_if_needed() {
+    local src="$1"
+    local dst="$2"
+    if [[ "$REFRESH" == "1" || ! -f "$dst" ]]; then
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+    fi
+}
+
+copy_if_needed "$ROOT/ops/ralph/PROMPT.md" "$ROOT/.ralph/PROMPT.md"
+copy_if_needed "$ROOT/ops/ralph/AGENT.md" "$ROOT/.ralph/AGENT.md"
+copy_if_needed "$ROOT/ops/ralph/fix_plan.md" "$ROOT/.ralph/fix_plan.md"
+copy_if_needed "$ROOT/ops/ralph/specs/animation-roadmap.md" "$ROOT/.ralph/specs/animation-roadmap.md"
+copy_if_needed "$ROOT/ops/ralph/ralphrc" "$ROOT/.ralphrc"
+
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "Ralph session already running: $SESSION_NAME"
+else
+    CMD="exec '$CACHE_DIR/ralph_loop.sh' --calls $CALLS --timeout $TIMEOUT"
+    if [[ "$LIVE" == "1" ]]; then
+        CMD="$CMD --live"
+    fi
+    tmux new-session -d -s "$SESSION_NAME" -c "$ROOT" "$CMD"
+    echo "Started Ralph session: $SESSION_NAME"
+fi
+
+echo "Repo root: $ROOT"
+echo "Ralph cache: $CACHE_DIR"
+echo "Ralph commit: $(git -C "$CACHE_DIR" rev-parse --short HEAD)"
+echo "Status: $ROOT/.ralph/status.json"
+echo "Logs: $ROOT/.ralph/logs/ralph.log"
+echo "tmux attach -t $SESSION_NAME"
+
+if [[ "$ATTACH" == "1" ]]; then
+    exec tmux attach -t "$SESSION_NAME"
+fi

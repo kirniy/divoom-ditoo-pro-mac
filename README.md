@@ -89,6 +89,29 @@ Send the native telemetry screens:
 ./bin/divoom-display native-headless network-status
 ```
 
+## Overnight Worker
+
+This repo now includes a repo-local Ralph launcher for unattended progress outside the chat loop.
+
+Start the detached tmux session:
+
+```bash
+./bin/start-overnight-ralph
+```
+
+Check the worker:
+
+```bash
+./bin/overnight-ralph-status
+```
+
+Notes:
+
+- It caches the latest upstream Ralph for Claude Code in `.cache/ralph-claude-code`
+- It stages repo-specific templates into `.ralph/` and `.ralphrc`
+- It uses Python build and smoke wrappers so Ralph can operate on the native Swift app without broad shell permissions
+- It runs in stable non-live mode by default on this Mac because Ralph live streaming currently trips a Homebrew `stdbuf` dylib issue here
+
 ## Project Layout
 
 - `macos/DivoomMenuBar`: native macOS app

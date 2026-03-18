@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SESSION_NAME="${1:-divoom-ralph}"
+
+echo "Session: $SESSION_NAME"
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "tmux: running"
+    echo
+    tmux capture-pane -p -t "$SESSION_NAME" -S -40 || true
+else
+    echo "tmux: not running"
+fi
+
+echo
+echo "Status file:"
+if [[ -f "$ROOT/.ralph/status.json" ]]; then
+    cat "$ROOT/.ralph/status.json"
+else
+    echo "missing"
+fi
