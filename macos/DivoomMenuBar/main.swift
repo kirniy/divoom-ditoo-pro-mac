@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import SwiftUI
 
 enum AppLog {
     private static let logURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
@@ -46,6 +47,74 @@ private enum AutoRefreshMode {
 private struct CommandSpec {
     let label: String
     let arguments: [String]
+}
+
+private enum StatusIconState {
+    case idle
+    case ok
+    case error
+}
+
+private func makeMenuSymbol(_ symbolName: String, description: String) -> NSImage? {
+    let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
+    let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+    return base?.withSymbolConfiguration(configuration)
+}
+
+private func makeStatusItemIcon(state: StatusIconState) -> NSImage {
+    let size = NSSize(width: 18, height: 18)
+    let image = NSImage(size: size)
+    image.isTemplate = true
+    image.lockFocus()
+
+    let frame = NSRect(x: 2, y: 1.5, width: 14, height: 15)
+    let body = NSBezierPath(roundedRect: frame, xRadius: 4, yRadius: 4)
+    NSColor.labelColor.withAlphaComponent(0.94).setStroke()
+    body.lineWidth = 1.4
+    body.stroke()
+
+    let display = NSBezierPath(roundedRect: NSRect(x: 4.2, y: 8.1, width: 9.6, height: 5.1), xRadius: 1.8, yRadius: 1.8)
+    NSColor.labelColor.withAlphaComponent(0.14).setFill()
+    display.fill()
+
+    for row in 0..<2 {
+        for column in 0..<3 {
+            let pixelRect = NSRect(
+                x: 5.1 + CGFloat(column) * 2.75,
+                y: 8.95 + CGFloat(row) * 1.95,
+                width: 1.25,
+                height: 1.25
+            )
+            let pixel = NSBezierPath(roundedRect: pixelRect, xRadius: 0.4, yRadius: 0.4)
+            let alpha: CGFloat
+            switch state {
+            case .idle:
+                alpha = 0.42
+            case .ok:
+                alpha = column == 1 ? 0.95 : 0.64
+            case .error:
+                alpha = row == 0 ? 0.95 : 0.56
+            }
+            NSColor.labelColor.withAlphaComponent(alpha).setFill()
+            pixel.fill()
+        }
+    }
+
+    let knobY = CGFloat(4.3)
+    for knobX in [6.2, 9.0, 11.8] {
+        let knob = NSBezierPath(ovalIn: NSRect(x: knobX, y: knobY, width: 1.15, height: 1.15))
+        NSColor.labelColor.withAlphaComponent(0.72).setFill()
+        knob.fill()
+    }
+
+    if state == .error {
+        let alert = NSBezierPath(ovalIn: NSRect(x: 12.6, y: 12.3, width: 2.5, height: 2.5))
+        NSColor.labelColor.setFill()
+        alert.fill()
+    }
+
+    image.unlockFocus()
+    return image
 }
 
 @MainActor
@@ -100,6 +169,7 @@ private final class CommandRunner {
 private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerDelegate {
     private let runner = CommandRunner()
     private let bluetoothDiagnostics = BluetoothDiagnostics()
+    private let controlCenterState = ControlCenterState()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let timestampFormatter: DateFormatter = {
@@ -115,17 +185,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var autoClaudeItem = NSMenuItem()
     private var timer: Timer?
     private var autoRefreshMode: AutoRefreshMode = .off
+    private var statusIconState: StatusIconState = .idle
+    private var controlCenterWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runner.delegate = self
         bluetoothDiagnostics.statusHandler = { [weak self] summary, details in
             self?.updateStatus(summary: summary, success: true, details: details)
+            self?.controlCenterState.transportSummary = details ?? summary
         }
         NSApp.setActivationPolicy(.accessory)
         configureMenu()
         configureStatusItem()
         AppLog.write("applicationDidFinishLaunching")
         bluetoothDiagnostics.requestAccessAndScan()
+        controlCenterState.transportSummary = "Direct BLE transport for the Ditoo Pro 16x16 RGB display"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.showControlCenter()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -138,7 +215,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     private func configureStatusItem() {
         if let button = statusItem.button {
-            button.title = "D16"
+            button.title = ""
+            button.image = makeStatusItemIcon(state: statusIconState)
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
             button.toolTip = "Divoom Ditoo Pro 16x16 RGB display"
         }
         statusItem.menu = menu
@@ -154,48 +234,54 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         menu.addItem(statusLine)
         menu.addItem(refreshLine)
         menu.addItem(.separator())
-
-        menu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess)))
-        menu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics)))
-        menu.addItem(makeItem("Native Probe Volume", action: #selector(runNativeVolumeProbe)))
-        menu.addItem(makeItem("Native Send Solid Red", action: #selector(runNativeSolidRed)))
-        menu.addItem(makeItem("Native Send Purity Red", action: #selector(runNativePurityRed)))
-        menu.addItem(makeItem("Native Send Pixel Test", action: #selector(runNativePixelTest)))
+        menu.addItem(makeItem("Open Control Center", action: #selector(openControlCenter), symbolName: "sparkle.window"))
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Open iPhone Shortcuts", action: #selector(openIPhoneShortcuts)))
-        menu.addItem(makeItem("Create iPhone Shortcut", action: #selector(createIPhoneShortcut)))
-        menu.addItem(makeItem("Run Shortcut: Divoom Clock", action: #selector(runShortcutClock)))
-        menu.addItem(makeItem("Run Shortcut: Divoom VJ", action: #selector(runShortcutVJ)))
-        menu.addItem(makeItem("Run Shortcut: Divoom Hot", action: #selector(runShortcutHot)))
-        menu.addItem(makeItem("Run Shortcut: Divoom Brighter", action: #selector(runShortcutBrighter)))
-        menu.addItem(makeItem("Run Shortcut: Divoom Dimmer", action: #selector(runShortcutDimmer)))
+        menu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
+        menu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
+        menu.addItem(makeItem("Native Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
+        menu.addItem(makeItem("Native Send Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
+        menu.addItem(makeItem("Native Send Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
+        menu.addItem(makeItem("Native Send Pixel Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
+        menu.addItem(makeItem("Native Send Signal Animation", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Push Codex Status", action: #selector(pushCodexStatus)))
-        menu.addItem(makeItem("Push Claude Status", action: #selector(pushClaudeStatus)))
-        menu.addItem(makeItem("Push Orbit Art", action: #selector(pushOrbitArt)))
-        menu.addItem(makeItem("Push Witch Sample", action: #selector(pushWitchSample)))
-        menu.addItem(makeItem("Push Bunny Sample", action: #selector(pushBunnySample)))
-        menu.addItem(.separator())
-        menu.addItem(makeItem("Play Attention Sound", action: #selector(playAttentionSound)))
-        menu.addItem(makeItem("Play Completion Sound", action: #selector(playCompletionSound)))
+        menu.addItem(makeItem("Open iPhone Shortcuts", action: #selector(openIPhoneShortcuts), symbolName: "iphone"))
+        menu.addItem(makeItem("Create iPhone Shortcut", action: #selector(createIPhoneShortcut), symbolName: "plus.app"))
+        menu.addItem(makeItem("Run Shortcut: Divoom Clock", action: #selector(runShortcutClock), symbolName: "clock"))
+        menu.addItem(makeItem("Run Shortcut: Divoom VJ", action: #selector(runShortcutVJ), symbolName: "waveform.path.ecg"))
+        menu.addItem(makeItem("Run Shortcut: Divoom Hot", action: #selector(runShortcutHot), symbolName: "flame"))
+        menu.addItem(makeItem("Run Shortcut: Divoom Brighter", action: #selector(runShortcutBrighter), symbolName: "sun.max"))
+        menu.addItem(makeItem("Run Shortcut: Divoom Dimmer", action: #selector(runShortcutDimmer), symbolName: "sun.min"))
         menu.addItem(.separator())
 
-        autoCodexItem = makeItem("Auto Refresh Codex (60s)", action: #selector(toggleAutoCodex))
-        autoClaudeItem = makeItem("Auto Refresh Claude (60s)", action: #selector(toggleAutoClaude))
+        menu.addItem(makeItem("Push Codex Status", action: #selector(pushCodexStatus), symbolName: "brain"))
+        menu.addItem(makeItem("Push Claude Status", action: #selector(pushClaudeStatus), symbolName: "message"))
+        menu.addItem(makeItem("Push Orbit Art", action: #selector(pushOrbitArt), symbolName: "sparkles.square.filled.on.square"))
+        menu.addItem(makeItem("Push Witch Sample", action: #selector(pushWitchSample), symbolName: "wand.and.stars"))
+        menu.addItem(makeItem("Push Bunny Sample", action: #selector(pushBunnySample), symbolName: "hare"))
+        menu.addItem(.separator())
+        menu.addItem(makeItem("Play Attention Sound", action: #selector(playAttentionSound), symbolName: "bell.badge"))
+        menu.addItem(makeItem("Play Completion Sound", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
+        menu.addItem(.separator())
+
+        autoCodexItem = makeItem("Auto Refresh Codex (60s)", action: #selector(toggleAutoCodex), symbolName: "arrow.clockwise")
+        autoClaudeItem = makeItem("Auto Refresh Claude (60s)", action: #selector(toggleAutoClaude), symbolName: "arrow.clockwise.circle")
         menu.addItem(autoCodexItem)
         menu.addItem(autoClaudeItem)
         updateAutoRefreshUI()
 
         menu.addItem(.separator())
-        menu.addItem(makeItem("Open Research Notes", action: #selector(openResearch)))
-        menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q"))
+        menu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
+        menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
     }
 
-    private func makeItem(_ title: String, action: Selector, keyEquivalent: String = "") -> NSMenuItem {
+    private func makeItem(_ title: String, action: Selector, keyEquivalent: String = "", symbolName: String? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = self
+        if let symbolName {
+            item.image = makeMenuSymbol(symbolName, description: title)
+        }
         return item
     }
 
@@ -209,10 +295,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         statusLine.title = "Last action: \(prefix) \(summary) at \(time)"
         let detailText = details?.isEmpty == false ? details! : "(no details)"
         AppLog.write("\(prefix) \(summary)\n\(detailText)")
-        if let button = statusItem.button {
-            button.title = success ? "D16" : "D16!"
-            button.toolTip = details?.isEmpty == false ? details : summary
+        statusIconState = success ? .ok : .error
+        controlCenterState.lastStatus = "\(prefix) \(summary)"
+        updateStatusItemButton(summary: summary, details: details)
+    }
+
+    private func updateStatusItemButton(summary: String, details: String?) {
+        guard let button = statusItem.button else {
+            return
         }
+        button.title = ""
+        button.image = makeStatusItemIcon(state: statusIconState)
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
+        button.toolTip = details?.isEmpty == false ? details : summary
     }
 
     private func setAutoRefreshMode(_ mode: AutoRefreshMode) {
@@ -246,6 +342,65 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         refreshLine.title = "Auto refresh: \(autoRefreshMode.title)"
         autoCodexItem.state = autoRefreshMode == .codex ? .on : .off
         autoClaudeItem.state = autoRefreshMode == .claude ? .on : .off
+        controlCenterState.autoRefresh = autoRefreshMode.title
+    }
+
+    private func showControlCenter() {
+        if let window = controlCenterWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let rootView = ControlCenterView(
+            state: controlCenterState,
+            runAction: { [weak self] action in
+                self?.performControlCenterAction(action)
+            },
+            openResearch: { [weak self] in
+                self?.openResearch()
+            }
+        )
+
+        let hostingController = NSHostingController(rootView: rootView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Divoom D2 Pro Mac"
+        window.setContentSize(NSSize(width: 470, height: 720))
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.collectionBehavior = [.managed]
+        controlCenterWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func performControlCenterAction(_ action: ControlCenterAction) {
+        switch action {
+        case .bluetooth:
+            runBluetoothDiagnostics()
+        case .solidRed:
+            runNativeSolidRed()
+        case .solidGreen:
+            runNativeSceneColor(red: 0x00, green: 0xff, blue: 0x66, label: "Native solid green")
+        case .solidBlue:
+            runNativeSceneColor(red: 0x24, green: 0x7c, blue: 0xff, label: "Native solid blue")
+        case .pixelTest:
+            runNativePixelTest()
+        case .signalAnimation:
+            runNativeAnimationSample()
+        case .codexStatus:
+            pushCodexStatus()
+        case .claudeStatus:
+            pushClaudeStatus()
+        case .orbitArt:
+            pushOrbitArt()
+        case .witchSample:
+            pushWitchSample()
+        case .bunnySample:
+            pushBunnySample()
+        }
     }
 
     private func runShortcut(label: String, name: String) {
@@ -326,6 +481,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         bluetoothDiagnostics.requestAccessAndScan()
     }
 
+    @objc private func openControlCenter() {
+        showControlCenter()
+    }
+
     @objc private func runBluetoothDiagnostics() {
         bluetoothDiagnostics.refreshStatus(reason: "Manual Bluetooth diagnostics")
     }
@@ -346,6 +505,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
     }
 
+    private func runNativeSceneColor(red: UInt8, green: UInt8, blue: UInt8, label: String) {
+        bluetoothDiagnostics.runNativeBLESolidColor(
+            red: red,
+            green: green,
+            blue: blue,
+            brightness: 0x64,
+            threeModeType: 0x00
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: label, success: result.success, details: result.details)
+            }
+        }
+    }
+
     @objc private func runNativePurityRed() {
         bluetoothDiagnostics.runNativeBLEPurityRed { [weak self] result in
             DispatchQueue.main.async {
@@ -356,6 +529,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func runNativePixelTest() {
         bluetoothDiagnostics.runNativeBLEPixelBadgeTest { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeAnimationSample() {
+        bluetoothDiagnostics.runNativeBLEObviousAnimationSample { [weak self] result in
             DispatchQueue.main.async {
                 self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
             }
@@ -388,6 +569,7 @@ private enum HeadlessMode: String {
     case nativePurityColor = "--headless-native-purity-color"
     case nativeLightMode = "--headless-native-light-mode"
     case nativePixelTest = "--headless-native-pixel-test"
+    case nativeAnimationSample = "--headless-native-animation-sample"
     case nativeSample = "--headless-native-sample"
 }
 
@@ -521,6 +703,10 @@ private final class HeadlessRunner {
             }
         case .nativePixelTest:
             bluetoothDiagnostics.runNativeBLEPixelBadgeTest { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeAnimationSample:
+            bluetoothDiagnostics.runNativeBLEObviousAnimationSample { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         case .nativeSample:

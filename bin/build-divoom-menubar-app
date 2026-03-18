@@ -4,9 +4,15 @@ set -euo pipefail
 ROOT="/Users/kirniy/dev/divoom"
 APP="$ROOT/build/DivoomMenuBar.app"
 BIN_DIR="$APP/Contents/MacOS"
+RESOURCE_DIR="$APP/Contents/Resources"
+ICONSET_DIR="$ROOT/build/Icon.iconset"
 
 mkdir -p "$BIN_DIR"
+mkdir -p "$RESOURCE_DIR"
 cp "$ROOT/macos/DivoomMenuBar/Info.plist" "$APP/Contents/Info.plist"
+
+python3 "$ROOT/tools/generate_app_icon.py"
+iconutil -c icns "$ICONSET_DIR" -o "$RESOURCE_DIR/Icon.icns"
 
 /usr/bin/swiftc \
   -O \
@@ -14,6 +20,8 @@ cp "$ROOT/macos/DivoomMenuBar/Info.plist" "$APP/Contents/Info.plist"
   -framework AppKit \
   -framework CoreBluetooth \
   -framework IOBluetooth \
+  -framework SwiftUI \
+  "$ROOT/macos/DivoomMenuBar/ControlCenterView.swift" \
   "$ROOT/macos/DivoomMenuBar/BluetoothSupport.swift" \
   "$ROOT/macos/DivoomMenuBar/main.swift" \
   -o "$BIN_DIR/DivoomMenuBar"

@@ -8,6 +8,8 @@
   <string>Divoom Menu Bar</string>
   <key>CFBundleExecutable</key>
   <string>DivoomMenuBar</string>
+  <key>CFBundleIconFile</key>
+  <string>Icon</string>
   <key>CFBundleIdentifier</key>
   <string>dev.kirniy.divoom.menubar</string>
   <key>CFBundleInfoDictionaryVersion</key>

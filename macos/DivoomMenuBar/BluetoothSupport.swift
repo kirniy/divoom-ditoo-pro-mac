@@ -169,6 +169,106 @@ private struct RGBColor: Equatable {
     let b: UInt8
 }
 
+private struct Divoom16AnimationFrame {
+    let colors: [RGBColor]
+    let duration: TimeInterval
+}
+
+private func readBitsFromData(_ data: Data, startingBit: Int, bitCount: Int) -> Int {
+    var bitsLeft = bitCount
+    var currentBit = startingBit
+    var result = 0
+    var resultShift = 0
+
+    while bitsLeft > 0 {
+        let byteIndex = currentBit / 8
+        guard byteIndex < data.count else {
+            break
+        }
+
+        let bitOffset = currentBit % 8
+        let bitsToRead = min(8 - bitOffset, bitsLeft)
+        let mask = (1 << bitsToRead) - 1
+        let chunk = (Int(data[byteIndex]) >> bitOffset) & mask
+        result |= chunk << resultShift
+
+        bitsLeft -= bitsToRead
+        currentBit += bitsToRead
+        resultShift += bitsToRead
+    }
+
+    return result
+}
+
+private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16AnimationFrame] {
+    let data = try Data(contentsOf: url)
+    guard data.count >= 7, data[0] == 0xAA else {
+        throw NSError(domain: "Divoom16", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid Divoom16 header"])
+    }
+
+    let firstPaletteCount = max(1, Int(data[6]))
+    let bitsPerPixel = max(1, Int(ceil(log2(Double(firstPaletteCount)))))
+
+    var palette: [RGBColor] = []
+    palette.reserveCapacity(firstPaletteCount)
+    let firstPaletteOffset = 7
+    for index in 0..<firstPaletteCount {
+        let base = firstPaletteOffset + index * 3
+        guard base + 2 < data.count else {
+            throw NSError(domain: "Divoom16", code: 2, userInfo: [NSLocalizedDescriptionKey: "Palette truncated"])
+        }
+        palette.append(RGBColor(r: data[base], g: data[base + 1], b: data[base + 2]))
+    }
+
+    let width = 16
+    let height = 16
+    let pixelCount = width * height
+    let pixelByteCount = (pixelCount * bitsPerPixel + 7) / 8
+
+    var frames: [Divoom16AnimationFrame] = []
+    var frameOffset = 0
+
+    while frameOffset + 7 <= data.count, data[frameOffset] == 0xAA {
+        let frameLength = Int(UInt16(data[frameOffset + 1]) | (UInt16(data[frameOffset + 2]) << 8))
+        guard frameLength >= 7, frameOffset + frameLength <= data.count else {
+            break
+        }
+
+        let timeInMilliseconds = Int(UInt16(data[frameOffset + 3]) | (UInt16(data[frameOffset + 4]) << 8))
+        let localPaletteCount = Int(data[frameOffset + 6])
+        let pixelsOffset = frameOffset + 7 + localPaletteCount * 3
+        let pixelsEnd = pixelsOffset + pixelByteCount
+        guard pixelsEnd <= frameOffset + frameLength else {
+            break
+        }
+
+        let pixelData = data.subdata(in: pixelsOffset..<pixelsEnd)
+        var colors: [RGBColor] = []
+        colors.reserveCapacity(pixelCount)
+
+        for pixelIndex in 0..<pixelCount {
+            let paletteIndex = readBitsFromData(pixelData, startingBit: pixelIndex * bitsPerPixel, bitCount: bitsPerPixel)
+            let color = palette.indices.contains(paletteIndex) ? palette[paletteIndex] : RGBColor(r: 0, g: 0, b: 0)
+            colors.append(color)
+        }
+
+        frames.append(
+            Divoom16AnimationFrame(
+                colors: colors,
+                duration: max(0.08, Double(timeInMilliseconds) / 1000.0)
+            )
+        )
+
+        frameOffset += frameLength
+    }
+
+    if frames.isEmpty {
+        throw NSError(domain: "Divoom16", code: 3, userInfo: [NSLocalizedDescriptionKey: "No frames decoded from Divoom16 file"])
+    }
+
+    return frames
+}
+
 private func buildPublicStaticImageCommandBody(colors: [RGBColor], frameDelay: UInt16 = 0) -> Data {
     precondition(colors.count == 16 * 16, "Ditoo Pro display is 16x16 pixels")
 
@@ -273,6 +373,58 @@ private func buildPublicPixelBadgeTestImage() -> [RGBColor] {
     }
 
     return colors
+}
+
+private func buildObviousAnimationFrames() -> [Divoom16AnimationFrame] {
+    let background = RGBColor(r: 0x03, g: 0x08, b: 0x16)
+    let borderColors = [
+        RGBColor(r: 0xff, g: 0x35, b: 0x5e),
+        RGBColor(r: 0x33, g: 0xf7, b: 0x73),
+        RGBColor(r: 0x3a, g: 0xa0, b: 0xff),
+        RGBColor(r: 0xff, g: 0xf0, b: 0x4d),
+    ]
+    let moverColors = [
+        RGBColor(r: 0xff, g: 0xff, b: 0xff),
+        RGBColor(r: 0xff, g: 0x8a, b: 0x00),
+        RGBColor(r: 0x6b, g: 0xff, b: 0xff),
+        RGBColor(r: 0xff, g: 0x4d, b: 0xd2),
+    ]
+    let positions = [
+        (x: 1, y: 1),
+        (x: 11, y: 1),
+        (x: 11, y: 11),
+        (x: 1, y: 11),
+    ]
+
+    return positions.enumerated().map { index, position in
+        var colors: [RGBColor] = []
+        colors.reserveCapacity(16 * 16)
+        let border = borderColors[index % borderColors.count]
+        let mover = moverColors[index % moverColors.count]
+
+        for y in 0..<16 {
+            for x in 0..<16 {
+                let isBorder = x == 0 || y == 0 || x == 15 || y == 15
+                let inMover = (position.x..<(position.x + 4)).contains(x) && (position.y..<(position.y + 4)).contains(y)
+                let inCenterPulse = (6...9).contains(x) && (6...9).contains(y)
+                let inGuide = x == 7 || x == 8 || y == 7 || y == 8
+
+                if isBorder {
+                    colors.append(border)
+                } else if inMover {
+                    colors.append(mover)
+                } else if inCenterPulse {
+                    colors.append(border)
+                } else if inGuide {
+                    colors.append(RGBColor(r: 0x12, g: 0x22, b: 0x40))
+                } else {
+                    colors.append(background)
+                }
+            }
+        }
+
+        return Divoom16AnimationFrame(colors: colors, duration: 0.35)
+    }
 }
 
 private func chunked(_ data: Data, size: Int) -> [Data] {
@@ -911,6 +1063,226 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             "characteristics=\(characteristics.map { $0.uuid.uuidString }.joined(separator: ","))",
         ]
         sendVariant(characteristicIndex: 0, variantIndex: 0, details: initialDetails)
+    }
+
+    func runNativeBLEObviousAnimationSample(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEFrameStream(
+            frames: buildObviousAnimationFrames(),
+            label: "obvious-neon-signal",
+            sourceDescription: "generated:obvious-neon-signal",
+            loopCount: 6,
+            completion: completion
+        )
+    }
+
+    func runNativeBLEDivoom16Sample(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEDivoom16FrameStream(path: sampleAnimationPath, label: "witch-divoom16-stream", loopCount: 4, completion: completion)
+    }
+
+    func runNativeBLEDivoom16Animation(
+        path: String,
+        label: String,
+        completion: @escaping (NativeActionResult) -> Void
+    ) {
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            let details = "BLE light transport not ready. State: \(ditooLightState)"
+            AppLog.write("runNativeBLEDivoom16Animation unavailable \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE animation failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let animationURL = URL(fileURLWithPath: path)
+        guard let animation = try? Data(contentsOf: animationURL), !animation.isEmpty else {
+            let details = "Could not read animation payload at \(path)"
+            AppLog.write("runNativeBLEDivoom16Animation missing file \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE animation failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let writeType = preferredBLEWriteType(for: characteristic)
+        let packets = buildNativeBLEAnimationUploadPacketSequence(animation: animation, characteristic: characteristic)
+        let packetHex = packets.map(hexString)
+        AppLog.write(
+            "runNativeBLEDivoom16Animation label=\(label) path=\(path) bytes=\(animation.count) packets=\(packets.count) peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse") tx=\(packetHex.joined(separator: ","))"
+        )
+
+        writeBLEPackets(
+            packets,
+            packetIndex: 0,
+            peripheral: peripheral,
+            characteristic: characteristic,
+            writeType: writeType
+        ) {
+            let details = [
+                "label=\(label)",
+                "path=\(path)",
+                "bytes=\(animation.count)",
+                "packets=\(packets.count)",
+                "peripheral=\(peripheral.identifier.uuidString)",
+                "characteristic=\(characteristic.uuid.uuidString)",
+                "writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")",
+                "tx=\(packetHex.joined(separator: ","))",
+            ].joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: true,
+                    summary: "Native BLE animation sent",
+                    details: details
+                )
+            )
+        }
+    }
+
+    func runNativeBLEDivoom16FrameStream(
+        path: String,
+        label: String,
+        loopCount: Int,
+        completion: @escaping (NativeActionResult) -> Void
+    ) {
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            let details = "BLE light transport not ready. State: \(ditooLightState)"
+            AppLog.write("runNativeBLEDivoom16FrameStream unavailable \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE frame stream failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let animationURL = URL(fileURLWithPath: path)
+        let frames: [Divoom16AnimationFrame]
+        do {
+            frames = try loadDivoom16AnimationFrames(from: animationURL)
+        } catch {
+            let details = "Could not decode Divoom16 frames at \(path): \(error.localizedDescription)"
+            AppLog.write("runNativeBLEDivoom16FrameStream decode failed \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE frame stream failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let writeType = preferredBLEWriteType(for: characteristic)
+        AppLog.write(
+            "runNativeBLEDivoom16FrameStream label=\(label) path=\(path) frames=\(frames.count) loopCount=\(loopCount) peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")"
+        )
+
+        runNativeBLEFrameStream(
+            frames: frames,
+            label: label,
+            sourceDescription: path,
+            loopCount: loopCount,
+            completion: completion
+        )
+    }
+
+    private func runNativeBLEFrameStream(
+        frames: [Divoom16AnimationFrame],
+        label: String,
+        sourceDescription: String,
+        loopCount: Int,
+        completion: @escaping (NativeActionResult) -> Void
+    ) {
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            let details = "BLE light transport not ready. State: \(ditooLightState)"
+            AppLog.write("runNativeBLEFrameStream unavailable \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE frame stream failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        guard !frames.isEmpty else {
+            let details = "No frames provided for \(label)"
+            AppLog.write("runNativeBLEFrameStream empty \(details)")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Native BLE frame stream failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let writeType = preferredBLEWriteType(for: characteristic)
+        AppLog.write(
+            "runNativeBLEFrameStream label=\(label) source=\(sourceDescription) frames=\(frames.count) loopCount=\(loopCount) peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")"
+        )
+
+        func sendFrame(frameIndex: Int, cycleIndex: Int) {
+            if cycleIndex >= loopCount {
+                let details = [
+                    "label=\(label)",
+                    "source=\(sourceDescription)",
+                    "frames=\(frames.count)",
+                    "loopCount=\(loopCount)",
+                    "peripheral=\(peripheral.identifier.uuidString)",
+                    "characteristic=\(characteristic.uuid.uuidString)",
+                    "writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")",
+                ].joined(separator: "\n")
+                completion(
+                    NativeActionResult(
+                        success: true,
+                        summary: "Native BLE frame stream sent",
+                        details: details
+                    )
+                )
+                return
+            }
+
+            let frame = frames[frameIndex]
+            let imagePayload = buildPublicStaticImageCommandBody(colors: frame.colors)
+            var packets: [Data] = []
+            if frameIndex == 0 {
+                packets.append(buildBLETransportPacketForCharacteristic(characteristic: characteristic, command: 0x74, payload: Data([0x64])))
+            }
+            packets.append(buildBLETransportPacketForCharacteristic(characteristic: characteristic, command: 0x44, payload: imagePayload))
+
+            AppLog.write(
+                "runNativeBLEDivoom16FrameStream frame=\(frameIndex) cycle=\(cycleIndex) duration=\(frame.duration) imageBytes=\(imagePayload.count)"
+            )
+
+            writeBLEPackets(
+                packets,
+                packetIndex: 0,
+                peripheral: peripheral,
+                characteristic: characteristic,
+                writeType: writeType
+            ) {
+                let nextFrameIndex = frameIndex + 1
+                let wrappedFrameIndex = nextFrameIndex % frames.count
+                let nextCycleIndex = nextFrameIndex >= frames.count ? cycleIndex + 1 : cycleIndex
+                DispatchQueue.main.asyncAfter(deadline: .now() + frame.duration) {
+                    sendFrame(frameIndex: wrappedFrameIndex, cycleIndex: nextCycleIndex)
+                }
+            }
+        }
+
+        sendFrame(frameIndex: 0, cycleIndex: 0)
     }
 
     func runNativeBLEPixelBadgeTest(completion: @escaping (NativeActionResult) -> Void) {
@@ -1948,6 +2320,19 @@ private func buildBLEAnimationUploadPacketSequence(animation: Data, characterist
     return buildAnimationUploadPacketSequence(animation: animation) { command, payload in
         buildOldModeDivoomPacket(command: command, payload: payload)
     }
+}
+
+private func buildNativeBLEAnimationUploadPacketSequence(animation: Data, characteristic: CBCharacteristic) -> [Data] {
+    buildAnimationUploadPacketSequence(animation: animation) { command, payload in
+        buildBLETransportPacketForCharacteristic(characteristic: characteristic, command: command, payload: payload)
+    }
+}
+
+private func buildBLETransportPacketForCharacteristic(characteristic: CBCharacteristic, command: UInt8, payload: Data) -> Data {
+    if characteristic.uuid == ditooLightLEWriteCharacteristicUUID {
+        return buildNewModeLECommandPacket(command: command, payload: payload)
+    }
+    return buildOldModeDivoomPacket(command: command, payload: payload)
 }
 
 private func buildPublicBLEStaticImageTestPacketSequence(characteristic: CBCharacteristic, imagePayload: Data) -> [Data] {
