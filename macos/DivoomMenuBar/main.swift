@@ -237,16 +237,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         menu.addItem(makeItem("Native Send Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
         menu.addItem(makeItem("Native Send Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
         menu.addItem(makeItem("Native Send Pixel Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
+        menu.addItem(makeItem("Native Show Battery", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
+        menu.addItem(makeItem("Native Show System", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
+        menu.addItem(makeItem("Native Show Network", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
         menu.addItem(makeItem("Native Send Signal Animation", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
-        menu.addItem(.separator())
-
-        menu.addItem(makeItem("Open iPhone Shortcuts", action: #selector(openIPhoneShortcuts), symbolName: "iphone"))
-        menu.addItem(makeItem("Create iPhone Shortcut", action: #selector(createIPhoneShortcut), symbolName: "plus.app"))
-        menu.addItem(makeItem("Run Shortcut: Divoom Clock", action: #selector(runShortcutClock), symbolName: "clock"))
-        menu.addItem(makeItem("Run Shortcut: Divoom VJ", action: #selector(runShortcutVJ), symbolName: "waveform.path.ecg"))
-        menu.addItem(makeItem("Run Shortcut: Divoom Hot", action: #selector(runShortcutHot), symbolName: "flame"))
-        menu.addItem(makeItem("Run Shortcut: Divoom Brighter", action: #selector(runShortcutBrighter), symbolName: "sun.max"))
-        menu.addItem(makeItem("Run Shortcut: Divoom Dimmer", action: #selector(runShortcutDimmer), symbolName: "sun.min"))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Push Codex Status", action: #selector(pushCodexStatus), symbolName: "brain"))
@@ -507,6 +501,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             )
         case .nativePixelTest:
             bluetoothDiagnostics.runNativeBLEPixelBadgeTest(completion: completion)
+        case .nativeBatteryStatus:
+            bluetoothDiagnostics.runNativeBLEBatteryStatus(completion: completion)
+        case .nativeSystemStatus:
+            bluetoothDiagnostics.runNativeBLESystemStatus(completion: completion)
+        case .nativeNetworkStatus:
+            bluetoothDiagnostics.runNativeBLENetworkStatus(completion: completion)
         case .nativeAnimationSample:
             bluetoothDiagnostics.runNativeBLEObviousAnimationSample(completion: completion)
         case .nativeSample:
@@ -523,10 +523,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         } catch {
             AppLog.write("writeIPCResult failed \(error.localizedDescription)")
         }
-    }
-
-    private func runShortcut(label: String, name: String) {
-        run(label: label, arguments: ["ios-shortcut", "run", "--name", name])
     }
 
     @objc private func pushCodexStatus() {
@@ -571,34 +567,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         run(label: "Completion sound", arguments: ["play-sound", "--profile", "complete"])
     }
 
-    @objc private func openIPhoneShortcuts() {
-        run(label: "Open iPhone Shortcuts", arguments: ["ios-shortcut", "open"])
-    }
-
-    @objc private func createIPhoneShortcut() {
-        run(label: "Create iPhone Shortcut", arguments: ["ios-shortcut", "create"])
-    }
-
-    @objc private func runShortcutClock() {
-        runShortcut(label: "Shortcut Divoom Clock", name: "Divoom Clock")
-    }
-
-    @objc private func runShortcutVJ() {
-        runShortcut(label: "Shortcut Divoom VJ", name: "Divoom VJ")
-    }
-
-    @objc private func runShortcutHot() {
-        runShortcut(label: "Shortcut Divoom Hot", name: "Divoom Hot")
-    }
-
-    @objc private func runShortcutBrighter() {
-        runShortcut(label: "Shortcut Divoom Brighter", name: "Divoom Brighter")
-    }
-
-    @objc private func runShortcutDimmer() {
-        runShortcut(label: "Shortcut Divoom Dimmer", name: "Divoom Dimmer")
-    }
-
     @objc private func requestBluetoothAccess() {
         bluetoothDiagnostics.requestAccessAndScan()
     }
@@ -639,6 +607,30 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
     }
 
+    @objc private func runNativeBatteryStatus() {
+        bluetoothDiagnostics.runNativeBLEBatteryStatus { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeSystemStatus() {
+        bluetoothDiagnostics.runNativeBLESystemStatus { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeNetworkStatus() {
+        bluetoothDiagnostics.runNativeBLENetworkStatus { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
     @objc private func runNativeAnimationSample() {
         bluetoothDiagnostics.runNativeBLEObviousAnimationSample { [weak self] result in
             DispatchQueue.main.async {
@@ -673,6 +665,9 @@ private enum HeadlessMode: String {
     case nativePurityColor = "--headless-native-purity-color"
     case nativeLightMode = "--headless-native-light-mode"
     case nativePixelTest = "--headless-native-pixel-test"
+    case nativeBatteryStatus = "--headless-native-battery-status"
+    case nativeSystemStatus = "--headless-native-system-status"
+    case nativeNetworkStatus = "--headless-native-network-status"
     case nativeAnimationSample = "--headless-native-animation-sample"
     case nativeSample = "--headless-native-sample"
 }
@@ -832,6 +827,18 @@ private final class HeadlessRunner {
             }
         case .nativePixelTest:
             bluetoothDiagnostics.runNativeBLEPixelBadgeTest { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeBatteryStatus:
+            bluetoothDiagnostics.runNativeBLEBatteryStatus { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeSystemStatus:
+            bluetoothDiagnostics.runNativeBLESystemStatus { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeNetworkStatus:
+            bluetoothDiagnostics.runNativeBLENetworkStatus { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         case .nativeAnimationSample:

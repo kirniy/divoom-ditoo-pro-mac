@@ -20,6 +20,7 @@ iconutil -c icns "$ICONSET_DIR" -o "$RESOURCE_DIR/Icon.icns"
   -framework AppKit \
   -framework CoreBluetooth \
   -framework IOBluetooth \
+  -framework IOKit \
   "$ROOT/macos/DivoomMenuBar/BluetoothSupport.swift" \
   "$ROOT/macos/DivoomMenuBar/main.swift" \
   -o "$BIN_DIR/DivoomMenuBar"

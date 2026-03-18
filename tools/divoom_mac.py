@@ -948,6 +948,9 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
         "purity-red": "--headless-native-purity-red",
         "purity-color": "--headless-native-purity-color",
         "pixel-test": "--headless-native-pixel-test",
+        "battery-status": "--headless-native-battery-status",
+        "system-status": "--headless-native-system-status",
+        "network-status": "--headless-native-network-status",
         "animation-sample": "--headless-native-animation-sample",
         "sample": "--headless-native-sample",
     }
@@ -1058,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     native_headless.add_argument(
         "action",
-        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "animation-sample", "sample"],
+        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample"],
     )
     native_headless.add_argument(
         "--color",

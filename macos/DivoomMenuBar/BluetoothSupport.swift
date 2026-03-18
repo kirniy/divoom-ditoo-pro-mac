@@ -1,6 +1,8 @@
 import CoreBluetooth
+import Darwin
 import Foundation
 import IOBluetooth
+import IOKit.ps
 
 private let ditooLightServiceUUID = CBUUID(string: "49535343-FE7D-4AE5-8FA9-9FAFD205E455")
 private let ditooLightLEWriteCharacteristicUUID = CBUUID(string: "49535343-8841-43F4-A8D4-ECBE34729BB3")
@@ -172,6 +174,22 @@ private struct RGBColor: Equatable {
 private struct Divoom16AnimationFrame {
     let colors: [RGBColor]
     let duration: TimeInterval
+}
+
+private struct BatterySnapshot {
+    let percent: Int
+    let isCharging: Bool
+}
+
+private struct SystemSnapshot {
+    let cpuPercent: Int
+    let memoryPercent: Int
+    let battery: BatterySnapshot?
+}
+
+private struct NetworkSnapshot {
+    let downloadKBps: Int
+    let uploadKBps: Int
 }
 
 private func readBitsFromData(_ data: Data, startingBit: Int, bitCount: Int) -> Int {
@@ -425,6 +443,292 @@ private func buildObviousAnimationFrames() -> [Divoom16AnimationFrame] {
 
         return Divoom16AnimationFrame(colors: colors, duration: 0.35)
     }
+}
+
+private func currentBatterySnapshot() -> BatterySnapshot? {
+    guard
+        let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+        let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef]
+    else {
+        return nil
+    }
+
+    for source in list {
+        guard
+            let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+            let current = description[kIOPSCurrentCapacityKey as String] as? Int,
+            let maxCapacity = description[kIOPSMaxCapacityKey as String] as? Int,
+            maxCapacity > 0
+        else {
+            continue
+        }
+
+        let state = (description[kIOPSPowerSourceStateKey as String] as? String) ?? ""
+        let isCharging = state == kIOPSACPowerValue
+        let percent = Swift.max(0, Swift.min(100, Int((Double(current) / Double(maxCapacity)) * 100.0)))
+        return BatterySnapshot(percent: percent, isCharging: isCharging)
+    }
+
+    return nil
+}
+
+private func currentSystemSnapshot() -> SystemSnapshot {
+    var loadAverages = [Double](repeating: 0, count: 3)
+    let loadResult = getloadavg(&loadAverages, 3)
+    let coreCount = max(1, ProcessInfo.processInfo.processorCount)
+    let cpuPercent: Int
+    if loadResult > 0 {
+        cpuPercent = max(0, min(100, Int((loadAverages[0] / Double(coreCount)) * 100.0)))
+    } else {
+        cpuPercent = 0
+    }
+
+    let memoryPercent: Int = {
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
+        var stats = vm_statistics64_data_t()
+        let result = withUnsafeMutablePointer(to: &stats) { pointer -> kern_return_t in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, reboundPointer, &count)
+            }
+        }
+
+        guard result == KERN_SUCCESS else {
+            return 0
+        }
+
+        let used = Double(stats.active_count + stats.wire_count + stats.compressor_page_count) * Double(pageSize)
+        let total = Double(ProcessInfo.processInfo.physicalMemory)
+        guard total > 0 else {
+            return 0
+        }
+        return max(0, min(100, Int((used / total) * 100.0)))
+    }()
+
+    return SystemSnapshot(
+        cpuPercent: cpuPercent,
+        memoryPercent: memoryPercent,
+        battery: currentBatterySnapshot()
+    )
+}
+
+private func buildBatteryStatusImage(snapshot: BatterySnapshot) -> [RGBColor] {
+    var colors: [RGBColor] = []
+    colors.reserveCapacity(16 * 16)
+
+    let background = RGBColor(r: 0x05, g: 0x0d, b: 0x18)
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let charge = snapshot.isCharging
+        ? RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+        : (snapshot.percent >= 25 ? RGBColor(r: 0x3a, g: 0xa0, b: 0xff) : RGBColor(r: 0xff, g: 0x55, b: 0x6a))
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+
+    let fillColumns = max(0, min(10, Int(round(Double(snapshot.percent) / 10.0))))
+
+    for y in 0..<16 {
+        for x in 0..<16 {
+            let inFrame = (2...13).contains(x) && (4...11).contains(y)
+            let isOutline = x == 2 || x == 13 || y == 4 || y == 11
+            let isCap = (14...15).contains(x) && (6...9).contains(y)
+            let inCellArea = (3...12).contains(x) && (5...10).contains(y)
+            let cellIndex = x - 3
+            let filled = inCellArea && cellIndex < fillColumns
+            let showPulse = snapshot.isCharging && abs(x - 8) <= 1 && (6...9).contains(y)
+            let topMeter = y <= 1 && x <= snapshot.percent / 7
+
+            if isOutline || isCap {
+                colors.append(frame)
+            } else if showPulse {
+                colors.append(frame)
+            } else if filled {
+                colors.append(charge)
+            } else if inFrame {
+                colors.append(dim)
+            } else if topMeter {
+                colors.append(charge)
+            } else {
+                colors.append(background)
+            }
+        }
+    }
+
+    return colors
+}
+
+private func buildExternalPowerStatusImage() -> [RGBColor] {
+    var colors: [RGBColor] = []
+    colors.reserveCapacity(16 * 16)
+
+    let background = RGBColor(r: 0x06, g: 0x0d, b: 0x16)
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let accent = RGBColor(r: 0xff, g: 0xd1, b: 0x4d)
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+
+    for y in 0..<16 {
+        for x in 0..<16 {
+            let isBorder = x == 0 || y == 0 || x == 15 || y == 15
+            let inSocket = (4...11).contains(x) && (4...11).contains(y)
+            let isSocketOutline = x == 4 || x == 11 || y == 4 || y == 11
+            let isProng = ((x == 6 || x == 9) && (5...7).contains(y))
+            let isStem = (7...8).contains(x) && (8...11).contains(y)
+            let isGlow = (2...13).contains(x) && y <= 1
+
+            if isBorder || isSocketOutline {
+                colors.append(frame)
+            } else if isProng || isStem {
+                colors.append(accent)
+            } else if inSocket {
+                colors.append(dim)
+            } else if isGlow {
+                colors.append(accent)
+            } else {
+                colors.append(background)
+            }
+        }
+    }
+
+    return colors
+}
+
+private func buildSystemStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
+    var colors = Array(repeating: RGBColor(r: 0x06, g: 0x0d, b: 0x16), count: 16 * 16)
+
+    func setPixel(x: Int, y: Int, color: RGBColor) {
+        guard (0..<16).contains(x), (0..<16).contains(y) else {
+            return
+        }
+        colors[y * 16 + x] = color
+    }
+
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let cpu = RGBColor(r: 0xff, g: 0x8a, b: 0x00)
+    let memory = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+    let battery = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+
+    for x in 0..<16 {
+        setPixel(x: x, y: 0, color: frame)
+        setPixel(x: x, y: 15, color: frame)
+    }
+    for y in 0..<16 {
+        setPixel(x: 0, y: y, color: frame)
+        setPixel(x: 15, y: y, color: frame)
+    }
+
+    let cpuHeight = max(1, min(10, Int(round(Double(snapshot.cpuPercent) / 10.0))))
+    let memoryHeight = max(1, min(10, Int(round(Double(snapshot.memoryPercent) / 10.0))))
+
+    for x in 3...5 {
+        for y in 4...13 {
+            setPixel(x: x, y: y, color: dim)
+        }
+        for offset in 0..<cpuHeight {
+            setPixel(x: x, y: 13 - offset, color: cpu)
+        }
+    }
+
+    for x in 10...12 {
+        for y in 4...13 {
+            setPixel(x: x, y: y, color: dim)
+        }
+        for offset in 0..<memoryHeight {
+            setPixel(x: x, y: 13 - offset, color: memory)
+        }
+    }
+
+    for x in 6...9 {
+        setPixel(x: x, y: 4, color: frame)
+        setPixel(x: x, y: 5, color: frame)
+    }
+
+    if let batterySnapshot = snapshot.battery {
+        let batteryColumns = max(1, min(4, Int(round(Double(batterySnapshot.percent) / 25.0))))
+        for x in 6..<(6 + batteryColumns) {
+            setPixel(x: x, y: 4, color: battery)
+            setPixel(x: x, y: 5, color: battery)
+        }
+        if batterySnapshot.isCharging {
+            setPixel(x: 8, y: 6, color: battery)
+        }
+    }
+
+    return colors
+}
+
+private func currentNetworkCounters() -> (download: UInt64, upload: UInt64)? {
+    var pointer: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&pointer) == 0, let first = pointer else {
+        return nil
+    }
+    defer { freeifaddrs(pointer) }
+
+    var download: UInt64 = 0
+    var upload: UInt64 = 0
+    var cursor: UnsafeMutablePointer<ifaddrs>? = first
+
+    while let current = cursor {
+        let flags = Int32(current.pointee.ifa_flags)
+        if (flags & IFF_UP) != 0,
+           (flags & IFF_LOOPBACK) == 0,
+           let dataPointer = current.pointee.ifa_data?.assumingMemoryBound(to: if_data.self) {
+            download += UInt64(dataPointer.pointee.ifi_ibytes)
+            upload += UInt64(dataPointer.pointee.ifi_obytes)
+        }
+        cursor = current.pointee.ifa_next
+    }
+
+    return (download, upload)
+}
+
+private func buildNetworkStatusImage(snapshot: NetworkSnapshot) -> [RGBColor] {
+    var colors = Array(repeating: RGBColor(r: 0x06, g: 0x0d, b: 0x16), count: 16 * 16)
+
+    func setPixel(x: Int, y: Int, color: RGBColor) {
+        guard (0..<16).contains(x), (0..<16).contains(y) else {
+            return
+        }
+        colors[y * 16 + x] = color
+    }
+
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let downloadColor = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+    let uploadColor = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+
+    for x in 0..<16 {
+        setPixel(x: x, y: 0, color: frame)
+        setPixel(x: x, y: 15, color: frame)
+    }
+    for y in 0..<16 {
+        setPixel(x: 0, y: y, color: frame)
+        setPixel(x: 15, y: y, color: frame)
+    }
+
+    let downHeight = max(1, min(10, snapshot.downloadKBps / 64))
+    let upHeight = max(1, min(10, snapshot.uploadKBps / 64))
+
+    for x in 3...5 {
+        for y in 4...13 { setPixel(x: x, y: y, color: dim) }
+        for offset in 0..<downHeight { setPixel(x: x, y: 13 - offset, color: downloadColor) }
+    }
+    for x in 10...12 {
+        for y in 4...13 { setPixel(x: x, y: y, color: dim) }
+        for offset in 0..<upHeight { setPixel(x: x, y: 13 - offset, color: uploadColor) }
+    }
+
+    setPixel(x: 4, y: 2, color: downloadColor)
+    setPixel(x: 4, y: 3, color: downloadColor)
+    setPixel(x: 3, y: 2, color: downloadColor)
+    setPixel(x: 5, y: 2, color: downloadColor)
+
+    setPixel(x: 11, y: 2, color: uploadColor)
+    setPixel(x: 11, y: 3, color: uploadColor)
+    setPixel(x: 10, y: 3, color: uploadColor)
+    setPixel(x: 12, y: 3, color: uploadColor)
+
+    return colors
 }
 
 private func chunked(_ data: Data, size: Int) -> [Data] {
@@ -1291,6 +1595,75 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             label: "pixel-badge-test",
             completion: completion
         )
+    }
+
+    func runNativeBLEBatteryStatus(completion: @escaping (NativeActionResult) -> Void) {
+        guard let snapshot = currentBatterySnapshot() else {
+            runNativeBLEStaticImage(
+                colors: buildExternalPowerStatusImage(),
+                label: "power-source-ac",
+                completion: completion
+            )
+            return
+        }
+
+        runNativeBLEStaticImage(
+            colors: buildBatteryStatusImage(snapshot: snapshot),
+            label: "battery-\(snapshot.percent)-\(snapshot.isCharging ? "charging" : "battery")",
+            completion: completion
+        )
+    }
+
+    func runNativeBLESystemStatus(completion: @escaping (NativeActionResult) -> Void) {
+        let snapshot = currentSystemSnapshot()
+        runNativeBLEStaticImage(
+            colors: buildSystemStatusImage(snapshot: snapshot),
+            label: "system-cpu\(snapshot.cpuPercent)-mem\(snapshot.memoryPercent)",
+            completion: completion
+        )
+    }
+
+    func runNativeBLENetworkStatus(completion: @escaping (NativeActionResult) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            guard let start = currentNetworkCounters() else {
+                completion(
+                    NativeActionResult(
+                        success: false,
+                        summary: "Native BLE network status failed",
+                        details: "Could not read network interface counters."
+                    )
+                )
+                return
+            }
+
+            usleep(500_000)
+
+            guard let end = currentNetworkCounters() else {
+                completion(
+                    NativeActionResult(
+                        success: false,
+                        summary: "Native BLE network status failed",
+                        details: "Could not read network interface counters after sampling."
+                    )
+                )
+                return
+            }
+
+            let downloadDelta = end.download >= start.download ? end.download - start.download : 0
+            let uploadDelta = end.upload >= start.upload ? end.upload - start.upload : 0
+            let snapshot = NetworkSnapshot(
+                downloadKBps: Int((Double(downloadDelta) * 2.0) / 1024.0),
+                uploadKBps: Int((Double(uploadDelta) * 2.0) / 1024.0)
+            )
+
+            DispatchQueue.main.async {
+                self.runNativeBLEStaticImage(
+                    colors: buildNetworkStatusImage(snapshot: snapshot),
+                    label: "network-down\(snapshot.downloadKBps)-up\(snapshot.uploadKBps)",
+                    completion: completion
+                )
+            }
+        }
     }
 
     private func runNativeBLEStaticImage(
