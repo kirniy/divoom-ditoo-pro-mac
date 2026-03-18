@@ -1,0 +1,24 @@
+{
+  "id": "divoom-plugin",
+  "name": "Divoom Ditoo",
+  "description": "Push live status, generative animations, and media to a paired Divoom Ditoo Pro",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pythonPath": {
+        "type": "string",
+        "description": "Python executable for the Divoom controller"
+      },
+      "scriptPath": {
+        "type": "string",
+        "description": "Path to divoom_mac.py"
+      },
+      "defaultPort": {
+        "type": "string",
+        "description": "Optional fixed Ditoo serial port"
+      }
+    }
+  }
+}

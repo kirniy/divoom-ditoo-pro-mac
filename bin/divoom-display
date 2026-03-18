@@ -1,0 +1,2 @@
+#!/bin/zsh
+exec /Users/kirniy/dev/divoom/.venv/bin/python /Users/kirniy/dev/divoom/tools/divoom_mac.py "$@"

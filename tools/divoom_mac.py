@@ -1,0 +1,1077 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from PIL import Image, ImageColor, ImageOps, ImageSequence
+import serial
+
+from render_status_gif import render as render_status_gif, load_usage
+from render_generative_gif import render as render_art_gif
+
+
+CHUNK_SIZE = 256
+DEFAULT_BAUDRATE = 115200
+ROOT = Path(__file__).resolve().parents[1]
+APP_QUERY_PATH = ROOT / "out" / "iphone" / "divoom-app-query.json"
+DEFAULT_ROUTE_RESULTS_DIR = ROOT / "out" / "iphone" / "route-tests"
+DEFAULT_SHORTCUT_RESULTS_DIR = ROOT / "out" / "iphone" / "shortcut-tests"
+DEFAULT_IOS_DEVICE_IDENTIFIER = "CCED4E96-3418-5051-A1F7-9B3BAA89D4C1"
+DEFAULT_IOS_UDID = "00008150-000828191141401C"
+DEFAULT_IOS_BUNDLE_ID = "com.divoom.Smart"
+DEFAULT_IOS_SCHEME = "divoomapp://"
+DEFAULT_SHORTCUTS_BUNDLE_ID = "com.apple.shortcuts"
+DEFAULT_SHORTCUTS_SCHEME = "shortcuts://"
+DEFAULT_AUDIO_DISABLE_FILE = Path(
+    os.environ.get("DIVOOM_AUDIO_DISABLE_FILE", "/tmp/divoom-audio-hooks.disabled")
+)
+DEFAULT_NATIVE_APP_BUNDLE = ROOT / "build" / "DivoomMenuBar.app"
+DEFAULT_NATIVE_APP_BINARY = DEFAULT_NATIVE_APP_BUNDLE / "Contents" / "MacOS" / "DivoomMenuBar"
+DEFAULT_NATIVE_APP_LOG = Path.home() / "Library" / "Logs" / "DivoomMenuBar.log"
+
+
+def discover_ports() -> list[str]:
+    return sorted(path for path in glob.glob("/dev/cu.*Ditoo*") if Path(path).exists())
+
+
+def choose_any_port(explicit: str | None = None) -> str:
+    if explicit:
+        if Path(explicit).exists():
+            return explicit
+        raise FileNotFoundError(f"port not found: {explicit}")
+    ports = discover_ports()
+    if not ports:
+        raise FileNotFoundError("no Ditoo serial ports found under /dev/cu.*Ditoo*")
+    return ports[-1]
+
+
+def choose_display_port(explicit: str | None = None) -> str:
+    if explicit:
+        if Path(explicit).exists():
+            return explicit
+        raise FileNotFoundError(f"display port not found: {explicit}")
+    ports = discover_ports()
+    light_ports = [path for path in ports if "Light" in path]
+    if light_ports:
+        return light_ports[-1]
+    audio_ports = [path for path in ports if "Audio" in path]
+    if audio_ports:
+        return audio_ports[-1]
+    raise FileNotFoundError(
+        "no Ditoo serial ports found. Pair/connect DitooPro-Audio or DitooPro-Light first."
+    )
+
+
+def choose_audio_port(explicit: str | None = None) -> str:
+    if explicit:
+        if Path(explicit).exists():
+            return explicit
+        raise FileNotFoundError(f"audio port not found: {explicit}")
+    ports = [path for path in discover_ports() if "Audio" in path]
+    if not ports:
+        raise FileNotFoundError(
+            "no DitooPro-Audio serial port found. Pair/connect the audio-side Bluetooth device first."
+        )
+    return ports[-1]
+
+
+def checksum(command: int, payload: bytes) -> int:
+    length = len(payload) + 3
+    return sum((length & 0xFF, (length >> 8) & 0xFF, command, *payload)) & 0xFFFF
+
+
+def build_packet(command: int, payload: bytes = b"") -> bytes:
+    length = len(payload) + 3
+    crc = checksum(command, payload)
+    return bytes([0x01, length & 0xFF, (length >> 8) & 0xFF, command, *payload, crc & 0xFF, (crc >> 8) & 0xFF, 0x02])
+
+
+@dataclass
+class Response:
+    original_command: int
+    ack: bool
+    data: bytes
+
+
+def parse_response(raw: bytes) -> Response:
+    if len(raw) < 7:
+        raise ValueError("response too short")
+    if raw[0] != 0x01 or raw[-1] != 0x02:
+        raise ValueError("bad response framing")
+    if raw[3] != 0x04:
+        raise ValueError(f"unexpected response command byte 0x{raw[3]:02x}")
+    return Response(original_command=raw[4], ack=raw[5] == 0x55, data=raw[6:-3])
+
+
+def read_frame(ser: serial.Serial, timeout_s: float) -> bytes:
+    deadline = time.monotonic() + timeout_s
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = ser.read(1)
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        if len(buf) >= 3 and buf[0] == 0x01:
+            payload_len = int.from_bytes(buf[1:3], "little")
+            frame_len = payload_len + 4
+            while len(buf) < frame_len and time.monotonic() < deadline:
+                more = ser.read(frame_len - len(buf))
+                if not more:
+                    continue
+                buf.extend(more)
+            return bytes(buf)
+    return bytes(buf)
+
+
+class DivoomClient:
+    def __init__(
+        self,
+        port: str | None = None,
+        baudrate: int = DEFAULT_BAUDRATE,
+        timeout: float = 2.0,
+        endpoint: str = "display",
+    ):
+        if endpoint == "display":
+            resolved_port = choose_display_port(port)
+        elif endpoint == "audio":
+            resolved_port = choose_audio_port(port)
+        else:
+            resolved_port = choose_any_port(port)
+        self.port = resolved_port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.serial = serial.Serial(port=self.port, baudrate=self.baudrate, timeout=self.timeout, write_timeout=self.timeout)
+
+    def close(self) -> None:
+        if self.serial.is_open:
+            self.serial.close()
+
+    def __enter__(self) -> "DivoomClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def send(self, command: int, payload: bytes = b"", expect_response: bool = False) -> Response | None:
+        packet = build_packet(command, payload)
+        self.serial.reset_input_buffer()
+        self.serial.write(packet)
+        self.serial.flush()
+        time.sleep(0.05)
+        if not expect_response:
+            return None
+        raw = read_frame(self.serial, self.timeout)
+        if not raw:
+            raise TimeoutError(f"no response for command 0x{command:02x}")
+        parsed = parse_response(raw)
+        if parsed.original_command != command:
+            raise RuntimeError(
+                f"response command mismatch: expected 0x{command:02x}, got 0x{parsed.original_command:02x}"
+            )
+        return parsed
+
+    def get_volume(self) -> int:
+        response = self.send(0x09, expect_response=True)
+        if response is None or not response.data:
+            raise RuntimeError("volume response was empty")
+        return response.data[0]
+
+    def set_volume(self, value: int) -> None:
+        self.send(0x08, bytes([value]))
+
+    def set_brightness(self, value: int) -> None:
+        self.send(0x74, bytes([value]))
+
+    def set_playing(self, playing: bool) -> None:
+        self.send(0x0A, bytes([1 if playing else 0]))
+
+    def query_light_effect_control(self) -> None:
+        self.send(0xBD, bytes([0x33, 0x00]))
+
+    def get_box_mode(self, expect_response: bool = False) -> Response | None:
+        return self.send(0x46, expect_response=expect_response)
+
+    def set_light_mode(
+        self,
+        red: int,
+        green: int,
+        blue: int,
+        brightness: int = 100,
+        light_mode: int = 0,
+        on: bool = True,
+        app_sequence: bool = False,
+    ) -> bytes:
+        if app_sequence:
+            self.query_light_effect_control()
+            self.get_box_mode(expect_response=False)
+        payload = bytes(
+            [
+                0x01,
+                red & 0xFF,
+                green & 0xFF,
+                blue & 0xFF,
+                brightness & 0xFF,
+                light_mode & 0xFF,
+                0x01 if on else 0x00,
+                0x00,
+                0x00,
+                0x00,
+            ]
+        )
+        self.send(0x45, payload)
+        return payload
+
+    def show_design(self, slot: int = 0) -> None:
+        # Community integrations switch to the design channel after working with custom art.
+        self.send(0x45, bytes([0x05]))
+        self.send(0xBD, bytes([0x17, slot & 0xFF]))
+
+    def upload_animation_bytes(self, payload: bytes, terminate: bool = False) -> dict[str, int]:
+        sent_packets = 0
+        self.send(0x8B, bytes([0, *len(payload).to_bytes(4, "little")]))
+        sent_packets += 1
+        for offset, chunk_start in enumerate(range(0, len(payload), CHUNK_SIZE)):
+            chunk = payload[chunk_start : chunk_start + CHUNK_SIZE]
+            data = bytes([1, *len(payload).to_bytes(4, "little"), *offset.to_bytes(2, "little"), *chunk])
+            self.send(0x8B, data)
+            sent_packets += 1
+            time.sleep(0.04)
+        if terminate:
+            self.send(0x8B, bytes([2]))
+            sent_packets += 1
+        return {"bytes": len(payload), "packets": sent_packets}
+
+
+def resize_rgb(image: Image.Image) -> Image.Image:
+    rgb = image.convert("RGBA")
+    if rgb.getbbox() is None:
+        rgb = Image.new("RGBA", rgb.size, (0, 0, 0, 255))
+    flattened = Image.alpha_composite(Image.new("RGBA", rgb.size, (0, 0, 0, 255)), rgb).convert("RGB")
+    return ImageOps.fit(flattened, (16, 16), method=Image.Resampling.LANCZOS)
+
+
+def reduce_palette(image: Image.Image) -> Image.Image:
+    rgb = resize_rgb(image)
+    colors = rgb.getcolors(maxcolors=257)
+    if colors is None:
+        return rgb.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert("RGB")
+    return rgb
+
+
+def iter_frames(path: Path) -> Iterable[tuple[Image.Image, int]]:
+    with Image.open(path) as image:
+        if getattr(image, "is_animated", False):
+            for frame in ImageSequence.Iterator(image):
+                duration = int(frame.info.get("duration", 70))
+                yield reduce_palette(frame), max(20, duration)
+        else:
+            yield reduce_palette(image), 0
+
+
+def bits_per_pixel(color_count: int) -> int:
+    return max(1, math.ceil(math.log2(max(2, color_count))))
+
+
+def palette_from_image(image: Image.Image) -> list[tuple[int, int, int]]:
+    seen: set[tuple[int, int, int]] = set()
+    ordered: list[tuple[int, int, int]] = []
+    for y in range(16):
+        for x in range(16):
+            color = image.getpixel((x, y))
+            if color not in seen:
+                seen.add(color)
+                ordered.append(color)
+    return ordered
+
+
+def pack_indices(indices: Iterable[int], bit_width: int) -> bytes:
+    output = bytearray()
+    current = 0
+    bit_pos = 0
+    for value in indices:
+        tmp = value
+        for _ in range(bit_width):
+            if tmp & 1:
+                current |= 1 << bit_pos
+            tmp >>= 1
+            bit_pos += 1
+            if bit_pos == 8:
+                output.append(current)
+                current = 0
+                bit_pos = 0
+    if bit_pos:
+        output.append(current)
+    return bytes(output)
+
+
+def serialize_frame(image: Image.Image, duration_ms: int) -> bytes:
+    palette = palette_from_image(image)
+    if len(palette) > 256:
+        raise ValueError(f"frame has too many colors: {len(palette)}")
+    bit_width = bits_per_pixel(len(palette))
+    palette_index = {color: index for index, color in enumerate(palette)}
+    indices = [palette_index[image.getpixel((x, y))] for y in range(16) for x in range(16)]
+    pixel_data = pack_indices(indices, bit_width)
+    color_count_byte = 0 if len(palette) == 256 else len(palette)
+    frame_length = 7 + len(palette) * 3 + len(pixel_data)
+    header = bytearray([0xAA, frame_length & 0xFF, (frame_length >> 8) & 0xFF])
+    header.extend(int(duration_ms).to_bytes(2, "little"))
+    header.append(0)
+    header.append(color_count_byte)
+    payload = bytearray(header)
+    for r, g, b in palette:
+        payload.extend((r, g, b))
+    payload.extend(pixel_data)
+    return bytes(payload)
+
+
+def serialize_path(path: Path) -> bytes:
+    frames = [serialize_frame(frame, duration_ms) for frame, duration_ms in iter_frames(path)]
+    return b"".join(frames)
+
+
+def render_status(provider: str) -> tuple[Path, dict[str, object]]:
+    output = Path(tempfile.gettempdir()) / f"divoom-{provider}-status.gif"
+    snapshot = load_usage(provider)
+    render_status_gif(snapshot, output)
+    info = {
+        "provider": snapshot.provider,
+        "primaryUsed": snapshot.primary_used,
+        "secondaryUsed": snapshot.secondary_used,
+        "tertiaryUsed": snapshot.tertiary_used,
+        "output": str(output),
+    }
+    return output, info
+
+
+def render_art(style: str, seed: int) -> tuple[Path, dict[str, object]]:
+    output = Path(tempfile.gettempdir()) / f"divoom-art-{style}-{seed}.gif"
+    render_art_gif(style, seed, output)
+    return output, {"style": style, "seed": seed, "output": str(output)}
+
+
+def current_output_device() -> str:
+    return subprocess.check_output(
+        ["/opt/homebrew/bin/SwitchAudioSource", "-c", "-t", "output"],
+        text=True,
+    ).strip()
+
+
+def switch_output_device(name: str) -> None:
+    subprocess.check_call(["/opt/homebrew/bin/SwitchAudioSource", "-t", "output", "-s", name])
+
+
+def available_output_devices() -> list[str]:
+    output = subprocess.check_output(
+        ["/opt/homebrew/bin/SwitchAudioSource", "-a", "-t", "output"],
+        text=True,
+    )
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def sound_path_for_profile(profile: str) -> str:
+    candidates = {
+        "attention": [
+            "/System/Library/Sounds/Glass.aiff",
+            "/System/Library/Sounds/Ping.aiff",
+        ],
+        "complete": [
+            "/System/Library/Sounds/Hero.aiff",
+            "/System/Library/Sounds/Pop.aiff",
+        ],
+    }
+    for path in candidates[profile]:
+        if Path(path).exists():
+            return path
+    raise FileNotFoundError(f"no system sound found for profile {profile}")
+
+
+def audio_is_disabled() -> bool:
+    return DEFAULT_AUDIO_DISABLE_FILE.exists()
+
+
+def play_sound_via_divoom(profile: str) -> dict[str, str]:
+    if audio_is_disabled():
+        return {
+            "profile": profile,
+            "skipped": "audio-disabled",
+            "disableFile": str(DEFAULT_AUDIO_DISABLE_FILE),
+        }
+    device_name = "DitooPro-Audio"
+    if device_name not in available_output_devices():
+        raise FileNotFoundError("DitooPro-Audio is not available as a macOS output device")
+    original_device = current_output_device()
+    sound_path = sound_path_for_profile(profile)
+    try:
+        if original_device != device_name:
+            switch_output_device(device_name)
+            time.sleep(0.4)
+        subprocess.check_call(["/usr/bin/afplay", sound_path])
+    finally:
+        if current_output_device() != original_device:
+            switch_output_device(original_device)
+    return {"profile": profile, "soundPath": sound_path, "restoredOutput": original_device}
+
+
+def parse_color_triplet(color: str) -> tuple[int, int, int]:
+    red, green, blue = ImageColor.getrgb(color)
+    return int(red), int(green), int(blue)
+
+
+def load_iphone_activity_types(path: Path = APP_QUERY_PATH) -> list[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"app query JSON not found: {path}")
+    data = json.loads(path.read_text())
+    app_info = data.get(DEFAULT_IOS_BUNDLE_ID, {})
+    items = app_info.get("NSUserActivityTypes", [])
+    routes = [str(item).strip() for item in items if str(item).strip()]
+    return sorted(set(routes))
+
+
+def run_iphone_route(
+    *,
+    route: str,
+    device: str,
+    udid: str,
+    bundle_id: str,
+    scheme: str,
+    results_dir: Path,
+    activate: bool,
+    terminate_existing: bool,
+    capture_syslog: bool,
+    syslog_seconds: float,
+) -> dict[str, object]:
+    script = ROOT / "tools" / "test_divoomapp_routes.py"
+    if not script.exists():
+        raise FileNotFoundError(f"route script not found: {script}")
+
+    command = [
+        sys.executable,
+        str(script),
+        route,
+        "--device",
+        device,
+        "--udid",
+        udid,
+        "--bundle-id",
+        bundle_id,
+        "--scheme",
+        scheme,
+        "--results-dir",
+        str(results_dir),
+        "--syslog-seconds",
+        str(syslog_seconds),
+    ]
+    command.append("--activate" if activate else "--no-activate")
+    command.append("--terminate-existing" if terminate_existing else "--no-terminate-existing")
+    if capture_syslog:
+        command.append("--capture-syslog")
+
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+
+    route_stem = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in route)
+    launch_json = results_dir / f"{route_stem}-launch.json"
+    syslog_path = results_dir / f"{route_stem}-syslog.txt"
+
+    result: dict[str, object] = {
+        "route": route,
+        "display": {"type": "RGB", "pixels": "16x16"},
+        "bundleId": bundle_id,
+        "device": device,
+        "udid": udid,
+        "scheme": scheme,
+        "activate": activate,
+        "terminateExisting": terminate_existing,
+        "captureSyslog": capture_syslog,
+        "syslogSeconds": syslog_seconds,
+        "exitCode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+        "launchJson": str(launch_json),
+    }
+    if syslog_path.exists():
+        result["syslogPath"] = str(syslog_path)
+    if launch_json.exists():
+        try:
+            launch_data = json.loads(launch_json.read_text())
+        except json.JSONDecodeError:
+            pass
+        else:
+            result["launchResult"] = launch_data
+    return result
+
+
+def build_shortcuts_url(
+    *,
+    action: str,
+    name: str | None = None,
+    text: str | None = None,
+    use_clipboard: bool = False,
+) -> str:
+    from urllib.parse import urlencode
+
+    if action == "open":
+        return DEFAULT_SHORTCUTS_SCHEME
+    if action == "create":
+        return f"{DEFAULT_SHORTCUTS_SCHEME}create-shortcut"
+    if action == "open-shortcut":
+        if not name:
+            raise ValueError("shortcut name is required for open-shortcut")
+        return f"{DEFAULT_SHORTCUTS_SCHEME}open-shortcut?{urlencode({'name': name})}"
+    if action == "run":
+        if not name:
+            raise ValueError("shortcut name is required for run")
+        query: dict[str, str] = {"name": name}
+        if use_clipboard:
+            query["input"] = "clipboard"
+        elif text is not None:
+            query["input"] = "text"
+            query["text"] = text
+        return f"{DEFAULT_SHORTCUTS_SCHEME}run-shortcut?{urlencode(query)}"
+    raise ValueError(f"unsupported shortcuts action: {action}")
+
+
+def run_ios_payload_url(
+    *,
+    bundle_id: str,
+    payload_url: str,
+    device: str,
+    results_dir: Path,
+    result_name: str,
+    activate: bool,
+    terminate_existing: bool,
+) -> dict[str, object]:
+    results_dir.mkdir(parents=True, exist_ok=True)
+    launch_json = results_dir / f"{result_name}.json"
+    command = [
+        "xcrun",
+        "devicectl",
+        "device",
+        "process",
+        "launch",
+        "--device",
+        device,
+        "--payload-url",
+        payload_url,
+        "--activate" if activate else "--no-activate",
+    ]
+    if terminate_existing:
+        command.append("--terminate-existing")
+    command.extend(["--json-output", str(launch_json), bundle_id])
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+
+    result: dict[str, object] = {
+        "display": {"type": "RGB", "pixels": "16x16"},
+        "bundleId": bundle_id,
+        "device": device,
+        "payloadUrl": payload_url,
+        "activate": activate,
+        "terminateExisting": terminate_existing,
+        "exitCode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+        "launchJson": str(launch_json),
+    }
+    if launch_json.exists():
+        try:
+            launch_data = json.loads(launch_json.read_text())
+        except json.JSONDecodeError:
+            pass
+        else:
+            result["launchResult"] = launch_data
+            error_info = launch_data.get("error")
+            if error_info:
+                result["launchError"] = {
+                    "domain": error_info.get("domain"),
+                    "code": error_info.get("code"),
+                    "description": (
+                        error_info.get("userInfo", {})
+                        .get("NSLocalizedDescription", {})
+                        .get("string")
+                    ),
+                    "failureReason": (
+                        error_info.get("userInfo", {})
+                        .get("NSUnderlyingError", {})
+                        .get("error", {})
+                        .get("userInfo", {})
+                        .get("NSLocalizedFailureReason", {})
+                        .get("string")
+                    ),
+                }
+    return result
+
+
+def cmd_ports(_args: argparse.Namespace) -> int:
+    print(json.dumps({"ports": discover_ports()}, indent=2))
+    return 0
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    endpoint = args.endpoint
+    if endpoint == "display":
+        port = choose_display_port(args.port)
+    elif endpoint == "audio":
+        port = choose_audio_port(args.port)
+    else:
+        port = choose_any_port(args.port)
+    with DivoomClient(port=port, baudrate=args.baudrate, timeout=args.timeout, endpoint=endpoint if endpoint != "any" else "any") as client:
+        payload = bytes.fromhex(args.payload) if args.payload.strip() else b""
+        response = client.send(int(args.command, 16), payload, expect_response=args.expect_response)
+        result = {"port": port, "command": args.command, "payload": payload.hex()}
+        if response:
+            result["response"] = {
+                "originalCommand": f"0x{response.original_command:02x}",
+                "ack": response.ack,
+                "dataHex": response.data.hex(),
+            }
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_volume_get(args: argparse.Namespace) -> int:
+    with DivoomClient(port=args.port, endpoint="audio") as client:
+        print(json.dumps({"port": client.port, "volume": client.get_volume()}, indent=2))
+    return 0
+
+
+def cmd_volume_set(args: argparse.Namespace) -> int:
+    with DivoomClient(port=args.port, endpoint="audio") as client:
+        client.set_volume(args.value)
+        print(json.dumps({"port": client.port, "volumeSet": args.value}, indent=2))
+    return 0
+
+
+def cmd_brightness(args: argparse.Namespace) -> int:
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        client.set_brightness(args.value)
+        print(json.dumps({"port": client.port, "brightnessSet": args.value}, indent=2))
+    return 0
+
+
+def cmd_light_mode(args: argparse.Namespace) -> int:
+    red, green, blue = parse_color_triplet(args.color)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        payload = client.set_light_mode(
+            red=red,
+            green=green,
+            blue=blue,
+            brightness=args.brightness,
+            light_mode=args.light_mode,
+            on=args.on,
+            app_sequence=args.app_sequence,
+        )
+        print(
+            json.dumps(
+                {
+                    "port": client.port,
+                    "display": {"type": "RGB", "pixels": "16x16"},
+                    "color": f"#{red:02X}{green:02X}{blue:02X}",
+                    "brightness": args.brightness,
+                    "lightMode": args.light_mode,
+                    "on": args.on,
+                    "appSequence": args.app_sequence,
+                    "payload": payload.hex(),
+                },
+                indent=2,
+            )
+        )
+    return 0
+
+
+def cmd_send_file(args: argparse.Namespace) -> int:
+    path = Path(args.path).expanduser().resolve()
+    payload = serialize_path(path)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, "path": str(path)})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_send_divoom16(args: argparse.Namespace) -> int:
+    path = Path(args.path).expanduser().resolve()
+    payload = path.read_bytes()
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, "path": str(path), "format": "divoom16"})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_send_status(args: argparse.Namespace) -> int:
+    output, info = render_status(args.provider)
+    payload = serialize_path(output)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, **info})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_send_art(args: argparse.Namespace) -> int:
+    output, info = render_art(args.style, args.seed)
+    payload = serialize_path(output)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, **info})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_send_text(args: argparse.Namespace) -> int:
+    output = Path(tempfile.gettempdir()) / "divoom-text.png"
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from PIL import Image, ImageDraw, ImageFont;"
+                "img=Image.new('RGB',(16,16),(0,0,0));"
+                "draw=ImageDraw.Draw(img);"
+                "font=ImageFont.load_default();"
+                f"text={args.text!r};"
+                "bbox=draw.multiline_textbbox((0,0), text, font=font, spacing=0);"
+                "w=bbox[2]-bbox[0]; h=bbox[3]-bbox[1];"
+                "x=(16-w)//2; y=(16-h)//2;"
+                "draw.multiline_text((x,y), text, font=font, fill=(255,220,150), spacing=0, align='center');"
+                f"img.save({str(output)!r})"
+            ),
+        ]
+    )
+    payload = serialize_path(output)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, "text": args.text, "output": str(output)})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_show_design(args: argparse.Namespace) -> int:
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        client.show_design(args.slot)
+        print(json.dumps({"port": client.port, "designSlot": args.slot}, indent=2))
+    return 0
+
+
+def cmd_play_sound(args: argparse.Namespace) -> int:
+    result = play_sound_via_divoom(args.profile)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_ios_routes(_args: argparse.Namespace) -> int:
+    print(
+        json.dumps(
+            {
+                "bundleId": DEFAULT_IOS_BUNDLE_ID,
+                "display": {"type": "RGB", "pixels": "16x16"},
+                "routes": load_iphone_activity_types(),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_ios_route(args: argparse.Namespace) -> int:
+    result = run_iphone_route(
+        route=args.route,
+        device=args.device,
+        udid=args.udid,
+        bundle_id=args.bundle_id,
+        scheme=args.scheme,
+        results_dir=args.results_dir,
+        activate=args.activate,
+        terminate_existing=args.terminate_existing,
+        capture_syslog=args.capture_syslog,
+        syslog_seconds=args.syslog_seconds,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_ios_shortcut(args: argparse.Namespace) -> int:
+    payload_url = build_shortcuts_url(
+        action=args.action,
+        name=args.name,
+        text=args.text,
+        use_clipboard=args.input == "clipboard",
+    )
+    suffix_parts = [args.action]
+    if args.name:
+        suffix_parts.append("".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in args.name))
+    if args.input == "clipboard":
+        suffix_parts.append("clipboard")
+    elif args.text is not None:
+        suffix_parts.append("text")
+    result = run_ios_payload_url(
+        bundle_id=args.bundle_id,
+        payload_url=payload_url,
+        device=args.device,
+        results_dir=args.results_dir,
+        result_name="-".join(suffix_parts),
+        activate=args.activate,
+        terminate_existing=args.terminate_existing,
+    )
+    result["shortcutAction"] = args.action
+    if args.name:
+        result["shortcutName"] = args.name
+    if args.text is not None:
+        result["text"] = args.text
+    if args.input != "none":
+        result["input"] = args.input
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def open_native_app() -> dict[str, object]:
+    if not DEFAULT_NATIVE_APP_BUNDLE.exists():
+        raise FileNotFoundError(f"native app bundle not found: {DEFAULT_NATIVE_APP_BUNDLE}")
+    subprocess.run(["open", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+    return {
+        "bundle": str(DEFAULT_NATIVE_APP_BUNDLE),
+        "display": {"type": "RGB", "pixels": "16x16"},
+        "status": "opened",
+    }
+
+
+def run_native_headless(mode: str, parameter: str | None = None) -> dict[str, object]:
+    if not DEFAULT_NATIVE_APP_BUNDLE.exists():
+        raise FileNotFoundError(f"native app bundle not found: {DEFAULT_NATIVE_APP_BUNDLE}")
+    DEFAULT_NATIVE_APP_LOG.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULT_NATIVE_APP_LOG.touch(exist_ok=True)
+    start_offset = DEFAULT_NATIVE_APP_LOG.stat().st_size
+    command = ["open", "-W", "-n", str(DEFAULT_NATIVE_APP_BUNDLE), "--args", mode]
+    if parameter is not None:
+        command.append(parameter)
+    result = subprocess.run(command, text=True, capture_output=True)
+    time.sleep(0.2)
+    with DEFAULT_NATIVE_APP_LOG.open("rb") as handle:
+        handle.seek(start_offset)
+        log_tail = handle.read().decode("utf-8", errors="replace").strip()
+    return {
+        "bundle": str(DEFAULT_NATIVE_APP_BUNDLE),
+        "binary": str(DEFAULT_NATIVE_APP_BINARY),
+        "log": str(DEFAULT_NATIVE_APP_LOG),
+        "display": {"type": "RGB", "pixels": "16x16"},
+        "mode": mode,
+        "parameter": parameter,
+        "returncode": result.returncode,
+        "stdout": log_tail,
+        "stderr": result.stderr.strip(),
+        "success": result.returncode == 0,
+    }
+
+
+def cmd_native_open_app(_args: argparse.Namespace) -> int:
+    print(json.dumps(open_native_app(), indent=2))
+    return 0
+
+
+def cmd_native_headless(args: argparse.Namespace) -> int:
+    mode_map = {
+        "diagnostics": "--headless-diagnostics",
+        "probe": "--headless-native-probe",
+        "scene-red": "--headless-native-solid-red",
+        "purity-red": "--headless-native-purity-red",
+        "sample": "--headless-native-sample",
+    }
+    parameter = None
+    if args.action == "light-mode":
+        mode = "--headless-native-light-mode"
+        parameter = str(args.value)
+    else:
+        mode = mode_map[args.action]
+    print(json.dumps(run_native_headless(mode=mode, parameter=parameter), indent=2))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="macOS Divoom controller using the paired serial port")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    ports = sub.add_parser("ports", help="List detected Ditoo serial ports")
+    ports.set_defaults(func=cmd_ports)
+
+    probe = sub.add_parser("probe", help="Send a raw command packet")
+    probe.add_argument("--port")
+    probe.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
+    probe.add_argument("--timeout", type=float, default=2.0)
+    probe.add_argument("--endpoint", choices=["any", "display", "audio"], default="any")
+    probe.add_argument("--command", required=True, help="Hex command byte, for example 09 or bd")
+    probe.add_argument("--payload", default="", help="Optional payload hex bytes")
+    probe.add_argument("--expect-response", action="store_true")
+    probe.set_defaults(func=cmd_probe)
+
+    volume = sub.add_parser("volume-get", help="Query device volume")
+    volume.add_argument("--port")
+    volume.set_defaults(func=cmd_volume_get)
+
+    volume_set = sub.add_parser("volume-set", help="Set device volume")
+    volume_set.add_argument("value", type=int)
+    volume_set.add_argument("--port")
+    volume_set.set_defaults(func=cmd_volume_set)
+
+    brightness = sub.add_parser("brightness", help="Set device brightness")
+    brightness.add_argument("value", type=int)
+    brightness.add_argument("--port")
+    brightness.set_defaults(func=cmd_brightness)
+
+    light_mode = sub.add_parser("light-mode", help="Set a persistent light-mode color on the 16x16 RGB display")
+    light_mode.add_argument("--color", default="#ff0000", help="Named color or hex triplet, for example red or #ff0000")
+    light_mode.add_argument("--brightness", type=int, default=100)
+    light_mode.add_argument("--light-mode", type=int, default=0, help="Vendor app light_mode field")
+    light_mode.add_argument("--on", dest="on", action="store_true", default=True)
+    light_mode.add_argument("--off", dest="on", action="store_false")
+    light_mode.add_argument("--app-sequence", action="store_true", help="Prepend the vendor app's 0xbd/0x46 light-mode query sequence")
+    light_mode.add_argument("--port")
+    light_mode.set_defaults(func=cmd_light_mode)
+
+    send_file = sub.add_parser("send-file", help="Upload an image or GIF")
+    send_file.add_argument("path")
+    send_file.add_argument("--port")
+    send_file.add_argument("--terminate", action="store_true")
+    send_file.set_defaults(func=cmd_send_file)
+
+    send_divoom16 = sub.add_parser("send-divoom16", help="Upload a prebuilt Divoom 16x16 animation file")
+    send_divoom16.add_argument("path")
+    send_divoom16.add_argument("--port")
+    send_divoom16.add_argument("--terminate", action="store_true")
+    send_divoom16.set_defaults(func=cmd_send_divoom16)
+
+    send_status = sub.add_parser("send-status", help="Render live CodexBar status and upload it")
+    send_status.add_argument("--provider", choices=["codex", "claude"], required=True)
+    send_status.add_argument("--port")
+    send_status.add_argument("--terminate", action="store_true")
+    send_status.set_defaults(func=cmd_send_status)
+
+    send_art = sub.add_parser("send-art", help="Render a seeded generative animation and upload it")
+    send_art.add_argument("--style", choices=["orbit", "plasma", "ripple"], default="orbit")
+    send_art.add_argument("--seed", type=int, default=17)
+    send_art.add_argument("--port")
+    send_art.add_argument("--terminate", action="store_true")
+    send_art.set_defaults(func=cmd_send_art)
+
+    send_text = sub.add_parser("send-text", help="Render simple centered text and upload it")
+    send_text.add_argument("text")
+    send_text.add_argument("--port")
+    send_text.add_argument("--terminate", action="store_true")
+    send_text.set_defaults(func=cmd_send_text)
+
+    show_design = sub.add_parser("show-design", help="Switch the device into the custom design view")
+    show_design.add_argument("--slot", type=int, default=0)
+    show_design.add_argument("--port")
+    show_design.set_defaults(func=cmd_show_design)
+
+    play_sound = sub.add_parser("play-sound", help="Play an attention or completion sound via DitooPro-Audio")
+    play_sound.add_argument("--profile", choices=["attention", "complete"], default="attention")
+    play_sound.set_defaults(func=cmd_play_sound)
+
+    native_open_app = sub.add_parser(
+        "native-open-app",
+        help="Open the native macOS Divoom menu bar app for the Ditoo Pro 16x16 RGB display",
+    )
+    native_open_app.set_defaults(func=cmd_native_open_app)
+
+    native_headless = sub.add_parser(
+        "native-headless",
+        help="Run a native macOS BLE headless action for the Ditoo Pro 16x16 RGB display",
+    )
+    native_headless.add_argument(
+        "action",
+        choices=["diagnostics", "probe", "scene-red", "purity-red", "light-mode", "sample"],
+    )
+    native_headless.add_argument(
+        "--value",
+        type=int,
+        default=0,
+        help="Mode byte for action=light-mode",
+    )
+    native_headless.set_defaults(func=cmd_native_headless)
+
+    ios_routes = sub.add_parser(
+        "ios-routes",
+        help="List the official Divoom iPhone app routes for the Ditoo Pro 16x16 RGB display",
+    )
+    ios_routes.set_defaults(func=cmd_ios_routes)
+
+    ios_route = sub.add_parser(
+        "ios-route",
+        help="Trigger an official Divoom iPhone app route via devicectl for the Ditoo Pro 16x16 RGB display",
+    )
+    ios_route.add_argument("route", help="NSUserActivity route name, for example TimeChannelIntent")
+    ios_route.add_argument("--device", default=DEFAULT_IOS_DEVICE_IDENTIFIER)
+    ios_route.add_argument("--udid", default=DEFAULT_IOS_UDID)
+    ios_route.add_argument("--bundle-id", default=DEFAULT_IOS_BUNDLE_ID)
+    ios_route.add_argument("--scheme", default=DEFAULT_IOS_SCHEME)
+    ios_route.add_argument("--results-dir", type=Path, default=DEFAULT_ROUTE_RESULTS_DIR)
+    ios_route.add_argument("--activate", action=argparse.BooleanOptionalAction, default=True)
+    ios_route.add_argument("--terminate-existing", action=argparse.BooleanOptionalAction, default=False)
+    ios_route.add_argument("--capture-syslog", action="store_true")
+    ios_route.add_argument("--syslog-seconds", type=float, default=12.0)
+    ios_route.set_defaults(func=cmd_ios_route)
+
+    ios_shortcut = sub.add_parser(
+        "ios-shortcut",
+        help="Launch the iPhone Shortcuts app on-device for the Ditoo Pro 16x16 RGB display bridge",
+    )
+    ios_shortcut.add_argument(
+        "action",
+        choices=["open", "create", "open-shortcut", "run"],
+        help="Shortcuts URL action to launch on the connected iPhone",
+    )
+    ios_shortcut.add_argument("--name", help="Shortcut name for open-shortcut or run")
+    ios_shortcut.add_argument(
+        "--input",
+        choices=["none", "text", "clipboard"],
+        default="none",
+        help="Optional shortcut input mode when running a shortcut",
+    )
+    ios_shortcut.add_argument("--text", help="Text payload for input=text")
+    ios_shortcut.add_argument("--device", default=DEFAULT_IOS_DEVICE_IDENTIFIER)
+    ios_shortcut.add_argument("--bundle-id", default=DEFAULT_SHORTCUTS_BUNDLE_ID)
+    ios_shortcut.add_argument("--results-dir", type=Path, default=DEFAULT_SHORTCUT_RESULTS_DIR)
+    ios_shortcut.add_argument("--activate", action=argparse.BooleanOptionalAction, default=True)
+    ios_shortcut.add_argument("--terminate-existing", action=argparse.BooleanOptionalAction, default=True)
+    ios_shortcut.set_defaults(func=cmd_ios_shortcut)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        return args.func(args)
+    except Exception as error:
+        print(
+            json.dumps(
+                {
+                    "error": type(error).__name__,
+                    "message": str(error),
+                },
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
