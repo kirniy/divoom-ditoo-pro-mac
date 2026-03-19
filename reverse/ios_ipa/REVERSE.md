@@ -534,6 +534,73 @@ Where:
 - **0x44 frame streaming (proven)**: Mac sends each frame individually with timing controlled by `DispatchQueue`. Visually confirmed on the device display.
 - **0x8B bulk upload (ACKed but unverified playback)**: Device acknowledges the upload with cmd 0x04 ACK. On-device autonomous playback has not been visually confirmed yet. The display may require an additional scene-switch or playback command not yet identified.
 
+## Cloud / Store Endpoints Confirmed From IPA
+
+The iOS app exposes these cloud and channel/store paths directly:
+
+- `Channel/StoreClockGetClassify`
+- `Channel/StoreClockGetList`
+- `Channel/StoreTop20`
+- `Channel/StoreNew20`
+- `Channel/ItemSearch`
+- `GalleryLikeV2`
+- `Playlist/GetMyList`
+- `Playlist/GetSomeOneList`
+- `Discover/GetAlbumListV3`
+- `Discover/GetAlbumImageListV3`
+
+### Confirmed request / response keys
+
+`Channel/StoreClockGetClassify`
+- response list: `ClassifyList`
+- per-item key: `ClassifyId`
+
+`Channel/StoreClockGetList`
+- request keys confirmed in disassembly:
+  - `CountryISOCode`
+  - `Language`
+  - `Flag`
+  - `ClassifyId`
+  - `StartNum`
+  - `EndNum`
+- response list: `ClockList`
+
+`Channel/ItemSearch`
+- request keys confirmed in disassembly / strings:
+  - `Language`
+  - `ClockId`
+  - `ItemId`
+  - `Key`
+  - `StartNum`
+  - `EndNum`
+  - `ItemFlag`
+- response list: `SearchList`
+
+`GalleryLikeV2`
+- request keys:
+  - `GalleryId`
+  - `IsLike`
+  - `Classify`
+  - `Type`
+
+`Playlist/GetMyList`
+- request keys:
+  - `StartNum`
+  - `EndNum`
+  - optional `GalleryId`
+- response list: `PlayList`
+
+`Playlist/GetSomeOneList`
+- request keys:
+  - `StartNum`
+  - `EndNum`
+  - `TargetUserId`
+- response list: `PlayList`
+
+### Remaining store unknown
+
+The `Flag` value used by `StoreClockGetList` is still the main unresolved store/channel parameter. The app clearly passes it through the request shape, but the exact section-to-flag mapping still needs more RE before the Mac app can claim full iOS channel parity without guessing.
+
 ## Open Questions
 
 These pieces still need more work:

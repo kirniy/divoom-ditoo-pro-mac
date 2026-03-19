@@ -4,7 +4,9 @@ import CryptoKit
 import Darwin
 import Foundation
 import ImageIO
+import LocalAuthentication
 import QuartzCore
+import Security
 import ServiceManagement
 
 enum AppLog {
@@ -40,6 +42,216 @@ private let cloudLibraryEnabledDefaultsKey = "dev.kirniy.divoom.cloud-library-en
 private let cloudSyncOnLaunchDefaultsKey = "dev.kirniy.divoom.cloud-sync-on-launch"
 private let cloudAutoSyncEnabledDefaultsKey = "dev.kirniy.divoom.cloud-auto-sync-enabled"
 private let cloudManifestURL = divoomRepoURL(".cache/divoom-cloud/manifest.json")
+private let divoomCloudKeychainService = "dev.kirniy.divoom.ditoo-pro-mac.cloud"
+private let divoomCloudEmailAccount = "email"
+private let divoomCloudPasswordAccount = "password"
+private let divoomCloudInternetPasswordServers = [
+    "divoom-gz.com",
+    "app.divoom-gz.com",
+    "appin.divoom-gz.com",
+    "appusa.divoom-gz.com",
+    "m.divoom-gz.com",
+]
+
+private enum DivoomCloudKeychain {
+    private static func baseQuery(account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: divoomCloudKeychainService,
+            kSecAttrAccount as String: account,
+        ]
+    }
+
+    static func read(account: String) -> String? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8),
+              !value.isEmpty
+        else {
+            return nil
+        }
+        return value
+    }
+
+    static func write(_ value: String, account: String) -> Bool {
+        let data = Data(value.utf8)
+        let query = baseQuery(account: account)
+        let attributes = [kSecValueData as String: data]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+        if updateStatus != errSecItemNotFound {
+            return false
+        }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        return addStatus == errSecSuccess
+    }
+
+    static func delete(account: String) {
+        let query = baseQuery(account: account)
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
+private struct DivoomCloudCredentials {
+    enum Source: Equatable {
+        case appKeychain
+        case syncedInternetPassword(String)
+    }
+
+    let email: String
+    let password: String
+    let source: Source
+}
+
+private struct DivoomCloudCredentialHint {
+    let email: String
+    let server: String
+}
+
+private enum DivoomCloudCredentialResolver {
+    private static var passiveSyncedCredentialsCache: DivoomCloudCredentials?
+    private static var passiveSyncedCredentialsResolved = false
+    private static var passiveSyncedHintCache: DivoomCloudCredentialHint?
+    private static var passiveSyncedHintResolved = false
+
+    static func appKeychainCredentials() -> DivoomCloudCredentials? {
+        guard let email = DivoomCloudKeychain.read(account: divoomCloudEmailAccount)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !email.isEmpty,
+              let password = DivoomCloudKeychain.read(account: divoomCloudPasswordAccount),
+              !password.isEmpty
+        else {
+            return nil
+        }
+        return DivoomCloudCredentials(email: email, password: password, source: .appKeychain)
+    }
+
+    static func resetPassiveCaches() {
+        passiveSyncedCredentialsCache = nil
+        passiveSyncedCredentialsResolved = false
+        passiveSyncedHintCache = nil
+        passiveSyncedHintResolved = false
+    }
+
+    static func syncedInternetPasswordHint() -> DivoomCloudCredentialHint? {
+        if passiveSyncedHintResolved {
+            return passiveSyncedHintCache
+        }
+
+        for server in divoomCloudInternetPasswordServers {
+            if let hint = readInternetPasswordHint(server: server) {
+                passiveSyncedHintCache = hint
+                passiveSyncedHintResolved = true
+                return hint
+            }
+        }
+
+        passiveSyncedHintResolved = true
+        passiveSyncedHintCache = nil
+        return nil
+    }
+
+    static func syncedInternetPasswordCredentials(
+        allowInteraction: Bool = false,
+        forceRefresh: Bool = false
+    ) -> DivoomCloudCredentials? {
+        if !allowInteraction && !forceRefresh && passiveSyncedCredentialsResolved {
+            return passiveSyncedCredentialsCache
+        }
+
+        for server in divoomCloudInternetPasswordServers {
+            if let credentials = readInternetPassword(server: server, allowInteraction: allowInteraction) {
+                if !allowInteraction {
+                    passiveSyncedCredentialsCache = credentials
+                    passiveSyncedCredentialsResolved = true
+                }
+                return credentials
+            }
+        }
+
+        if !allowInteraction {
+            passiveSyncedCredentialsResolved = true
+            passiveSyncedCredentialsCache = nil
+        }
+        return nil
+    }
+
+    static func resolvedCredentials() -> DivoomCloudCredentials? {
+        appKeychainCredentials() ?? syncedInternetPasswordCredentials()
+    }
+
+    private static func readInternetPassword(server: String, allowInteraction: Bool) -> DivoomCloudCredentials? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword,
+            kSecAttrServer as String: server,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        if !allowInteraction {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let attributes = item as? [String: Any],
+              let account = attributes[kSecAttrAccount as String] as? String,
+              !account.isEmpty,
+              let data = attributes[kSecValueData as String] as? Data,
+              let password = String(data: data, encoding: .utf8),
+              !password.isEmpty
+        else {
+            return nil
+        }
+
+        return DivoomCloudCredentials(
+            email: account,
+            password: password,
+            source: .syncedInternetPassword(server)
+        )
+    }
+
+    private static func readInternetPasswordHint(server: String) -> DivoomCloudCredentialHint? {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword,
+            kSecAttrServer as String: server,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context,
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let attributes = item as? [String: Any],
+              let account = attributes[kSecAttrAccount as String] as? String,
+              !account.isEmpty
+        else {
+            return nil
+        }
+
+        return DivoomCloudCredentialHint(email: account, server: server)
+    }
+}
 
 private enum FavoritesPlaybackOption: Int, CaseIterable {
     case once = 1
@@ -151,7 +363,9 @@ private struct SavedColorCombo: Codable, Equatable {
 private struct DivoomCloudManifestEntry: Decodable {
     let source: String
     let scope: String
+    let sort: String
     let category: String
+    let cloud_classify: Int
     let collection: String
     let gallery_id: Int
     let file_id: String
@@ -162,7 +376,36 @@ private struct DivoomCloudManifestEntry: Decodable {
     let comments: Int
     let country: String
     let user_name: String
+    let user_id: Int?
+    let clock_id: Int?
+    let item_id: Int?
+    let date: String
+    let file_type: Int
+    let is_liked: Bool
     let relative_path: String
+}
+
+private struct DivoomCloudStoreClassifyEntry: Decodable {
+    let classify_id: Int
+    let classify_name: String
+    let name: String
+    let title: String
+    let image_id: String
+    let sort_order: Int
+}
+
+private struct DivoomCloudPlaylistEntry: Decodable {
+    let owner: String
+    let target_user_id: Int?
+    let play_id: Int
+    let play_name: String
+    let name: String
+    let gallery_id: Int
+    let cover_file_id: String
+    let image_file_id: String
+    let likes: Int
+    let views: Int
+    let file_count: Int
 }
 
 private struct DivoomCloudManifest: Decodable {
@@ -172,6 +415,14 @@ private struct DivoomCloudManifest: Decodable {
     let itemCount: Int
     let categories: [String]
     let includesAlbums: Bool
+    let sorts: [String]?
+    let searchQueries: [String]?
+    let storeEndpoint: String?
+    let storeFlag: Int?
+    let storeClassifyId: Int?
+    let storeClassify: [DivoomCloudStoreClassifyEntry]?
+    let myPlaylists: [DivoomCloudPlaylistEntry]?
+    let someonePlaylists: [DivoomCloudPlaylistEntry]?
     let items: [DivoomCloudManifestEntry]
 }
 
@@ -1661,8 +1912,10 @@ private struct AnimationLibraryItem: Hashable {
     let id: String
     let source: String
     let scope: String
+    let sort: String
     let title: String
     let category: String
+    let cloudClassify: Int
     let collection: String
     let relativePath: String
     let fileURL: URL
@@ -1670,6 +1923,13 @@ private struct AnimationLibraryItem: Hashable {
     let duplicateCount: Int
     let likes: Int
     let views: Int
+    let galleryID: Int
+    let fileType: Int
+    let clockID: Int
+    let itemID: Int
+    let userID: Int
+    let date: String
+    let isLiked: Bool
 }
 
 private enum AnimationLibraryCatalog {
@@ -1719,6 +1979,7 @@ private enum AnimationLibraryCatalog {
                 let id = "\(root.source):\(relativeWithinRoot)"
                 let cloudMetadata = cloudManifestLookup[relativePath]
                 let scope = cloudMetadata?.scope ?? (root.source == "divoom-cloud" ? "cloud" : "local")
+                let sort = cloudMetadata?.sort ?? (root.source == "divoom-cloud" ? "cloud" : "local")
                 let likes = cloudMetadata?.likes ?? 0
                 let views = cloudMetadata?.views ?? 0
                 let searchText = [
@@ -1727,9 +1988,11 @@ private enum AnimationLibraryCatalog {
                     category,
                     collection,
                     scope,
+                    sort,
                     relativePath,
                     cloudMetadata?.user_name ?? "",
                     cloudMetadata?.country ?? "",
+                    cloudMetadata?.date ?? "",
                 ].joined(separator: " ").lowercased()
                 guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
                     continue
@@ -1740,15 +2003,24 @@ private enum AnimationLibraryCatalog {
                     id: id,
                     source: root.source,
                     scope: scope,
+                    sort: sort,
                     title: title,
                     category: category,
+                    cloudClassify: cloudMetadata?.cloud_classify ?? 0,
                     collection: collection,
                     relativePath: relativePath,
                     fileURL: fileURL,
                     searchText: searchText,
                     duplicateCount: 1,
                     likes: likes,
-                    views: views
+                    views: views,
+                    galleryID: cloudMetadata?.gallery_id ?? 0,
+                    fileType: cloudMetadata?.file_type ?? 0,
+                    clockID: cloudMetadata?.clock_id ?? 0,
+                    itemID: cloudMetadata?.item_id ?? 0,
+                    userID: cloudMetadata?.user_id ?? 0,
+                    date: cloudMetadata?.date ?? "",
+                    isLiked: cloudMetadata?.is_liked ?? false
                 )
                 groupedItems[digest, default: []].append(item)
             }
@@ -1762,15 +2034,24 @@ private enum AnimationLibraryCatalog {
                 id: canonical.id,
                 source: canonical.source,
                 scope: canonical.scope,
+                sort: canonical.sort,
                 title: canonical.title,
                 category: canonical.category,
+                cloudClassify: canonical.cloudClassify,
                 collection: canonical.collection,
                 relativePath: canonical.relativePath,
                 fileURL: canonical.fileURL,
                 searchText: canonical.searchText,
                 duplicateCount: group.count,
                 likes: canonical.likes,
-                views: canonical.views
+                views: canonical.views,
+                galleryID: canonical.galleryID,
+                fileType: canonical.fileType,
+                clockID: canonical.clockID,
+                itemID: canonical.itemID,
+                userID: canonical.userID,
+                date: canonical.date,
+                isLiked: canonical.isLiked
             )
         }
 
@@ -1782,8 +2063,16 @@ private enum AnimationLibraryCatalog {
         }
     }
 
-    static func loadFavorites() -> Set<String> {
-        Set(UserDefaults.standard.stringArray(forKey: favoritesDefaultsKey) ?? [])
+    static func loadFavorites(resolvingAgainst items: [AnimationLibraryItem] = []) -> Set<String> {
+        let stored = Set(UserDefaults.standard.stringArray(forKey: favoritesDefaultsKey) ?? [])
+        guard !items.isEmpty else {
+            return stored
+        }
+        let migrated = migratedStoredFavorites(from: stored, availableItems: items)
+        if migrated != stored {
+            saveFavorites(migrated)
+        }
+        return resolvedFavorites(from: migrated, availableItems: items)
     }
 
     static func saveFavorites(_ favorites: Set<String>) {
@@ -1836,16 +2125,75 @@ private enum AnimationLibraryCatalog {
         return score
     }
 
-    private static func loadCloudManifestLookup() -> [String: DivoomCloudManifestEntry] {
-        guard let data = try? Data(contentsOf: cloudManifestURL) else {
-            return [:]
+    private static func resolvedFavorites(
+        from storedFavorites: Set<String>,
+        availableItems: [AnimationLibraryItem]
+    ) -> Set<String> {
+        Set(storedFavorites.compactMap { resolveFavoriteID($0, availableItems: availableItems) })
+    }
+
+    private static func migratedStoredFavorites(
+        from storedFavorites: Set<String>,
+        availableItems: [AnimationLibraryItem]
+    ) -> Set<String> {
+        Set(storedFavorites.map { resolveFavoriteID($0, availableItems: availableItems) ?? $0 })
+    }
+
+    private static func resolveFavoriteID(
+        _ favoriteID: String,
+        availableItems: [AnimationLibraryItem]
+    ) -> String? {
+        let idLookup = Dictionary(uniqueKeysWithValues: availableItems.map { ($0.id, $0.id) })
+        if let exact = idLookup[favoriteID] {
+            return exact
         }
-        guard let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data) else {
+
+        let relativeLookup = Dictionary(uniqueKeysWithValues: availableItems.map { ($0.relativePath, $0.id) })
+        if let relativeMatch = relativeLookup[favoriteID] {
+            return relativeMatch
+        }
+
+        if let curatedMatch = relativeLookup["curated/\(favoriteID)"] {
+            return curatedMatch
+        }
+
+        if let cloudMatch = relativeLookup["divoom-cloud/\(favoriteID)"] {
+            return cloudMatch
+        }
+
+        if let separator = favoriteID.firstIndex(of: ":") {
+            let pathLike = favoriteID[..<separator] + "/" + favoriteID[favoriteID.index(after: separator)...]
+            if let id = relativeLookup[String(pathLike)] {
+                return id
+            }
+        }
+
+        let lastPathComponent = URL(fileURLWithPath: favoriteID).lastPathComponent.lowercased()
+        let basenameMatches = availableItems.filter { $0.fileURL.lastPathComponent.lowercased() == lastPathComponent }
+        if basenameMatches.count == 1 {
+            return basenameMatches[0].id
+        }
+
+        return nil
+    }
+
+    private static func loadCloudManifestLookup() -> [String: DivoomCloudManifestEntry] {
+        guard let manifest = loadCloudManifest() else {
             return [:]
         }
         return Dictionary(uniqueKeysWithValues: manifest.items.map { entry in
             ("divoom-cloud/\(entry.relative_path)", entry)
         })
+    }
+
+    static func loadCloudManifest() -> DivoomCloudManifest? {
+        guard let data = try? Data(contentsOf: cloudManifestURL) else {
+            return nil
+        }
+        guard let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data) else {
+            return nil
+        }
+        return manifest
     }
 }
 
@@ -2245,6 +2593,10 @@ private enum AnimationLibraryDisplayMode: Int {
 private enum AnimationLibrarySortMode: Int, CaseIterable {
     case spotlight = 0
     case popularity
+    case newest
+    case likes
+    case views
+    case feed
     case title
     case category
     case collection
@@ -2257,6 +2609,14 @@ private enum AnimationLibrarySortMode: Int, CaseIterable {
             return "Spotlight"
         case .popularity:
             return "Popularity"
+        case .newest:
+            return "Newest"
+        case .likes:
+            return "Likes"
+        case .views:
+            return "Views"
+        case .feed:
+            return "Feed"
         case .title:
             return "Title"
         case .category:
@@ -2484,10 +2844,15 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
 private final class AnimationLibraryWindowController: NSWindowController, NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     private let onSend: (AnimationLibraryItem) -> Void
     private let onReveal: (AnimationLibraryItem) -> Void
+    private let onOpenCloudSettings: () -> Void
+    private let onSyncCloudNow: () -> Void
+    private let onSearchCloud: (String) -> Void
+    private let onToggleCloudLike: (AnimationLibraryItem, Bool, @escaping @MainActor (Bool, String) -> Void) -> Void
 
     private let headerIconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Animation Library")
     private let summaryLabel = NSTextField(labelWithString: "Native Swift library with direct Ditoo beam.")
+    private let cloudLoginButton = NSButton(title: "Cloud Login", target: nil, action: nil)
     private let assetChip = HeaderStatChipView(symbolName: "sparkles", text: "0 assets")
     private let categoryChip = HeaderStatChipView(symbolName: "square.grid.3x3.fill", text: "0 categories")
     private let sourceChip = HeaderStatChipView(symbolName: "shippingbox", text: "0 sources")
@@ -2495,12 +2860,15 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private let resultsLabel = NSTextField(labelWithString: "0 visible")
     private let searchField = NSSearchField()
     private let sourcePopUp = NSPopUpButton()
+    private let scopePopUp = NSPopUpButton()
     private let categoryPopUp = NSPopUpButton()
     private let collectionPopUp = NSPopUpButton()
     private let sortPopUp = NSPopUpButton()
     private let displayModeControl = NSSegmentedControl(labels: ["Grid", "List"], trackingMode: .selectOne, target: nil, action: nil)
     private let favoritesOnlyButton = NSButton(title: "Favorites", target: nil, action: nil)
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
+    private let syncCloudButton = NSButton(title: "Sync Cloud", target: nil, action: nil)
+    private let searchCloudButton = NSButton(title: "Cloud Search", target: nil, action: nil)
     private let flowLayout = NSCollectionViewFlowLayout()
     private let collectionView = NSCollectionView()
     private let collectionScrollView = NSScrollView()
@@ -2516,21 +2884,35 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private let sendButton = NSButton(title: "Beam to Ditoo", target: nil, action: nil)
     private let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
     private let favoriteButton = NSButton(title: "Favorite", target: nil, action: nil)
+    private let cloudLikeButton = NSButton(title: "Like in Cloud", target: nil, action: nil)
     private let backdropView = PixelShaderBackdropView()
 
     private var allItems: [AnimationLibraryItem] = []
     private var filteredItems: [AnimationLibraryItem] = []
-    private var favorites = AnimationLibraryCatalog.loadFavorites()
+    private var favorites: Set<String> = []
+    private var cloudManifest: DivoomCloudManifest?
     private var selectedSource = "all"
+    private var selectedScope = "all"
     private var selectedCategory = "all"
     private var selectedCollection = "all"
     private var selectedItemID: String?
     private var displayMode: AnimationLibraryDisplayMode = .grid
     private var sortMode: AnimationLibrarySortMode = .spotlight
 
-    init(onSend: @escaping (AnimationLibraryItem) -> Void, onReveal: @escaping (AnimationLibraryItem) -> Void) {
+    init(
+        onSend: @escaping (AnimationLibraryItem) -> Void,
+        onReveal: @escaping (AnimationLibraryItem) -> Void,
+        onOpenCloudSettings: @escaping () -> Void,
+        onSyncCloudNow: @escaping () -> Void,
+        onSearchCloud: @escaping (String) -> Void,
+        onToggleCloudLike: @escaping (AnimationLibraryItem, Bool, @escaping @MainActor (Bool, String) -> Void) -> Void
+    ) {
         self.onSend = onSend
         self.onReveal = onReveal
+        self.onOpenCloudSettings = onOpenCloudSettings
+        self.onSyncCloudNow = onSyncCloudNow
+        self.onSearchCloud = onSearchCloud
+        self.onToggleCloudLike = onToggleCloudLike
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 1160, height: 760),
@@ -2557,6 +2939,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 
     func showLibrary() {
+        updateCloudLoginButton()
         window?.center()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -2677,6 +3060,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         sourcePopUp.target = self
         sourcePopUp.action = #selector(sourceChanged)
 
+        scopePopUp.translatesAutoresizingMaskIntoConstraints = false
+        scopePopUp.target = self
+        scopePopUp.action = #selector(scopeChanged)
+
         categoryPopUp.translatesAutoresizingMaskIntoConstraints = false
         categoryPopUp.target = self
         categoryPopUp.action = #selector(categoryChanged)
@@ -2717,11 +3104,43 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         refreshButton.target = self
         refreshButton.action = #selector(refreshLibrary)
 
+        syncCloudButton.translatesAutoresizingMaskIntoConstraints = false
+        syncCloudButton.bezelStyle = .rounded
+        syncCloudButton.title = "Sync Cloud"
+        syncCloudButton.image = makeMenuSymbol("icloud.and.arrow.down", description: "Sync Cloud")
+        syncCloudButton.imagePosition = .imageLeading
+        syncCloudButton.target = self
+        syncCloudButton.action = #selector(syncCloudNow)
+
+        searchCloudButton.translatesAutoresizingMaskIntoConstraints = false
+        searchCloudButton.bezelStyle = .rounded
+        searchCloudButton.title = "Cloud Search"
+        searchCloudButton.image = makeMenuSymbol("magnifyingglass.circle", description: "Cloud Search")
+        searchCloudButton.imagePosition = .imageLeading
+        searchCloudButton.target = self
+        searchCloudButton.action = #selector(searchCloudNow)
+
+        cloudLoginButton.translatesAutoresizingMaskIntoConstraints = false
+        cloudLoginButton.bezelStyle = .rounded
+        cloudLoginButton.imagePosition = .imageLeading
+        cloudLoginButton.target = self
+        cloudLoginButton.action = #selector(openCloudSettings)
+        cloudLoginButton.setContentHuggingPriority(.required, for: .horizontal)
+
         let titleRow = NSStackView(views: [headerIconView, titleLabel])
         titleRow.orientation = .horizontal
         titleRow.alignment = .centerY
         titleRow.spacing = 10
         titleRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerSpacer = NSView()
+        headerSpacer.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerTopRow = NSStackView(views: [titleRow, headerSpacer, cloudLoginButton])
+        headerTopRow.orientation = .horizontal
+        headerTopRow.alignment = .centerY
+        headerTopRow.spacing = 12
+        headerTopRow.translatesAutoresizingMaskIntoConstraints = false
 
         let chipRow = NSStackView(views: [assetChip, categoryChip, sourceChip, favoriteChip])
         chipRow.orientation = .horizontal
@@ -2729,7 +3148,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         chipRow.spacing = 8
         chipRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerStack = NSStackView(views: [titleRow, summaryLabel, chipRow])
+        let headerStack = NSStackView(views: [headerTopRow, summaryLabel, chipRow])
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
         headerStack.spacing = 8
@@ -2746,13 +3165,19 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         searchRow.spacing = 12
         searchRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let filterRow = NSStackView(views: [sourcePopUp, categoryPopUp, collectionPopUp, sortPopUp, displayModeControl, favoritesOnlyButton, refreshButton])
+        let filterRow = NSStackView(views: [sourcePopUp, scopePopUp, categoryPopUp, collectionPopUp, sortPopUp, displayModeControl, favoritesOnlyButton, refreshButton])
         filterRow.orientation = .horizontal
         filterRow.alignment = .centerY
         filterRow.spacing = 10
         filterRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let toolbarStack = NSStackView(views: [searchRow, filterRow])
+        let cloudActionRow = NSStackView(views: [syncCloudButton, searchCloudButton])
+        cloudActionRow.orientation = .horizontal
+        cloudActionRow.alignment = .centerY
+        cloudActionRow.spacing = 10
+        cloudActionRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let toolbarStack = NSStackView(views: [searchRow, filterRow, cloudActionRow])
         toolbarStack.orientation = .vertical
         toolbarStack.alignment = .leading
         toolbarStack.spacing = 10
@@ -2838,7 +3263,15 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         favoriteButton.target = self
         favoriteButton.action = #selector(toggleFavoriteForSelectedItem)
 
-        let secondaryButtons = NSStackView(views: [revealButton, favoriteButton])
+        cloudLikeButton.translatesAutoresizingMaskIntoConstraints = false
+        cloudLikeButton.bezelStyle = .rounded
+        cloudLikeButton.image = makeMenuSymbol("hand.thumbsup", description: "Like in Cloud")
+        cloudLikeButton.imagePosition = .imageLeading
+        cloudLikeButton.target = self
+        cloudLikeButton.action = #selector(toggleCloudLikeForSelectedItem)
+        cloudLikeButton.isHidden = true
+
+        let secondaryButtons = NSStackView(views: [revealButton, favoriteButton, cloudLikeButton])
         secondaryButtons.orientation = .horizontal
         secondaryButtons.alignment = .centerY
         secondaryButtons.spacing = 10
@@ -2911,6 +3344,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
             sourcePopUp.widthAnchor.constraint(equalToConstant: 150),
+            scopePopUp.widthAnchor.constraint(equalToConstant: 146),
             categoryPopUp.widthAnchor.constraint(equalToConstant: 148),
             collectionPopUp.widthAnchor.constraint(equalToConstant: 154),
             sortPopUp.widthAnchor.constraint(equalToConstant: 150),
@@ -2954,6 +3388,14 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     @objc private func sourceChanged() {
         selectedSource = (sourcePopUp.selectedItem?.representedObject as? String) ?? "all"
+        rebuildScopeMenu()
+        rebuildCategoryMenu()
+        rebuildCollectionMenu()
+        applyFilters()
+    }
+
+    @objc private func scopeChanged() {
+        selectedScope = (scopePopUp.selectedItem?.representedObject as? String) ?? "all"
         rebuildCategoryMenu()
         rebuildCollectionMenu()
         applyFilters()
@@ -2990,6 +3432,27 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         reloadLibrary()
     }
 
+    @objc private func syncCloudNow() {
+        onSyncCloudNow()
+    }
+
+    @objc private func searchCloudNow() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            NSSound.beep()
+            resultsLabel.stringValue = "Enter a query, then run Cloud Search"
+            return
+        }
+        selectedSource = "divoom-cloud"
+        selectedScope = "search"
+        resultsLabel.stringValue = "Searching Divoom Cloud for \"\(query)\"..."
+        onSearchCloud(query)
+    }
+
+    @objc private func openCloudSettings() {
+        onOpenCloudSettings()
+    }
+
     @objc private func sendSelectedItem() {
         guard let currentSelectedItem else {
             NSSound.beep()
@@ -3014,6 +3477,25 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         toggleFavorite(currentSelectedItem)
     }
 
+    @objc private func toggleCloudLikeForSelectedItem() {
+        guard let currentSelectedItem, currentSelectedItem.source == "divoom-cloud", currentSelectedItem.galleryID > 0 else {
+            NSSound.beep()
+            return
+        }
+
+        cloudLikeButton.isEnabled = false
+        let shouldLike = !currentSelectedItem.isLiked
+        onToggleCloudLike(currentSelectedItem, shouldLike) { [weak self] success, details in
+            guard let self else { return }
+            self.cloudLikeButton.isEnabled = true
+            if success {
+                self.updateCloudLikeState(for: currentSelectedItem.id, isLiked: shouldLike)
+            } else {
+                self.resultsLabel.stringValue = details
+            }
+        }
+    }
+
     private var currentSelectedItem: AnimationLibraryItem? {
         guard let selectedItemID else {
             return nil
@@ -3023,12 +3505,17 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     private func reloadLibrary() {
         summaryLabel.stringValue = "Loading native animation library…"
+        updateCloudLoginButton()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let items = AnimationLibraryCatalog.loadItems()
+            let manifest = AnimationLibraryCatalog.loadCloudManifest()
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.allItems = items
+                self.cloudManifest = manifest
+                self.favorites = AnimationLibraryCatalog.loadFavorites(resolvingAgainst: items)
                 self.rebuildSourceMenu()
+                self.rebuildScopeMenu()
                 self.rebuildCategoryMenu()
                 self.rebuildCollectionMenu()
                 self.applyFilters()
@@ -3065,6 +3552,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             Set(
                 allItems
                     .filter { selectedSource == "all" || $0.source == selectedSource }
+                    .filter { selectedScope == "all" || $0.scope == selectedScope }
                     .map(\.category)
             )
         ).sorted()
@@ -3093,6 +3581,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             Set(
                 allItems
                     .filter { selectedSource == "all" || $0.source == selectedSource }
+                    .filter { selectedScope == "all" || $0.scope == selectedScope }
                     .filter { selectedCategory == "all" || $0.category == selectedCategory }
                     .map(\.collection)
             )
@@ -3127,6 +3616,9 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             if selectedSource != "all" && item.source != selectedSource {
                 return false
             }
+            if selectedScope != "all" && item.scope != selectedScope {
+                return false
+            }
             if selectedCategory != "all" && item.category != selectedCategory {
                 return false
             }
@@ -3147,9 +3639,11 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         collectionView.reloadData()
         emptyLabel.isHidden = !filteredItems.isEmpty
         let visibleSourceCount = Set(filteredItems.map(\.source)).count
-        summaryLabel.stringValue = "Native pixel library with curated and Divoom cloud sources, live previews, and direct Ditoo beaming."
+        updateCloudLoginButton()
+        updateLibrarySummary(visibleSourceCount: visibleSourceCount)
         updateHeaderChips()
-        resultsLabel.stringValue = "\(filteredItems.count) visible · \(visibleSourceCount) sources"
+        let visibleScopeCount = Set(filteredItems.map(\.scope)).count
+        resultsLabel.stringValue = "\(filteredItems.count) visible · \(visibleSourceCount) sources · \(visibleScopeCount) feeds"
 
         if let preservedSelectionID, let index = filteredItems.firstIndex(where: { $0.id == preservedSelectionID }) {
             selectItem(at: index)
@@ -3160,6 +3654,50 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             selectedItemID = nil
             updateDetailPanel()
         }
+    }
+
+    private func updateCloudLoginButton() {
+        if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
+            cloudLoginButton.title = credentials.email
+            cloudLoginButton.toolTip = "Using credentials saved in the app Keychain."
+            cloudLoginButton.image = makeMenuSymbol("lock.icloud", description: "Cloud Ready")
+            return
+        }
+
+        if let credentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials() {
+            cloudLoginButton.title = credentials.email
+            cloudLoginButton.toolTip = "Using a synced Passwords entry for Divoom Cloud."
+            cloudLoginButton.image = makeMenuSymbol("icloud", description: "Cloud Synced")
+            return
+        }
+
+        if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
+            cloudLoginButton.title = hint.email
+            cloudLoginButton.toolTip = "A synced Passwords entry exists for \(hint.server). Open Settings to import it into the app Keychain."
+            cloudLoginButton.image = makeMenuSymbol("icloud", description: "Cloud Passwords Hint")
+            return
+        }
+
+        cloudLoginButton.title = "Cloud Login"
+        cloudLoginButton.toolTip = "Add Divoom cloud credentials."
+        cloudLoginButton.image = makeMenuSymbol("person.crop.circle.badge.plus", description: "Cloud Login")
+    }
+
+    private func updateLibrarySummary(visibleSourceCount: Int) {
+        let cloudSummary: String
+        if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
+            cloudSummary = "Cloud ready as \(credentials.email)."
+        } else if let credentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials() {
+            cloudSummary = "Cloud ready via Passwords as \(credentials.email)."
+        } else if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
+            cloudSummary = "Cloud Passwords entry detected for \(hint.email). Import it once in Settings."
+        } else {
+            cloudSummary = "Cloud login not set yet."
+        }
+
+        let storeChannels = cloudManifest?.storeClassify?.count ?? 0
+        let playlists = (cloudManifest?.myPlaylists?.count ?? 0) + (cloudManifest?.someonePlaylists?.count ?? 0)
+        summaryLabel.stringValue = "\(allItems.count) animations across \(visibleSourceCount) visible sources. \(storeChannels) store channels discovered. \(playlists) cloud playlists cached. \(cloudSummary)"
     }
 
     private func sortItems(_ items: [AnimationLibraryItem]) -> [AnimationLibraryItem] {
@@ -3179,6 +3717,26 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
                 return leftScore > rightScore
+            case .newest:
+                if lhs.date == rhs.date {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.date > rhs.date
+            case .likes:
+                if lhs.likes == rhs.likes {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.likes > rhs.likes
+            case .views:
+                if lhs.views == rhs.views {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.views > rhs.views
+            case .feed:
+                if lhs.scope == rhs.scope {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.scope.localizedCaseInsensitiveCompare(rhs.scope) == .orderedAscending
             case .title:
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             case .category:
@@ -3226,6 +3784,35 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         }
         score -= item.relativePath.count / 6
         return score
+    }
+
+    private func rebuildScopeMenu() {
+        let previousScope = selectedScope
+        let scopes = Array(
+            Set(
+                allItems
+                    .filter { selectedSource == "all" || $0.source == selectedSource }
+                    .map(\.scope)
+            )
+        ).sorted()
+
+        scopePopUp.removeAllItems()
+        scopePopUp.addItem(withTitle: "All Feeds")
+        scopePopUp.lastItem?.representedObject = "all"
+        scopePopUp.lastItem?.image = makeMenuSymbol("square.grid.2x2", description: "All Feeds")
+        for scope in scopes {
+            scopePopUp.addItem(withTitle: AnimationLibraryCatalog.displayTitle(for: scope))
+            scopePopUp.lastItem?.representedObject = scope
+            scopePopUp.lastItem?.image = makeMenuSymbol("square.stack.3d.up", description: scope)
+        }
+
+        let targetScope = previousScope != "all" && scopes.contains(previousScope) ? previousScope : "all"
+        selectedScope = targetScope
+        if let item = scopePopUp.itemArray.first(where: { ($0.representedObject as? String) == targetScope }) {
+            scopePopUp.select(item)
+        } else {
+            scopePopUp.selectItem(at: 0)
+        }
     }
 
     private func selectItem(at index: Int) {
@@ -3287,17 +3874,20 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             revealButton.isEnabled = false
             favoriteButton.isEnabled = false
             favoriteButton.title = "Favorite"
+            cloudLikeButton.isHidden = true
+            cloudLikeButton.isEnabled = false
             return
         }
 
         let collectionTitle = item.collection == "root" ? "Root" : AnimationLibraryCatalog.displayTitle(for: item.collection)
         let sourceTitle = AnimationLibraryCatalog.displaySourceTitle(for: item.source)
+        let feedTitle = AnimationLibraryCatalog.displayTitle(for: item.scope)
         detailPreviewView.setFileURL(item.fileURL)
         detailTitleLabel.stringValue = item.title
         if item.likes > 0 || item.views > 0 {
-            detailMetaLabel.stringValue = "\(sourceTitle) · \(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle) · \(item.likes) likes · \(item.views) views"
+            detailMetaLabel.stringValue = "\(sourceTitle) · \(feedTitle) · \(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle) · \(item.likes) likes · \(item.views) views"
         } else {
-            detailMetaLabel.stringValue = "\(sourceTitle) · \(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+            detailMetaLabel.stringValue = "\(sourceTitle) · \(feedTitle) · \(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
         }
         detailCategoryChip.update(text: AnimationLibraryCatalog.displayTitle(for: item.category), symbolName: animationCategorySymbolName(item.category))
         detailCollectionChip.update(text: collectionTitle, symbolName: item.collection == "root" ? "shippingbox" : "folder")
@@ -3310,6 +3900,11 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         favoriteButton.isEnabled = true
         favoriteButton.title = favorites.contains(item.id) ? "Unfavorite" : "Favorite"
         favoriteButton.image = makeMenuSymbol(favorites.contains(item.id) ? "star.fill" : "star", description: "Favorite")
+        let cloudLikeAvailable = item.source == "divoom-cloud" && item.galleryID > 0
+        cloudLikeButton.isHidden = !cloudLikeAvailable
+        cloudLikeButton.isEnabled = cloudLikeAvailable
+        cloudLikeButton.title = item.isLiked ? "Unlike in Cloud" : "Like in Cloud"
+        cloudLikeButton.image = makeMenuSymbol(item.isLiked ? "hand.thumbsup.fill" : "hand.thumbsup", description: "Like in Cloud")
     }
 
     private func toggleFavorite(_ item: AnimationLibraryItem) {
@@ -3332,6 +3927,37 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         sourceChip.update(text: "\(sourceCount) sources", symbolName: sourceCount > 1 ? "shippingbox.circle" : "shippingbox")
         favoriteChip.update(text: "\(favorites.count) favorites")
     }
+
+    private func updateCloudLikeState(for itemID: String, isLiked: Bool) {
+        let delta = isLiked ? 1 : -1
+        allItems = allItems.map { item in
+            guard item.id == itemID else { return item }
+            return AnimationLibraryItem(
+                id: item.id,
+                source: item.source,
+                scope: item.scope,
+                sort: item.sort,
+                title: item.title,
+                category: item.category,
+                cloudClassify: item.cloudClassify,
+                collection: item.collection,
+                relativePath: item.relativePath,
+                fileURL: item.fileURL,
+                searchText: item.searchText,
+                duplicateCount: item.duplicateCount,
+                likes: max(item.likes + delta, 0),
+                views: item.views,
+                galleryID: item.galleryID,
+                fileType: item.fileType,
+                clockID: item.clockID,
+                itemID: item.itemID,
+                userID: item.userID,
+                date: item.date,
+                isLiked: isLiked
+            )
+        }
+        applyFilters()
+    }
 }
 
 private enum AppSettingsTab: Int {
@@ -3347,6 +3973,10 @@ private struct AppSettingsSnapshot {
     let showUsed: Bool
     let codexMetric: CodexBarMetricPreference
     let claudeMetric: CodexBarMetricPreference
+    let cloudCredentialEmail: String
+    let cloudCredentialPasswordPlaceholder: String
+    let cloudCredentialStatus: String
+    let canImportSyncedCloudCredentials: Bool
     let cloudLibraryEnabled: Bool
     let cloudSyncOnLaunchEnabled: Bool
     let cloudAutoSyncEnabled: Bool
@@ -3354,6 +3984,13 @@ private struct AppSettingsSnapshot {
     let version: String
     let build: String
     let gitCommit: String
+}
+
+private struct DivoomCloudCredentialUIState {
+    let email: String
+    let passwordPlaceholder: String
+    let status: String
+    let canImportSyncedCredentials: Bool
 }
 
 @MainActor
@@ -3364,6 +4001,9 @@ private final class AppSettingsWindowController: NSWindowController {
     private let onSetShowUsed: (Bool) -> Void
     private let onSetCodexMetric: (CodexBarMetricPreference) -> Void
     private let onSetClaudeMetric: (CodexBarMetricPreference) -> Void
+    private let onSaveCloudCredentials: (String, String) -> Void
+    private let onImportSyncedCloudCredentials: () -> Void
+    private let onClearCloudCredentials: () -> Void
     private let onSetCloudLibraryEnabled: (Bool) -> Void
     private let onSetCloudSyncOnLaunchEnabled: (Bool) -> Void
     private let onSetCloudAutoSyncEnabled: (Bool) -> Void
@@ -3380,10 +4020,14 @@ private final class AppSettingsWindowController: NSWindowController {
     private let usageModePopUp = NSPopUpButton()
     private let codexMetricPopUp = NSPopUpButton()
     private let claudeMetricPopUp = NSPopUpButton()
+    private let cloudEmailField = NSTextField()
+    private let cloudPasswordField = NSSecureTextField()
     private let cloudLibraryButton = NSButton(checkboxWithTitle: "Include Divoom Cloud source in the native library", target: nil, action: nil)
     private let cloudSyncOnLaunchButton = NSButton(checkboxWithTitle: "Sync Divoom Cloud on app launch", target: nil, action: nil)
     private let cloudAutoSyncButton = NSButton(checkboxWithTitle: "Auto-sync Divoom Cloud every 6 hours", target: nil, action: nil)
+    private let cloudCredentialStatusLabel = NSTextField(labelWithString: "")
     private let cloudSummaryLabel = NSTextField(labelWithString: "")
+    private let importSyncedCloudButton = NSButton(title: "Use Synced Password", target: nil, action: nil)
     private let versionLabel = NSTextField(labelWithString: "")
     private let buildLabel = NSTextField(labelWithString: "")
     private let commitLabel = NSTextField(labelWithString: "")
@@ -3395,6 +4039,9 @@ private final class AppSettingsWindowController: NSWindowController {
         onSetShowUsed: @escaping (Bool) -> Void,
         onSetCodexMetric: @escaping (CodexBarMetricPreference) -> Void,
         onSetClaudeMetric: @escaping (CodexBarMetricPreference) -> Void,
+        onSaveCloudCredentials: @escaping (String, String) -> Void,
+        onImportSyncedCloudCredentials: @escaping () -> Void,
+        onClearCloudCredentials: @escaping () -> Void,
         onSetCloudLibraryEnabled: @escaping (Bool) -> Void,
         onSetCloudSyncOnLaunchEnabled: @escaping (Bool) -> Void,
         onSetCloudAutoSyncEnabled: @escaping (Bool) -> Void,
@@ -3411,6 +4058,9 @@ private final class AppSettingsWindowController: NSWindowController {
         self.onSetShowUsed = onSetShowUsed
         self.onSetCodexMetric = onSetCodexMetric
         self.onSetClaudeMetric = onSetClaudeMetric
+        self.onSaveCloudCredentials = onSaveCloudCredentials
+        self.onImportSyncedCloudCredentials = onImportSyncedCloudCredentials
+        self.onClearCloudCredentials = onClearCloudCredentials
         self.onSetCloudLibraryEnabled = onSetCloudLibraryEnabled
         self.onSetCloudSyncOnLaunchEnabled = onSetCloudSyncOnLaunchEnabled
         self.onSetCloudAutoSyncEnabled = onSetCloudAutoSyncEnabled
@@ -3470,6 +4120,12 @@ private final class AppSettingsWindowController: NSWindowController {
         claudeMetricPopUp.removeAllItems()
         CodexBarMetricPreference.allCases.forEach { claudeMetricPopUp.addItem(withTitle: $0.title) }
         claudeMetricPopUp.selectItem(at: CodexBarMetricPreference.allCases.firstIndex(of: snapshot.claudeMetric) ?? 0)
+
+        cloudEmailField.stringValue = snapshot.cloudCredentialEmail
+        cloudPasswordField.stringValue = ""
+        cloudPasswordField.placeholderString = snapshot.cloudCredentialPasswordPlaceholder
+        cloudCredentialStatusLabel.stringValue = snapshot.cloudCredentialStatus
+        importSyncedCloudButton.isEnabled = snapshot.canImportSyncedCloudCredentials
 
         cloudLibraryButton.state = snapshot.cloudLibraryEnabled ? .on : .off
         cloudSyncOnLaunchButton.state = snapshot.cloudSyncOnLaunchEnabled ? .on : .off
@@ -3602,6 +4258,63 @@ private final class AppSettingsWindowController: NSWindowController {
     }
 
     private func buildLibraryPane() -> NSView {
+        cloudEmailField.translatesAutoresizingMaskIntoConstraints = false
+        cloudEmailField.placeholderString = "you@example.com"
+
+        cloudPasswordField.translatesAutoresizingMaskIntoConstraints = false
+        cloudPasswordField.placeholderString = "Enter Divoom password"
+
+        cloudCredentialStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        cloudCredentialStatusLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        cloudCredentialStatusLabel.textColor = .secondaryLabelColor
+        cloudCredentialStatusLabel.maximumNumberOfLines = 0
+        cloudCredentialStatusLabel.lineBreakMode = .byWordWrapping
+
+        let credentialsCard = makeSectionCard(
+            title: "Cloud Credentials",
+            subtitle: "Store Divoom cloud login safely in Keychain, or reuse the synced Passwords entry for divoom-gz.com."
+        )
+
+        let credentialsGrid = makeSettingsGrid(rows: [
+            ("Email", cloudEmailField),
+            ("Password", cloudPasswordField),
+        ])
+        credentialsCard.addSubview(credentialsGrid)
+
+        let credentialsButtons = NSStackView(views: [
+            makeActionButton(title: "Save Credentials", symbolName: "lock.shield", action: #selector(saveCloudCredentials)),
+            importSyncedCloudButton,
+            makeActionButton(title: "Clear Saved", symbolName: "trash", action: #selector(clearCloudCredentials)),
+        ])
+        importSyncedCloudButton.translatesAutoresizingMaskIntoConstraints = false
+        importSyncedCloudButton.target = self
+        importSyncedCloudButton.action = #selector(importSyncedCloudCredentials)
+        importSyncedCloudButton.bezelStyle = .rounded
+        importSyncedCloudButton.image = NSImage(systemSymbolName: "square.and.arrow.down.on.square", accessibilityDescription: "Use Synced Password")
+        importSyncedCloudButton.imagePosition = .imageLeading
+        credentialsButtons.orientation = .horizontal
+        credentialsButtons.alignment = .centerY
+        credentialsButtons.spacing = 10
+        credentialsButtons.distribution = .fillEqually
+        credentialsButtons.translatesAutoresizingMaskIntoConstraints = false
+        credentialsCard.addSubview(credentialsButtons)
+        credentialsCard.addSubview(cloudCredentialStatusLabel)
+
+        NSLayoutConstraint.activate([
+            credentialsGrid.leadingAnchor.constraint(equalTo: credentialsCard.leadingAnchor, constant: 18),
+            credentialsGrid.trailingAnchor.constraint(equalTo: credentialsCard.trailingAnchor, constant: -18),
+            credentialsGrid.topAnchor.constraint(equalTo: credentialsCard.topAnchor, constant: 52),
+
+            credentialsButtons.leadingAnchor.constraint(equalTo: credentialsCard.leadingAnchor, constant: 18),
+            credentialsButtons.trailingAnchor.constraint(equalTo: credentialsCard.trailingAnchor, constant: -18),
+            credentialsButtons.topAnchor.constraint(equalTo: credentialsGrid.bottomAnchor, constant: 14),
+
+            cloudCredentialStatusLabel.leadingAnchor.constraint(equalTo: credentialsCard.leadingAnchor, constant: 18),
+            cloudCredentialStatusLabel.trailingAnchor.constraint(equalTo: credentialsCard.trailingAnchor, constant: -18),
+            cloudCredentialStatusLabel.topAnchor.constraint(equalTo: credentialsButtons.bottomAnchor, constant: 12),
+            cloudCredentialStatusLabel.bottomAnchor.constraint(equalTo: credentialsCard.bottomAnchor, constant: -18),
+        ])
+
         cloudLibraryButton.target = self
         cloudLibraryButton.action = #selector(toggleCloudLibrary)
 
@@ -3646,7 +4359,7 @@ private final class AppSettingsWindowController: NSWindowController {
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
         ])
 
-        return wrapPane(cards: [card])
+        return wrapPane(cards: [credentialsCard, card])
     }
 
     private func buildAboutPane() -> NSView {
@@ -3838,6 +4551,24 @@ private final class AppSettingsWindowController: NSWindowController {
         refresh()
     }
 
+    @objc private func saveCloudCredentials() {
+        onSaveCloudCredentials(
+            cloudEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            cloudPasswordField.stringValue
+        )
+        refresh()
+    }
+
+    @objc private func importSyncedCloudCredentials() {
+        onImportSyncedCloudCredentials()
+        refresh()
+    }
+
+    @objc private func clearCloudCredentials() {
+        onClearCloudCredentials()
+        refresh()
+    }
+
     @objc private func toggleCloudSyncOnLaunch() {
         onSetCloudSyncOnLaunchEnabled(cloudSyncOnLaunchButton.state == .on)
         refresh()
@@ -3977,6 +4708,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         configureStatusItem()
         configureIPC()
         configureCloudSyncBehavior()
+        DispatchQueue.global(qos: .utility).async {
+            let items = AnimationLibraryCatalog.loadItems()
+            _ = AnimationLibraryCatalog.loadFavorites(resolvingAgainst: items)
+        }
         AppLog.write("applicationDidFinishLaunching")
         bluetoothDiagnostics.requestAccessAndScan()
     }
@@ -4237,12 +4972,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func currentSettingsSnapshot() -> AppSettingsSnapshot {
-        AppSettingsSnapshot(
+        let cloudCredentialState = currentCloudCredentialUIState()
+        return AppSettingsSnapshot(
             launchAtLoginEnabled: isLaunchAtLoginEnabled(),
             favoritesPlayback: currentFavoritesPlaybackOption(),
             showUsed: codexBarPreferences().showUsed,
             codexMetric: currentMetricPreference(for: "codex"),
             claudeMetric: currentMetricPreference(for: "claude"),
+            cloudCredentialEmail: cloudCredentialState.email,
+            cloudCredentialPasswordPlaceholder: cloudCredentialState.passwordPlaceholder,
+            cloudCredentialStatus: cloudCredentialState.status,
+            canImportSyncedCloudCredentials: cloudCredentialState.canImportSyncedCredentials,
             cloudLibraryEnabled: isCloudLibraryEnabled(),
             cloudSyncOnLaunchEnabled: isCloudSyncOnLaunchEnabled(),
             cloudAutoSyncEnabled: isCloudAutoSyncEnabled(),
@@ -4265,11 +5005,53 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         UserDefaults.standard.object(forKey: cloudAutoSyncEnabledDefaultsKey) as? Bool ?? false
     }
 
+    private func currentCloudCredentialUIState() -> DivoomCloudCredentialUIState {
+        if let localCredentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
+            return DivoomCloudCredentialUIState(
+                email: localCredentials.email,
+                passwordPlaceholder: "Password saved in this app's Keychain",
+                status: "Using credentials saved in Ditoo Pro Mac Keychain.",
+                canImportSyncedCredentials: false
+            )
+        }
+
+        if let syncedCredentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials() {
+            let sourceLabel: String
+            if case let .syncedInternetPassword(server) = syncedCredentials.source {
+                sourceLabel = server
+            } else {
+                sourceLabel = "divoom-gz.com"
+            }
+            return DivoomCloudCredentialUIState(
+                email: syncedCredentials.email,
+                passwordPlaceholder: "Using synced Passwords entry",
+                status: "Using synced Passwords entry from \(sourceLabel). Save it locally if you want the app to stop depending on Passwords access.",
+                canImportSyncedCredentials: true
+            )
+        }
+
+        if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
+            return DivoomCloudCredentialUIState(
+                email: hint.email,
+                passwordPlaceholder: "Use Synced Password to import securely",
+                status: "A synced Passwords entry exists for \(hint.server). Use the import button once to copy it into the app Keychain and avoid repeated Passwords prompts.",
+                canImportSyncedCredentials: true
+            )
+        }
+
+        return DivoomCloudCredentialUIState(
+            email: "",
+            passwordPlaceholder: "Enter Divoom password",
+            status: "No Divoom cloud credentials found yet. Enter them here, or keep a synced Passwords entry for divoom-gz.com.",
+            canImportSyncedCredentials: false
+        )
+    }
+
     private func currentCloudManifestSummary() -> String {
         guard let data = try? Data(contentsOf: cloudManifestURL),
               let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data)
         else {
-            return "No synced Divoom cloud manifest yet. Use Sync Now after setting Divoom credentials in your environment."
+            return "No synced Divoom cloud manifest yet. Use Sync Now after saving credentials in Settings, or reuse the synced Passwords entry for divoom-gz.com."
         }
 
         let generatedAt = ISO8601DateFormatter().date(from: manifest.generatedAt)
@@ -4279,7 +5061,84 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         } else {
             syncText = "Last sync unknown"
         }
-        return "\(manifest.itemCount) cloud animations cached · \(manifest.categories.count) categories · \(syncText)."
+        let storeCount = manifest.storeClassify?.count ?? 0
+        let playlistCount = (manifest.myPlaylists?.count ?? 0) + (manifest.someonePlaylists?.count ?? 0)
+        let searchCount = manifest.searchQueries?.count ?? 0
+        return "\(manifest.itemCount) cloud animations cached · \(manifest.categories.count) categories · \(storeCount) store channels · \(playlistCount) playlists · \(searchCount) searches · \(syncText)."
+    }
+
+    private func persistCloudCredentials(email: String, password: String) -> Bool {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty, !password.isEmpty else {
+            return false
+        }
+
+        let emailSaved = DivoomCloudKeychain.write(trimmedEmail, account: divoomCloudEmailAccount)
+        let passwordSaved = DivoomCloudKeychain.write(password, account: divoomCloudPasswordAccount)
+        if emailSaved && passwordSaved {
+            DivoomCloudCredentialResolver.resetPassiveCaches()
+        }
+        return emailSaved && passwordSaved
+    }
+
+    private func saveCloudCredentials(email: String, password: String) {
+        guard persistCloudCredentials(email: email, password: password) else {
+            settingsController?.refresh()
+            updateActionStatus(
+                summary: "Cloud credentials not saved",
+                success: false,
+                details: "Enter both the Divoom account email and password."
+            )
+            return
+        }
+
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: "Cloud credentials saved",
+            success: true,
+            details: "Stored securely in Keychain for native Divoom cloud sync."
+        )
+    }
+
+    private func importSyncedCloudCredentials() {
+        guard let syncedCredentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials(allowInteraction: true, forceRefresh: true) else {
+            settingsController?.refresh()
+            updateActionStatus(
+                summary: "No synced Divoom password found",
+                success: false,
+                details: "No Passwords entry was found for divoom-gz.com."
+            )
+            return
+        }
+
+        guard persistCloudCredentials(email: syncedCredentials.email, password: syncedCredentials.password) else {
+            settingsController?.refresh()
+            updateActionStatus(
+                summary: "Synced Divoom password not saved",
+                success: false,
+                details: "The synced Passwords entry could not be copied into the app Keychain."
+            )
+            return
+        }
+
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: "Imported synced Divoom password",
+            success: true,
+            details: "The synced Passwords entry for \(syncedCredentials.email) is now stored in the app Keychain."
+        )
+    }
+
+    private func clearCloudCredentials() {
+        DivoomCloudKeychain.delete(account: divoomCloudEmailAccount)
+        DivoomCloudKeychain.delete(account: divoomCloudPasswordAccount)
+        DivoomCloudCredentialResolver.resetPassiveCaches()
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: "Cleared saved cloud credentials",
+            success: true,
+            details: "The app Keychain override was removed. The app can still fall back to a synced Passwords entry if one exists."
+        )
     }
 
     private func isLaunchAtLoginEnabled() -> Bool {
@@ -4396,6 +5255,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     showUsed: true,
                     codexMetric: .primary,
                     claudeMetric: .primary,
+                    cloudCredentialEmail: "",
+                    cloudCredentialPasswordPlaceholder: "Enter Divoom password",
+                    cloudCredentialStatus: "No Divoom cloud credentials found yet.",
+                    canImportSyncedCloudCredentials: false,
                     cloudLibraryEnabled: true,
                     cloudSyncOnLaunchEnabled: false,
                     cloudAutoSyncEnabled: false,
@@ -4419,6 +5282,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             },
             onSetClaudeMetric: { [weak self] metric in
                 self?.setMetricPreference(provider: "claude", metric: metric)
+            },
+            onSaveCloudCredentials: { [weak self] email, password in
+                self?.saveCloudCredentials(email: email, password: password)
+            },
+            onImportSyncedCloudCredentials: { [weak self] in
+                self?.importSyncedCloudCredentials()
+            },
+            onClearCloudCredentials: { [weak self] in
+                self?.clearCloudCredentials()
             },
             onSetCloudLibraryEnabled: { [weak self] enabled in
                 self?.setCloudLibraryEnabled(enabled)
@@ -5473,11 +6345,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func currentFavoriteAnimationItems() -> [AnimationLibraryItem] {
-        let favorites = AnimationLibraryCatalog.loadFavorites()
+        let items = AnimationLibraryCatalog.loadItems()
+        let favorites = AnimationLibraryCatalog.loadFavorites(resolvingAgainst: items)
         guard !favorites.isEmpty else {
             return []
         }
-        return AnimationLibraryCatalog.loadItems().filter { favorites.contains($0.id) }
+        return items.filter { favorites.contains($0.id) }
     }
 
     private func favoriteRotationDelay(
@@ -5518,12 +6391,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     ) {
         let items = currentFavoriteAnimationItems()
         guard !items.isEmpty else {
+            if autoRefreshMode == .favorites {
+                setAutoRefreshMode(.off)
+            }
             updateActionStatus(
-                summary: "Rotate Favorites unavailable",
+                summary: "Rotate Favorites needs favorites",
                 success: false,
-                details: "Favorite some animations in the library first."
+                details: "Add at least one favorite in the library, then start rotation again."
             )
-            completion?(false, "Favorite some animations in the library first.", nil)
+            completion?(false, "Add at least one favorite in the library, then start rotation again.", nil)
             return
         }
 
@@ -5658,6 +6534,82 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func runDivoomCloudSync(silent: Bool) {
+        runDivoomCloudCommand(
+            label: "Divoom cloud library",
+            initialDetails: "Fetching 16x16 cloud animations, store channels, and playlist metadata into the native library.",
+            extraArguments: ["--include-store-classify", "--include-my-list"],
+            silent: silent,
+            reloadLibrary: true
+        )
+    }
+
+    private func searchDivoomCloudLibrary(_ query: String) {
+        runDivoomCloudCommand(
+            label: "Divoom cloud search",
+            initialDetails: "Querying Divoom Cloud for \"\(query)\" and caching the matching animations.",
+            extraArguments: [
+                "--skip-albums",
+                "--max-per-category", "0",
+                "--search-query", query,
+                "--include-store-classify",
+                "--include-my-list",
+            ],
+            silent: false,
+            reloadLibrary: true
+        )
+    }
+
+    private func toggleDivoomCloudLike(
+        item: AnimationLibraryItem,
+        isLike: Bool,
+        completion: @escaping @MainActor (Bool, String) -> Void
+    ) {
+        guard item.galleryID > 0, item.cloudClassify > 0, item.fileType > 0 else {
+            completion(false, "This cloud item is missing the numeric metadata needed for GalleryLikeV2.")
+            return
+        }
+
+        var extraArguments = [
+            "--like-gallery-id", String(item.galleryID),
+            "--like-classify", String(item.cloudClassify),
+            "--like-file-type", String(item.fileType),
+        ]
+        if !isLike {
+            extraArguments.append("--unlike")
+        }
+
+        runDivoomCloudCommand(
+            label: isLike ? "Cloud like" : "Cloud unlike",
+            initialDetails: isLike ? "Liking \(item.title) in Divoom Cloud." : "Removing like for \(item.title) in Divoom Cloud.",
+            extraArguments: extraArguments,
+            silent: false,
+            reloadLibrary: false
+        ) { success, details in
+            completion(success, details)
+        }
+    }
+
+    private func runDivoomCloudCommand(
+        label: String,
+        initialDetails: String,
+        extraArguments: [String],
+        silent: Bool,
+        reloadLibrary: Bool,
+        completion: (@MainActor (Bool, String) -> Void)? = nil
+    ) {
+        guard let credentials = DivoomCloudCredentialResolver.resolvedCredentials() else {
+            settingsController?.refresh()
+            if !silent {
+                updateActionStatus(
+                    summary: "\(label) needs credentials",
+                    success: false,
+                    details: "Save credentials in Settings, or keep a synced Passwords entry for divoom-gz.com."
+                )
+            }
+            completion?(false, "Save credentials in Settings, or keep a synced Passwords entry for divoom-gz.com.")
+            return
+        }
+
         let pythonURL = divoomRepoURL(".venv/bin/python")
         let executableURL = FileManager.default.isExecutableFile(atPath: pythonURL.path)
             ? pythonURL
@@ -5665,9 +6617,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
         if !silent {
             updateActionStatus(
-                summary: "Syncing Divoom cloud library",
+                summary: "Syncing \(label)",
                 success: true,
-                details: "Fetching 16x16 cloud animations into the native library."
+                details: initialDetails
             )
         }
 
@@ -5675,10 +6627,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             let process = Process()
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
+            var environment = ProcessInfo.processInfo.environment
+            environment["DIVOOM_EMAIL"] = credentials.email
+            environment["DIVOOM_PASSWORD"] = credentials.password
             process.executableURL = executableURL
-            process.arguments = executableURL == pythonURL
+            var arguments = executableURL == pythonURL
                 ? [divoomRepoURL("tools/divoom_cloud_sync.py").path]
                 : ["python3", divoomRepoURL("tools/divoom_cloud_sync.py").path]
+            arguments.append(contentsOf: extraArguments)
+            process.arguments = arguments
+            process.environment = environment
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
 
@@ -5695,23 +6653,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     self.settingsController?.refresh()
                     if !silent || !success {
                         self.updateActionStatus(
-                            summary: success ? "Divoom cloud library synced" : "Divoom cloud sync failed",
+                            summary: success ? "\(label) finished" : "\(label) failed",
                             success: success,
                             details: details
                         )
                     }
-                    if success {
+                    if success && reloadLibrary {
                         self.animationLibraryController?.reloadFromExternalSync()
                     }
+                    completion?(success, details)
                 }
             } catch {
                 Task { @MainActor [weak self] in
                     self?.settingsController?.refresh()
                     self?.updateActionStatus(
-                        summary: "Divoom cloud sync failed",
+                        summary: "\(label) failed",
                         success: false,
                         details: error.localizedDescription
                     )
+                    completion?(false, error.localizedDescription)
                 }
             }
         }
@@ -5898,6 +6858,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     success: true,
                     details: item.fileURL.path
                 )
+            },
+            onOpenCloudSettings: { [weak self] in
+                self?.ensureSettingsController().showSettings(tab: .library)
+            },
+            onSyncCloudNow: { [weak self] in
+                self?.syncDivoomCloudLibrary()
+            },
+            onSearchCloud: { [weak self] query in
+                self?.searchDivoomCloudLibrary(query)
+            },
+            onToggleCloudLike: { [weak self] item, isLike, completion in
+                self?.toggleDivoomCloudLike(item: item, isLike: isLike, completion: completion)
             }
         )
         animationLibraryController = controller

@@ -66,9 +66,20 @@ class Server(str, Enum):
 
 class ApiEndpoint(str, Enum):
     GET_ALBUM_LIST = '/Discover/GetAlbumList'
+    GET_ALBUM_LIST_V3 = '/Discover/GetAlbumListV3'
     GET_ALBUM_FILES = '/Discover/GetAlbumImageList'
+    GET_ALBUM_FILES_V3 = '/Discover/GetAlbumImageListV3'
     GET_CATEGORY_FILES = '/GetCategoryFileListV2'
     GET_GALLERY_INFO = '/Cloud/GalleryInfo'
+    GET_MY_LIST = '/Playlist/GetMyList'
+    GET_SOMEONE_LIST = '/Playlist/GetSomeOneList'
+    GALLERY_LIKE = '/GalleryLikeV2'
+    ITEM_SEARCH = '/Channel/ItemSearch'
+    STORE_CLOCK_GET_CLASSIFY = '/Channel/StoreClockGetClassify'
+    STORE_CLOCK_GET_LIST = '/Channel/StoreClockGetList'
+    STORE_TOP20 = '/Channel/StoreTop20'
+    STORE_NEW20 = '/Channel/StoreNew20'
+    LIKE_CLOCK = '/Channel/LikeClock'
     USER_LOGIN = '/UserLogin'
 
 
@@ -93,6 +104,7 @@ class AlbumInfo(BaseDictInfo):
         'AlbumName': 'album_name',
         'AlbumImageId': 'album_image_id',
         'AlbumBigImageId': 'album_big_image_id',
+        'AlbumDescribe': 'album_describe',
     }
 
 
@@ -105,6 +117,7 @@ class UserInfo(BaseDictInfo):
 
 class GalleryInfo(BaseDictInfo):
     _KEYS_MAP = {
+        'ClockId': 'clock_id',
         'Classify': 'category',
         'CommentCnt': 'total_comments',
         'Content': 'content',
@@ -116,7 +129,10 @@ class GalleryInfo(BaseDictInfo):
         'FileTagArray': 'file_tags',
         'FileType': 'file_type',
         'FileURL': 'file_url',
+        'Flag': 'flag',
         'GalleryId': 'gallery_id',
+        'IsLike': 'is_like',
+        'ItemId': 'item_id',
         'LikeCnt': 'total_likes',
         'ShareCnt': 'total_shares',
         'WatchCnt': 'total_views',
@@ -153,3 +169,29 @@ class GalleryInfo(BaseDictInfo):
 
         # Update dict
         dict.__init__(self, **self.__dict__)
+
+
+class CloudClassifyInfo(BaseDictInfo):
+    _KEYS_MAP = {
+        'ClassifyId': 'classify_id',
+        'ClassifyName': 'classify_name',
+        'ImageId': 'image_id',
+        'Name': 'name',
+        'Sort': 'sort_order',
+        'Title': 'title',
+    }
+
+
+class PlaylistInfo(BaseDictInfo):
+    _KEYS_MAP = {
+        'CoverFileId': 'cover_file_id',
+        'Describe': 'describe',
+        'FileCnt': 'file_count',
+        'GalleryId': 'gallery_id',
+        'ImageFileId': 'image_file_id',
+        'LikeCnt': 'total_likes',
+        'Name': 'name',
+        'PlayId': 'play_id',
+        'PlayName': 'play_name',
+        'WatchCnt': 'total_views',
+    }

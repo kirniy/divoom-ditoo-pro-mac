@@ -17,6 +17,8 @@ Native macOS control for the Divoom Ditoo Pro desk display.
 This project gives the Ditoo Pro `16x16` RGB pixel screen a real Mac-native control stack:
 - a menu bar app
 - a CLI
+- a native animation library with favorites, recents, filters, and beam actions
+- a native Divoom cloud source with login, sync, search, and store metadata
 - exact-pixel static image rendering
 - native BLE animation upload
 - local status and automation surfaces
@@ -34,6 +36,12 @@ No phone bridge is required for the core display path.
 
 - Native macOS menu bar app for the Ditoo Pro `16x16` RGB display
 - Native CLI that talks to the already-running menu bar app over IPC
+- Native animation library with favorites, recents, large previews, source filters, and direct beam actions
+- Native Divoom cloud library sync with visible cloud-login entry points in Settings and in the library window
+- Native Divoom cloud feed filters for sources, feeds, categories, collections, and cloud-aware sorting
+- Native Divoom cloud search bridge from the library window
+- Native Divoom cloud playlist metadata and store/channel classification metadata cached locally
+- Native cloud like / unlike path for synced cloud items
 - Direct BLE scene-color control
 - Direct exact-pixel `16x16` static image rendering
 - Native `.divoom16` animation upload over BLE
@@ -43,6 +51,45 @@ No phone bridge is required for the core display path.
 - Pomodoro timer with countdown ring and digit display
 - Native battery, system snapshot, and network throughput telemetry screens
 - A reverse-engineered transport path grounded in the iOS app plus live device verification
+
+## Cloud Library
+
+The app can ingest live Divoom cloud assets into the native library:
+
+- source root: `assets/16x16/divoom-cloud`
+- manifest: `.cache/divoom-cloud/manifest.json`
+- native controls:
+  - `Settings -> Library`
+  - `Animation Library -> Cloud Login`
+  - `Animation Library -> Sync Cloud`
+  - `Animation Library -> Cloud Search`
+
+Cloud sync uses the vendored [`redphx/apixoo`](./vendor/apixoo) client for:
+
+- account login
+- direct gallery info by ID
+- category listing
+- album listing
+- cloud search via `Channel/ItemSearch`
+- like / unlike via `GalleryLikeV2`
+- playlist metadata via `Playlist/GetMyList` and `Playlist/GetSomeOneList`
+- store classification metadata via `Channel/StoreClockGetClassify`
+- PixelBean download and GIF decode
+
+The default native sync now refreshes:
+
+- category-backed cloud items
+- album-backed cloud items
+- store/channel classification metadata
+- playlist metadata for the signed-in account
+
+What is still not claimed as complete:
+
+- exact iOS-equivalent store/channel list browsing for every section
+- the unresolved `StoreClockGetList.Flag` mapping from the IPA
+- fully autonomous device-side custom channel playback
+
+Guide: [docs/DIVOOM_CLOUD_SYNC.md](/Users/kirniy/dev/divoom/docs/DIVOOM_CLOUD_SYNC.md)
 
 ## Install
 

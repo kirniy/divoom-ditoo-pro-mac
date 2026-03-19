@@ -6,11 +6,13 @@ import requests
 from .const import (
     AlbumInfo,
     ApiEndpoint,
+    CloudClassifyInfo,
     GalleryCategory,
     GalleryDimension,
     GalleryInfo,
     GallerySorting,
     GalleryType,
+    PlaylistInfo,
     Server,
 )
 from .pixel_bean import PixelBean
@@ -47,8 +49,11 @@ class APIxoo(object):
         protocol = 'https://' if self._is_secure else 'http://'
         return '%s%s%s' % (protocol, server.value, path)
 
-    def _send_request(self, endpoint: ApiEndpoint, payload: dict = {}):
+    def _send_request(self, endpoint: Union[ApiEndpoint, str], payload: dict | None = None):
         """Send request to API server"""
+        payload = dict(payload or {})
+        endpoint_path = endpoint.value if isinstance(endpoint, ApiEndpoint) else str(endpoint)
+
         if endpoint != ApiEndpoint.USER_LOGIN:
             payload.update(
                 {
@@ -57,7 +62,7 @@ class APIxoo(object):
                 }
             )
 
-        full_url = self._full_url(endpoint.value, Server.API)
+        full_url = self._full_url(endpoint_path, Server.API)
         resp = requests.post(
             full_url,
             headers=self.HEADERS,
@@ -154,13 +159,14 @@ class APIxoo(object):
         except Exception:
             return None
 
-    def get_album_list(self) -> list:
+    def get_album_list(self, v3: bool = False) -> list:
         """Get Album list in Discover tab"""
         if not self.is_logged_in():
             raise Exception('Not logged in!')
 
         try:
-            resp_json = self._send_request(ApiEndpoint.GET_ALBUM_LIST)
+            endpoint = ApiEndpoint.GET_ALBUM_LIST_V3 if v3 else ApiEndpoint.GET_ALBUM_LIST
+            resp_json = self._send_request(endpoint)
             if resp_json['ReturnCode'] != 0:
                 return None
 
@@ -172,7 +178,9 @@ class APIxoo(object):
         except Exception:
             return None
 
-    def get_album_files(self, album_id: int, page: int = 1, per_page: int = 20):
+    def get_album_files(
+        self, album_id: int, page: int = 1, per_page: int = 20, v3: bool = False
+    ):
         """Get a list of galleries by Album"""
         start_num = ((page - 1) * per_page) + 1
         end_num = start_num + per_page - 1
@@ -184,13 +192,166 @@ class APIxoo(object):
         }
 
         try:
-            resp_json = self._send_request(ApiEndpoint.GET_ALBUM_FILES, payload)
+            endpoint = ApiEndpoint.GET_ALBUM_FILES_V3 if v3 else ApiEndpoint.GET_ALBUM_FILES
+            resp_json = self._send_request(endpoint, payload)
 
             lst = []
             for item in resp_json['FileList']:
                 lst.append(GalleryInfo(item))
 
             return lst
+        except Exception:
+            return None
+
+    def get_store_clock_classify(self) -> list:
+        """Get channel/store classifications exposed by the iOS app"""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        try:
+            resp_json = self._send_request(ApiEndpoint.STORE_CLOCK_GET_CLASSIFY)
+            if resp_json['ReturnCode'] != 0:
+                return None
+
+            return [CloudClassifyInfo(item) for item in resp_json.get('ClassifyList', [])]
+        except Exception:
+            return None
+
+    def get_store_clock_list(
+        self,
+        type_flag: int,
+        classify_id: int = None,
+        page: int = 1,
+        per_page: int = 20,
+        country_iso_code: str = '',
+        language: str = '',
+        endpoint: Union[ApiEndpoint, str] = ApiEndpoint.STORE_CLOCK_GET_LIST,
+    ) -> list:
+        """Get channel/store gallery items using iOS app request shape"""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        start_num = ((page - 1) * per_page) + 1
+        end_num = start_num + per_page - 1
+        payload = {
+            'CountryISOCode': country_iso_code,
+            'Language': language,
+            'Flag': type_flag,
+            'StartNum': start_num,
+            'EndNum': end_num,
+        }
+        if classify_id is not None:
+            payload['ClassifyId'] = classify_id
+
+        try:
+            resp_json = self._send_request(endpoint, payload)
+            if resp_json['ReturnCode'] != 0:
+                return None
+
+            return [GalleryInfo(item) for item in resp_json.get('ClockList', [])]
+        except Exception:
+            return None
+
+    def search_items(
+        self,
+        key: str,
+        item_flag: Union[int, str],
+        item_id: int = None,
+        clock_id: int = None,
+        language: str = '',
+        page: int = 1,
+        per_page: int = 20,
+    ) -> list:
+        """Search Divoom cloud items using the iOS app ItemSearch endpoint"""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        start_num = ((page - 1) * per_page) + 1
+        end_num = start_num + per_page - 1
+        payload = {
+            'Language': language,
+            'ClockId': clock_id or 0,
+            'ItemId': item_id or 0,
+            'Key': key,
+            'StartNum': start_num,
+            'EndNum': end_num,
+            'ItemFlag': item_flag,
+        }
+
+        try:
+            resp_json = self._send_request(ApiEndpoint.ITEM_SEARCH, payload)
+            if resp_json['ReturnCode'] != 0:
+                return None
+
+            return [GalleryInfo(item) for item in resp_json.get('SearchList', [])]
+        except Exception:
+            return None
+
+    def gallery_like(
+        self,
+        gallery_id: int,
+        is_like: bool,
+        classify: int,
+        type_: int,
+    ) -> dict:
+        """Like or unlike a gallery using GalleryLikeV2"""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        payload = {
+            'GalleryId': gallery_id,
+            'IsLike': 1 if is_like else 0,
+            'Classify': classify,
+            'Type': type_,
+        }
+
+        try:
+            return self._send_request(ApiEndpoint.GALLERY_LIKE, payload)
+        except Exception:
+            return None
+
+    def get_my_list(self, page: int = 1, per_page: int = 20, gallery_id: int = None):
+        """Get playlist/channel list owned by the current user"""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        start_num = ((page - 1) * per_page) + 1
+        end_num = start_num + per_page - 1
+        payload = {
+            'StartNum': start_num,
+            'EndNum': end_num,
+        }
+        if gallery_id is not None:
+            payload['GalleryId'] = gallery_id
+
+        try:
+            resp_json = self._send_request(ApiEndpoint.GET_MY_LIST, payload)
+            if resp_json['ReturnCode'] != 0:
+                return None
+
+            return [PlaylistInfo(item) for item in resp_json.get('PlayList', [])]
+        except Exception:
+            return None
+
+    def get_someone_list(self, target_user_id: int, page: int = 1, per_page: int = 20):
+        """Get playlist/channel list owned by another user"""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        start_num = ((page - 1) * per_page) + 1
+        end_num = start_num + per_page - 1
+        payload = {
+            'StartNum': start_num,
+            'EndNum': end_num,
+            'TargetUserId': target_user_id,
+        }
+
+        try:
+            resp_json = self._send_request(ApiEndpoint.GET_SOMEONE_LIST, payload)
+            if resp_json['ReturnCode'] != 0:
+                return None
+
+            return [PlaylistInfo(item) for item in resp_json.get('PlayList', [])]
         except Exception:
             return None
 

@@ -3,6 +3,7 @@
 ## Next Protocol Parity
 
 - Reverse-engineer the iOS gallery/channel stack fully from the IPA and replace any remaining host-side approximations for playlist behavior.
+- Recover the exact `StoreClockGetList.Flag` mapping used by the iOS app sections so the Mac app can browse every cloud store lane without raw low-level parameters.
 - Recover the exact activation flow around `sendAllFrameToDevice:galleryModel:`, `sendAnimateSpeed`, `setCustomGalleryTimeConfig`, and `sppSetSceneGIF:` so uploaded channels can play autonomously on-device.
 - Implement custom animation channels/playlists in the macOS app with per-item timing, repeat rules, and persistent device-side playback where supported.
 - Recover the text/drawing pipeline behind the `0x87` path and add native text/frame tools in the menu bar app.
@@ -12,7 +13,7 @@
 
 - Keep tightening the menu bar information architecture so only working actions are visible in the primary menu.
 - Expand the native animation library with better favorites management, playlists, scheduling, and channel editing.
-- Add a proper Divoom cloud source browser with source-aware filters, popularity sorting, album collections, and native sync controls.
+- Add a fully native Divoom cloud store browser with section parity to the iOS app, not just synced files plus metadata.
 - Add retention controls and richer source browsing for Divoom cloud so the library can keep downloading fresh material without bloating forever.
 - Continue polishing the quick-tile surface, the solid/color motion studio, and the library inspector interactions.
 - Add more high-quality built-in animation sets and curate stronger defaults for menu actions and live feeds.
