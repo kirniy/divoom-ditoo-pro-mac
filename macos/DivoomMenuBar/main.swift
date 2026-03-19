@@ -498,6 +498,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private let bluetoothDiagnostics = BluetoothDiagnostics()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
+    private let animationGalleryBuilderURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/tools/build_animation_gallery.py")
+    private let animationGalleryURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/docs/animation-gallery/index.html")
+    private let curatedAnimationsURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
     private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: 320, height: 106))
     private let summaryCardItem = NSMenuItem()
     private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: 356, height: 136))
@@ -540,6 +543,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         ipcTimer?.invalidate()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            handleIncomingURL(url)
+        }
     }
 
     func commandDidFinish(label: String, success: Bool, output: String) {
@@ -601,6 +610,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         motionMenu.addItem(makeItem("Nyan Cat", action: #selector(runNativeUploadNyan), symbolName: "star"))
         motionMenu.addItem(makeItem("Bunny Hop", action: #selector(runNativeUploadBunny), symbolName: "hare"))
         motionMenu.addItem(.separator())
+        motionMenu.addItem(makeSectionHeader("Library"))
+        motionMenu.addItem(makeItem("Open Animation Gallery", action: #selector(openAnimationGallery), symbolName: "photo.on.rectangle.angled"))
+        motionMenu.addItem(makeItem("Reveal Curated Folder", action: #selector(revealCuratedAnimations), symbolName: "folder"))
+        motionMenu.addItem(.separator())
         motionMenu.addItem(makeSectionHeader("Ambient"))
         motionMenu.addItem(makeItem("Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
         motionMenu.addItem(makeItem("Analog Clock", action: #selector(runNativeClockFace), symbolName: "clock"))
@@ -631,6 +644,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
         let toolsMenu = NSMenu(title: "Tools")
         toolsMenu.addItem(makeSectionHeader("Workspace"))
+        toolsMenu.addItem(makeItem("Refresh Animation Gallery", action: #selector(refreshAnimationGallery), symbolName: "arrow.triangle.2.circlepath"))
         toolsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
         toolsMenu.addItem(.separator())
         toolsMenu.addItem(makeSectionHeader("App"))
@@ -1329,12 +1343,149 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         setAutoRefreshMode(autoRefreshMode == .claude ? .off : .claude)
     }
 
+    @objc private func openAnimationGallery() {
+        openAnimationGalleryPage(forceRefresh: true)
+    }
+
+    @objc private func refreshAnimationGallery() {
+        openAnimationGalleryPage(forceRefresh: true)
+    }
+
+    @objc private func revealCuratedAnimations() {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: curatedAnimationsURL.path)
+        updateActionStatus(
+            summary: "Revealed curated animations",
+            success: true,
+            details: curatedAnimationsURL.path
+        )
+    }
+
     @objc private func openResearch() {
         NSWorkspace.shared.open(URL(fileURLWithPath: "/Users/kirniy/dev/divoom/RESEARCH.md"))
     }
 
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    private func openAnimationGalleryPage(forceRefresh: Bool) {
+        if forceRefresh || !FileManager.default.fileExists(atPath: animationGalleryURL.path) {
+            let rebuildResult = rebuildAnimationGallery()
+            guard rebuildResult.success else {
+                updateActionStatus(
+                    summary: "Animation gallery refresh failed",
+                    success: false,
+                    details: rebuildResult.details
+                )
+                return
+            }
+        }
+
+        let opened = NSWorkspace.shared.open(animationGalleryURL)
+        updateActionStatus(
+            summary: opened ? "Opened animation gallery" : "Open animation gallery failed",
+            success: opened,
+            details: animationGalleryURL.path
+        )
+    }
+
+    private func rebuildAnimationGallery() -> (success: Bool, details: String) {
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = [animationGalleryBuilderURL.path]
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let combined = [stdout.trimmingCharacters(in: .whitespacesAndNewlines), stderr.trimmingCharacters(in: .whitespacesAndNewlines)]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            return (process.terminationStatus == 0, combined.isEmpty ? "Gallery builder completed." : combined)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    private func handleIncomingURL(_ url: URL) {
+        guard url.scheme == "divoom-menubar" else {
+            return
+        }
+
+        let action = url.host?.lowercased() ?? ""
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+        let pathValue = queryItems.first(where: { $0.name == "path" })?.value
+
+        switch action {
+        case "send-gif":
+            guard let pathValue, !pathValue.isEmpty else {
+                updateActionStatus(
+                    summary: "Gallery send failed",
+                    success: false,
+                    details: "Missing path query item."
+                )
+                return
+            }
+            handleGallerySend(path: pathValue)
+        case "reveal":
+            guard let pathValue, !pathValue.isEmpty else {
+                updateActionStatus(
+                    summary: "Gallery reveal failed",
+                    success: false,
+                    details: "Missing path query item."
+                )
+                return
+            }
+            handleGalleryReveal(path: pathValue)
+        case "open-gallery":
+            openAnimationGalleryPage(forceRefresh: false)
+        default:
+            updateActionStatus(
+                summary: "Ignored gallery URL",
+                success: false,
+                details: "Unsupported action: \(action.isEmpty ? "<empty>" : action)"
+            )
+        }
+    }
+
+    private func handleGallerySend(path: String) {
+        let resolvedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard FileManager.default.fileExists(atPath: resolvedPath) else {
+            updateActionStatus(
+                summary: "Gallery send failed",
+                success: false,
+                details: "File not found: \(resolvedPath)"
+            )
+            return
+        }
+
+        let label = "Gallery \(URL(fileURLWithPath: resolvedPath).deletingPathExtension().lastPathComponent)"
+        run(label: label, arguments: ["native-headless", "send-gif", "--path", resolvedPath])
+    }
+
+    private func handleGalleryReveal(path: String) {
+        let fileURL = URL(fileURLWithPath: path).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            updateActionStatus(
+                summary: "Gallery reveal failed",
+                success: false,
+                details: "File not found: \(fileURL.path)"
+            )
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        updateActionStatus(
+            summary: "Revealed animation",
+            success: true,
+            details: fileURL.path
+        )
     }
 }
 
