@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import Darwin
 import Foundation
@@ -46,6 +47,44 @@ private enum AutoRefreshMode {
 private struct CommandSpec {
     let label: String
     let arguments: [String]
+}
+
+private enum FeedbackSoundProfile: String {
+    case attention
+    case complete
+    case colorSet
+    case animation
+    case error
+
+    var fileName: String {
+        switch self {
+        case .attention:
+            return "hover-sound-low.wav"
+        case .complete:
+            return "confirm-sound.wav"
+        case .colorSet:
+            return "confirm-sound.wav"
+        case .animation:
+            return "pause-sound.wav"
+        case .error:
+            return "cancel-sound-low.wav"
+        }
+    }
+
+    var defaultVolume: Float {
+        switch self {
+        case .attention:
+            return 0.10
+        case .complete:
+            return 0.13
+        case .colorSet:
+            return 0.12
+        case .animation:
+            return 0.14
+        case .error:
+            return 0.09
+        }
+    }
 }
 
 private enum StatusIconState {
@@ -116,6 +155,295 @@ private func makeStatusItemIcon(state: StatusIconState) -> NSImage {
     return image
 }
 
+private final class MenuSummaryView: NSView {
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "Ditoo Pro 16x16 RGB")
+    private let connectionLabel = NSTextField(labelWithString: "Connection: scanning...")
+    private let actionLabel = NSTextField(labelWithString: "Last action: idle")
+    private let refreshLabel = NSTextField(labelWithString: "Automation: Off")
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 320, height: 106)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    func update(state: StatusIconState, connection: String, action: String, refresh: String) {
+        iconView.image = makeStatusItemIcon(state: state)
+        connectionLabel.stringValue = connection
+        actionLabel.stringValue = action
+        refreshLabel.stringValue = refresh
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
+        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.96).cgColor
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = makeStatusItemIcon(state: .idle)
+        iconView.imageScaling = .scaleNone
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        connectionLabel.translatesAutoresizingMaskIntoConstraints = false
+        connectionLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        connectionLabel.textColor = .secondaryLabelColor
+        connectionLabel.lineBreakMode = .byTruncatingTail
+
+        actionLabel.translatesAutoresizingMaskIntoConstraints = false
+        actionLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        actionLabel.textColor = .labelColor
+        actionLabel.lineBreakMode = .byTruncatingTail
+
+        refreshLabel.translatesAutoresizingMaskIntoConstraints = false
+        refreshLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        refreshLabel.textColor = .secondaryLabelColor
+        refreshLabel.lineBreakMode = .byTruncatingTail
+
+        let headerStack = NSStackView(views: [titleLabel, connectionLabel])
+        headerStack.orientation = .vertical
+        headerStack.alignment = .leading
+        headerStack.spacing = 2
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let topRow = NSStackView(views: [iconView, headerStack])
+        topRow.orientation = .horizontal
+        topRow.alignment = .centerY
+        topRow.spacing = 10
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentStack = NSStackView(views: [topRow, actionLabel, refreshLabel])
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 8
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(contentStack)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 320),
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+        ])
+    }
+}
+
+private final class ColorStudioView: NSView {
+    var onSendColor: ((NSColor) -> Void)?
+    var onPickScreen: (() -> Void)?
+
+    private let titleLabel = NSTextField(labelWithString: "Solid Color Studio")
+    private let captionLabel = NSTextField(labelWithString: "Wheel, hex, and screen pick.")
+    private let colorWell = NSColorWell()
+    private let hexField = NSTextField(string: "#FF0000")
+    private let sendButton = NSButton(title: "Send Color", target: nil, action: nil)
+    private let pickButton = NSButton(title: "Pick Screen", target: nil, action: nil)
+    private let swatchHexes = ["#FF3B30", "#FF9500", "#FFD60A", "#30D158", "#64D2FF", "#0A84FF", "#BF5AF2", "#FF375F"]
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 356, height: 136)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    func setSelectedColor(_ color: NSColor) {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else {
+            return
+        }
+        colorWell.color = rgb
+        if let hex = hexString(for: rgb) {
+            hexField.stringValue = hex
+        }
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .labelColor
+
+        captionLabel.translatesAutoresizingMaskIntoConstraints = false
+        captionLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        captionLabel.textColor = .secondaryLabelColor
+        captionLabel.lineBreakMode = .byTruncatingTail
+
+        colorWell.translatesAutoresizingMaskIntoConstraints = false
+        colorWell.color = NSColor.systemRed
+        colorWell.target = self
+        colorWell.action = #selector(colorWellChanged)
+
+        hexField.translatesAutoresizingMaskIntoConstraints = false
+        hexField.placeholderString = "#247CFF"
+        hexField.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+        hexField.focusRingType = .none
+        hexField.target = self
+        hexField.action = #selector(hexSubmitted)
+
+        sendButton.translatesAutoresizingMaskIntoConstraints = false
+        sendButton.bezelStyle = .rounded
+        sendButton.controlSize = .small
+        sendButton.target = self
+        sendButton.action = #selector(sendPressed)
+        sendButton.setContentHuggingPriority(.required, for: .horizontal)
+        sendButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        pickButton.translatesAutoresizingMaskIntoConstraints = false
+        pickButton.bezelStyle = .rounded
+        pickButton.controlSize = .small
+        pickButton.target = self
+        pickButton.action = #selector(pickScreenPressed)
+        pickButton.setContentHuggingPriority(.required, for: .horizontal)
+        pickButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let swatchesRow = NSStackView()
+        swatchesRow.orientation = .horizontal
+        swatchesRow.alignment = .centerY
+        swatchesRow.spacing = 7
+        swatchesRow.translatesAutoresizingMaskIntoConstraints = false
+        swatchHexes.forEach { hex in
+            swatchesRow.addArrangedSubview(makeSwatchButton(hex: hex))
+        }
+
+        let controlsRow = NSStackView(views: [colorWell, hexField, sendButton, pickButton])
+        controlsRow.orientation = .horizontal
+        controlsRow.alignment = .centerY
+        controlsRow.spacing = 8
+        controlsRow.distribution = .fill
+        controlsRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentStack = NSStackView(views: [titleLabel, captionLabel, swatchesRow, controlsRow])
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 8
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(contentStack)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 356),
+            colorWell.widthAnchor.constraint(equalToConstant: 40),
+            colorWell.heightAnchor.constraint(equalToConstant: 24),
+            hexField.widthAnchor.constraint(equalToConstant: 98),
+            sendButton.widthAnchor.constraint(equalToConstant: 92),
+            pickButton.widthAnchor.constraint(equalToConstant: 104),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+        ])
+    }
+
+    private func makeSwatchButton(hex: String) -> NSButton {
+        let button = NSButton(title: "", target: self, action: #selector(swatchPressed(_:)))
+        button.identifier = NSUserInterfaceItemIdentifier(rawValue: hex)
+        button.isBordered = false
+        button.setButtonType(.momentaryPushIn)
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 9
+        button.layer?.cornerCurve = .continuous
+        button.layer?.borderWidth = 1
+        button.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        if let (red, green, blue) = parseRGBHex(hex) {
+            button.layer?.backgroundColor = NSColor(
+                red: CGFloat(red) / 255.0,
+                green: CGFloat(green) / 255.0,
+                blue: CGFloat(blue) / 255.0,
+                alpha: 1.0
+            ).cgColor
+        }
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 18),
+            button.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        return button
+    }
+
+    @objc private func swatchPressed(_ sender: NSButton) {
+        guard
+            let hex = sender.identifier?.rawValue,
+            let (red, green, blue) = parseRGBHex(hex)
+        else {
+            return
+        }
+        let color = NSColor(
+            red: CGFloat(red) / 255.0,
+            green: CGFloat(green) / 255.0,
+            blue: CGFloat(blue) / 255.0,
+            alpha: 1.0
+        )
+        setSelectedColor(color)
+        onSendColor?(color)
+    }
+
+    @objc private func colorWellChanged() {
+        setSelectedColor(colorWell.color)
+        onSendColor?(colorWell.color)
+    }
+
+    @objc private func hexSubmitted() {
+        sendCurrentHexColor()
+    }
+
+    @objc private func sendPressed() {
+        sendCurrentHexColor()
+    }
+
+    @objc private func pickScreenPressed() {
+        onPickScreen?()
+    }
+
+    private func sendCurrentHexColor() {
+        guard
+            let (red, green, blue) = parseRGBHex(hexField.stringValue)
+        else {
+            NSSound.beep()
+            return
+        }
+        let color = NSColor(
+            red: CGFloat(red) / 255.0,
+            green: CGFloat(green) / 255.0,
+            blue: CGFloat(blue) / 255.0,
+            alpha: 1.0
+        )
+        setSelectedColor(color)
+        onSendColor?(color)
+    }
+}
+
 @MainActor
 private protocol CommandRunnerDelegate: AnyObject {
     func commandDidFinish(label: String, success: Bool, output: String)
@@ -170,6 +498,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private let bluetoothDiagnostics = BluetoothDiagnostics()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
+    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: 320, height: 106))
+    private let summaryCardItem = NSMenuItem()
+    private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: 356, height: 136))
     private let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -177,8 +508,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         return formatter
     }()
 
-    private var statusLine = NSMenuItem(title: "Last action: idle", action: nil, keyEquivalent: "")
-    private var refreshLine = NSMenuItem(title: "Auto refresh: Off", action: nil, keyEquivalent: "")
     private var autoCodexItem = NSMenuItem()
     private var autoClaudeItem = NSMenuItem()
     private var timer: Timer?
@@ -186,11 +515,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var ipcBusy = false
     private var autoRefreshMode: AutoRefreshMode = .off
     private var statusIconState: StatusIconState = .idle
+    private var colorSampler: NSColorSampler?
+    private var feedbackPlayer: AVAudioPlayer?
+    private var connectionSummary = "Connection: scanning..."
+    private var connectionDetails: String?
+    private var lastActionSummary = "idle"
+    private var lastActionDetails: String?
+    private var lastActionSuccess = true
+    private var lastActionDate: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runner.delegate = self
         bluetoothDiagnostics.statusHandler = { [weak self] summary, details in
-            self?.updateStatus(summary: summary, success: true, details: details)
+            self?.updateConnectionStatus(summary: summary, details: details)
         }
         NSApp.setActivationPolicy(.accessory)
         configureMenu()
@@ -206,7 +543,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     func commandDidFinish(label: String, success: Bool, output: String) {
-        updateStatus(summary: label, success: success, details: output)
+        updateActionStatus(summary: label, success: success, details: output)
     }
 
     private func configureStatusItem() {
@@ -221,53 +558,94 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func configureMenu() {
-        let titleLine = NSMenuItem(title: "Ditoo Pro 16x16 RGB", action: nil, keyEquivalent: "")
-        titleLine.isEnabled = false
-        statusLine.isEnabled = false
-        refreshLine.isEnabled = false
-
-        menu.addItem(titleLine)
-        menu.addItem(statusLine)
-        menu.addItem(refreshLine)
+        menu.removeAllItems()
+        summaryCardItem.isEnabled = false
+        summaryCardItem.view = summaryCard
+        menu.addItem(summaryCardItem)
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
-        menu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
-        menu.addItem(makeItem("Native Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
-        menu.addItem(makeItem("Native Send Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
-        menu.addItem(makeItem("Native Send Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
-        menu.addItem(makeItem("Native Send Pixel Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
-        menu.addItem(makeItem("Native Show Battery", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
-        menu.addItem(makeItem("Native Show System", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
-        menu.addItem(makeItem("Native Show Network", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
-        menu.addItem(makeItem("Native Send Signal Animation", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
-        menu.addItem(makeItem("Native Upload Witch Anim", action: #selector(runNativeUploadWitch), symbolName: "wand.and.stars"))
-        menu.addItem(makeItem("Native Upload Bunny Anim", action: #selector(runNativeUploadBunny), symbolName: "hare"))
-        menu.addItem(makeItem("Native Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
-        menu.addItem(makeItem("Native Clock Face", action: #selector(runNativeClockFace), symbolName: "clock"))
-        menu.addItem(makeItem("Native Animated Clock", action: #selector(runNativeAnimatedClock), symbolName: "clock.arrow.2.circlepath"))
-        menu.addItem(makeItem("Native Pomodoro Timer", action: #selector(runNativePomodoroTimer), symbolName: "timer"))
-        menu.addItem(.separator())
+        let connectionMenu = NSMenu(title: "Connection")
+        connectionMenu.addItem(makeSectionHeader("Transport"))
+        connectionMenu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
+        connectionMenu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
+        connectionMenu.addItem(.separator())
+        connectionMenu.addItem(makeSectionHeader("Device"))
+        connectionMenu.addItem(makeItem("Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
 
-        menu.addItem(makeItem("Push Codex Status", action: #selector(pushCodexStatus), symbolName: "brain"))
-        menu.addItem(makeItem("Push Claude Status", action: #selector(pushClaudeStatus), symbolName: "message"))
-        menu.addItem(makeItem("Push Orbit Art", action: #selector(pushOrbitArt), symbolName: "sparkles.square.filled.on.square"))
-        menu.addItem(makeItem("Push Witch Sample", action: #selector(pushWitchSample), symbolName: "wand.and.stars"))
-        menu.addItem(makeItem("Push Bunny Sample", action: #selector(pushBunnySample), symbolName: "hare"))
-        menu.addItem(.separator())
-        menu.addItem(makeItem("Play Attention Sound", action: #selector(playAttentionSound), symbolName: "bell.badge"))
-        menu.addItem(makeItem("Play Completion Sound", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
-        menu.addItem(.separator())
+        let displayMenu = NSMenu(title: "Display")
+        let colorStudioItem = NSMenuItem()
+        colorStudioItem.isEnabled = false
+        colorStudioItem.view = colorStudioView
+        colorStudioView.onSendColor = { [weak self] color in
+            self?.sendSelectedSceneColor(color, source: "Color studio")
+        }
+        colorStudioView.onPickScreen = { [weak self] in
+            self?.pickScreenColor()
+        }
+        displayMenu.addItem(colorStudioItem)
+        displayMenu.addItem(.separator())
+        displayMenu.addItem(makeSectionHeader("Core"))
+        displayMenu.addItem(makeItem("Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
+        displayMenu.addItem(makeItem("Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
+        displayMenu.addItem(makeItem("Pixel Badge Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
+        displayMenu.addItem(.separator())
+        displayMenu.addItem(makeSectionHeader("Telemetry"))
+        displayMenu.addItem(makeItem("Battery Panel", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
+        displayMenu.addItem(makeItem("System Panel", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
+        displayMenu.addItem(makeItem("Network Panel", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
 
-        autoCodexItem = makeItem("Auto Refresh Codex (60s)", action: #selector(toggleAutoCodex), symbolName: "arrow.clockwise")
-        autoClaudeItem = makeItem("Auto Refresh Claude (60s)", action: #selector(toggleAutoClaude), symbolName: "arrow.clockwise.circle")
-        menu.addItem(autoCodexItem)
-        menu.addItem(autoClaudeItem)
+        let motionMenu = NSMenu(title: "Motion")
+        motionMenu.addItem(makeSectionHeader("Animations"))
+        motionMenu.addItem(makeItem("Signal Sweep Loop", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
+        motionMenu.addItem(makeItem("Doom Fire Loop", action: #selector(runNativeUploadDoomFire), symbolName: "flame.fill"))
+        motionMenu.addItem(makeItem("Nyan Cat", action: #selector(runNativeUploadNyan), symbolName: "star"))
+        motionMenu.addItem(makeItem("Bunny Hop", action: #selector(runNativeUploadBunny), symbolName: "hare"))
+        motionMenu.addItem(.separator())
+        motionMenu.addItem(makeSectionHeader("Ambient"))
+        motionMenu.addItem(makeItem("Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
+        motionMenu.addItem(makeItem("Analog Clock", action: #selector(runNativeClockFace), symbolName: "clock"))
+        motionMenu.addItem(makeItem("Animated Clock", action: #selector(runNativeAnimatedClock), symbolName: "clock.arrow.2.circlepath"))
+        motionMenu.addItem(makeItem("Pomodoro Timer", action: #selector(runNativePomodoroTimer), symbolName: "timer"))
+
+        let feedsMenu = NSMenu(title: "Feeds")
+        feedsMenu.addItem(makeSectionHeader("Status"))
+        feedsMenu.addItem(makeItem("Codex Status", action: #selector(pushCodexStatus), symbolName: "brain"))
+        feedsMenu.addItem(makeItem("Claude Status", action: #selector(pushClaudeStatus), symbolName: "message"))
+        feedsMenu.addItem(.separator())
+        feedsMenu.addItem(makeSectionHeader("Samples"))
+        feedsMenu.addItem(makeItem("Orbit Art", action: #selector(pushOrbitArt), symbolName: "sparkles.square.filled.on.square"))
+        feedsMenu.addItem(makeItem("Doom Fire Sample", action: #selector(pushDoomFireSample), symbolName: "flame.fill"))
+        feedsMenu.addItem(makeItem("Bunny Sample", action: #selector(pushBunnySample), symbolName: "hare"))
+
+        let audioMenu = NSMenu(title: "Audio")
+        audioMenu.addItem(makeSectionHeader("Speaker"))
+        audioMenu.addItem(makeItem("Attention Chime", action: #selector(playAttentionSound), symbolName: "bell.badge"))
+        audioMenu.addItem(makeItem("Completion Chime", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
+
+        let automationMenu = NSMenu(title: "Automation")
+        automationMenu.addItem(makeSectionHeader("Auto Refresh"))
+        autoCodexItem = makeItem("Codex Every 60s", action: #selector(toggleAutoCodex), symbolName: "arrow.clockwise")
+        autoClaudeItem = makeItem("Claude Every 60s", action: #selector(toggleAutoClaude), symbolName: "arrow.clockwise.circle")
+        automationMenu.addItem(autoCodexItem)
+        automationMenu.addItem(autoClaudeItem)
+
+        let toolsMenu = NSMenu(title: "Tools")
+        toolsMenu.addItem(makeSectionHeader("Workspace"))
+        toolsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
+        toolsMenu.addItem(.separator())
+        toolsMenu.addItem(makeSectionHeader("App"))
+        toolsMenu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
+
+        menu.addItem(makeSubmenuItem("Connection", symbolName: "dot.radiowaves.left.and.right", submenu: connectionMenu))
+        menu.addItem(makeSubmenuItem("Display", symbolName: "lightspectrum.horizontal", submenu: displayMenu))
+        menu.addItem(makeSubmenuItem("Motion", symbolName: "sparkles", submenu: motionMenu))
+        menu.addItem(makeSubmenuItem("Feeds", symbolName: "brain", submenu: feedsMenu))
+        menu.addItem(makeSubmenuItem("Audio", symbolName: "speaker.wave.2.fill", submenu: audioMenu))
+        menu.addItem(makeSubmenuItem("Automation", symbolName: "arrow.trianglehead.2.clockwise.rotate.90", submenu: automationMenu))
+        menu.addItem(.separator())
+        menu.addItem(makeSubmenuItem("Tools", symbolName: "slider.horizontal.3", submenu: toolsMenu))
         updateAutoRefreshUI()
-
-        menu.addItem(.separator())
-        menu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
-        menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
+        refreshSummaryCard()
     }
 
     private func configureIPC() {
@@ -289,18 +667,118 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         return item
     }
 
+    private func makeSubmenuItem(_ title: String, symbolName: String, submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.image = makeMenuSymbol(symbolName, description: title)
+        item.submenu = submenu
+        return item
+    }
+
+    private func makeSectionHeader(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(
+            string: title.uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .kern: 0.6,
+            ]
+        )
+        return item
+    }
+
     private func run(label: String, arguments: [String]) {
         runner.run(CommandSpec(label: label, arguments: arguments))
     }
 
-    private func updateStatus(summary: String, success: Bool, details: String?) {
+    private func feedbackSoundURL(for profile: FeedbackSoundProfile) -> URL {
+        URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/sounds/openpeon-cute-minimal/\(profile.fileName)")
+    }
+
+    private func playFeedbackSound(_ profile: FeedbackSoundProfile) {
+        let url = feedbackSoundURL(for: profile)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            AppLog.write("playFeedbackSound missing path=\(url.path)")
+            return
+        }
+
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.volume = profile.defaultVolume
+            player.prepareToPlay()
+            player.play()
+            feedbackPlayer = player
+            AppLog.write("playFeedbackSound profile=\(profile.rawValue) volume=\(profile.defaultVolume) path=\(url.path)")
+        } catch {
+            AppLog.write("playFeedbackSound failed profile=\(profile.rawValue) error=\(error.localizedDescription)")
+        }
+    }
+
+    private func handleNativeActionResult(
+        _ result: NativeActionResult,
+        summary: String? = nil,
+        successSound: FeedbackSoundProfile? = nil
+    ) {
+        let resolvedSummary = summary ?? result.summary
+        updateActionStatus(summary: resolvedSummary, success: result.success, details: result.details)
+        if result.success {
+            if let successSound {
+                playFeedbackSound(successSound)
+            }
+        } else {
+            playFeedbackSound(.error)
+        }
+    }
+
+    private func updateActionStatus(summary: String, success: Bool, details: String?) {
         let prefix = success ? "OK" : "ERR"
         let time = timestampFormatter.string(from: Date())
-        statusLine.title = "Last action: \(prefix) \(summary) at \(time)"
+        lastActionSummary = summary
+        lastActionSuccess = success
+        lastActionDetails = details
+        lastActionDate = Date()
         let detailText = details?.isEmpty == false ? details! : "(no details)"
         AppLog.write("\(prefix) \(summary)\n\(detailText)")
         statusIconState = success ? .ok : .error
+        refreshSummaryCard()
+        updateStatusItemButton(summary: "\(prefix) \(summary) at \(time)", details: details)
+    }
+
+    private func updateConnectionStatus(summary: String, details: String?) {
+        connectionSummary = summary
+        connectionDetails = details
+        if lastActionDate == nil {
+            if summary.localizedCaseInsensitiveContains("denied")
+                || summary.localizedCaseInsensitiveContains("not granted")
+                || summary.localizedCaseInsensitiveContains("failed")
+            {
+                statusIconState = .error
+            } else if summary.localizedCaseInsensitiveContains("ready")
+                || summary.localizedCaseInsensitiveContains("finished")
+                || summary.localizedCaseInsensitiveContains("powered on")
+            {
+                statusIconState = .ok
+            }
+        }
+        refreshSummaryCard()
         updateStatusItemButton(summary: summary, details: details)
+    }
+
+    private func refreshSummaryCard() {
+        let actionPrefix = lastActionSuccess ? "OK" : "ERR"
+        let actionText: String
+        if let lastActionDate {
+            actionText = "Last action: \(actionPrefix) \(lastActionSummary) at \(timestampFormatter.string(from: lastActionDate))"
+        } else {
+            actionText = "Last action: idle"
+        }
+        summaryCard.update(
+            state: statusIconState,
+            connection: connectionSummary,
+            action: actionText,
+            refresh: "Automation: \(autoRefreshDescription())"
+        )
     }
 
     private func updateStatusItemButton(summary: String, details: String?) {
@@ -311,7 +789,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         button.image = makeStatusItemIcon(state: statusIconState)
         button.imagePosition = .imageOnly
         button.imageScaling = .scaleNone
-        button.toolTip = details?.isEmpty == false ? details : summary
+        let detailLine = details?.isEmpty == false ? details! : summary
+        let tooltip = [
+            "Ditoo Pro 16x16 RGB",
+            connectionSummary,
+            detailLine,
+        ].joined(separator: "\n")
+        button.toolTip = tooltip
     }
 
     private func setAutoRefreshMode(_ mode: AutoRefreshMode) {
@@ -342,9 +826,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func updateAutoRefreshUI() {
-        refreshLine.title = "Auto refresh: \(autoRefreshMode.title)"
         autoCodexItem.state = autoRefreshMode == .codex ? .on : .off
         autoClaudeItem.state = autoRefreshMode == .claude ? .on : .off
+        refreshSummaryCard()
+    }
+
+    private func autoRefreshDescription() -> String {
+        switch autoRefreshMode {
+        case .off:
+            return "Off"
+        case .codex:
+            return "Codex every 60s"
+        case .claude:
+            return "Claude every 60s"
+        }
     }
 
     private func drainIPCQueue() {
@@ -410,7 +905,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
             performIPCInvocation(invocation) { [weak self] result in
                 guard let self else { return }
-                self.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
                 self.writeIPCResult(
                     IPCResultPayload(
                         id: request.id,
@@ -542,6 +1037,36 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         case .nativePomodoroTimer:
             let minutes = Int(invocation.parameter ?? "25") ?? 25
             bluetoothDiagnostics.runNativeBLEPomodoroTimer(minutes: minutes, completion: completion)
+        case .nativeSendGIF:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                completion(NativeActionResult(
+                    success: false,
+                    summary: "IPC send-gif failed",
+                    details: "Expected a .divoom16 file path parameter."
+                ))
+                return
+            }
+            bluetoothDiagnostics.runNativeBLESendGIF(path: parameter, completion: completion)
+        case .nativeAnimationVerify:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                completion(NativeActionResult(
+                    success: false,
+                    summary: "IPC animation-verify failed",
+                    details: "Expected a .divoom16 file path parameter."
+                ))
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEAnimationVerify(path: parameter, completion: completion)
+        case .nativeAnimationUploadOldMode:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                completion(NativeActionResult(
+                    success: false,
+                    summary: "IPC animation-upload-oldmode failed",
+                    details: "Expected a .divoom16 file path parameter."
+                ))
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEAnimationUploadOldMode(path: parameter, completion: completion)
         }
     }
 
@@ -568,12 +1093,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         run(label: "Orbit art", arguments: ["send-art", "--style", "orbit", "--seed", "17", "--terminate"])
     }
 
-    @objc private func pushWitchSample() {
+    @objc private func pushDoomFireSample() {
         run(
-            label: "Witch sample",
+            label: "Doom Fire sample",
             arguments: [
                 "send-divoom16",
-                "/Users/kirniy/dev/divoom/andreas-js/images/witch.divoom16",
+                "/Users/kirniy/dev/divoom/assets/16x16/generated/doom_fire.divoom16",
                 "--terminate",
             ]
         )
@@ -609,7 +1134,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeVolumeProbe() {
         bluetoothDiagnostics.runNativeVolumeProbe { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
             }
         }
     }
@@ -617,7 +1142,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeSolidRed() {
         bluetoothDiagnostics.runNativeSolidRed { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, successSound: .colorSet)
             }
         }
     }
@@ -625,7 +1150,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativePurityRed() {
         bluetoothDiagnostics.runNativeBLEPurityRed { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, successSound: .colorSet)
             }
         }
     }
@@ -633,7 +1158,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativePixelTest() {
         bluetoothDiagnostics.runNativeBLEPixelBadgeTest { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
             }
         }
     }
@@ -641,7 +1166,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeBatteryStatus() {
         bluetoothDiagnostics.runNativeBLEBatteryStatus { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
             }
         }
     }
@@ -649,7 +1174,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeSystemStatus() {
         bluetoothDiagnostics.runNativeBLESystemStatus { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
             }
         }
     }
@@ -657,7 +1182,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeNetworkStatus() {
         bluetoothDiagnostics.runNativeBLENetworkStatus { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
             }
         }
     }
@@ -665,29 +1190,40 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeAnimationSample() {
         bluetoothDiagnostics.runNativeBLEObviousAnimationSample { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, summary: "Signal Sweep Loop", successSound: .animation)
             }
         }
     }
 
-    @objc private func runNativeUploadWitch() {
-        bluetoothDiagnostics.runNativeBLEDivoom16Animation(
-            path: "/Users/kirniy/dev/divoom/andreas-js/images/witch.divoom16",
-            label: "witch-upload"
+    @objc private func runNativeUploadDoomFire() {
+        bluetoothDiagnostics.runNativeBLESendGIF(
+            path: "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_fire.divoom16",
+            loopCount: 0
         ) { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, summary: "Doom Fire Loop", successSound: .animation)
+            }
+        }
+    }
+
+    @objc private func runNativeUploadNyan() {
+        bluetoothDiagnostics.runNativeBLESendGIF(
+            path: "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_nyan.divoom16",
+            loopCount: 0
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleNativeActionResult(result, summary: "Nyan Cat", successSound: .animation)
             }
         }
     }
 
     @objc private func runNativeUploadBunny() {
-        bluetoothDiagnostics.runNativeBLEDivoom16Animation(
-            path: "/Users/kirniy/dev/divoom/andreas-js/images/bunny.divoom16",
-            label: "bunny-upload"
+        bluetoothDiagnostics.runNativeBLESendGIF(
+            path: "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_bunny.divoom16",
+            loopCount: 0
         ) { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, summary: "Bunny Hop", successSound: .animation)
             }
         }
     }
@@ -695,7 +1231,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeAnimatedMonitor() {
         bluetoothDiagnostics.runNativeBLEAnimatedSystemMonitor { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, successSound: .animation)
             }
         }
     }
@@ -703,7 +1239,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeClockFace() {
         bluetoothDiagnostics.runNativeBLEClockFace { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
             }
         }
     }
@@ -711,7 +1247,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeAnimatedClock() {
         bluetoothDiagnostics.runNativeBLEAnimatedClockFace { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, successSound: .animation)
             }
         }
     }
@@ -719,7 +1255,68 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativePomodoroTimer() {
         bluetoothDiagnostics.runNativeBLEPomodoroTimer { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, successSound: .animation)
+            }
+        }
+    }
+
+    private func sendSelectedSceneColor(_ color: NSColor, source: String) {
+        guard
+            let rgbColor = color.usingColorSpace(.deviceRGB),
+            let (red, green, blue) = rgbComponents(from: rgbColor)
+        else {
+            updateActionStatus(
+                summary: "Solid color failed",
+                success: false,
+                details: "Could not convert the selected color into RGB components."
+            )
+            return
+        }
+
+        let colorHex = hexString(for: rgbColor) ?? "#000000"
+        bluetoothDiagnostics.runNativeBLESolidColor(
+            red: red,
+            green: green,
+            blue: blue,
+            brightness: 0x64,
+            threeModeType: 0x00
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                let details = [result.details, "source=\(source)", "hex=\(colorHex)"]
+                    .compactMap { $0 }
+                    .joined(separator: "\n")
+                self?.updateActionStatus(
+                    summary: "Solid color \(colorHex)",
+                    success: result.success,
+                    details: details
+                )
+                if result.success {
+                    self?.playFeedbackSound(.colorSet)
+                } else {
+                    self?.playFeedbackSound(.error)
+                }
+            }
+        }
+    }
+
+    private func pickScreenColor() {
+        NSApp.activate(ignoringOtherApps: true)
+        let sampler = NSColorSampler()
+        colorSampler = sampler
+        sampler.show { [weak self] color in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.colorSampler = nil
+                guard let color else {
+                    self.updateActionStatus(
+                        summary: "Screen color picker cancelled",
+                        success: true,
+                        details: "No screen color was selected."
+                    )
+                    return
+                }
+                self.colorStudioView.setSelectedColor(color)
+                self.sendSelectedSceneColor(color, source: "Screen sampler")
             }
         }
     }
@@ -760,6 +1357,9 @@ private enum HeadlessMode: String {
     case nativeClockFace = "--headless-native-clock-face"
     case nativeAnimatedClock = "--headless-native-animated-clock"
     case nativePomodoroTimer = "--headless-native-pomodoro-timer"
+    case nativeSendGIF = "--headless-native-send-gif"
+    case nativeAnimationVerify = "--headless-native-animation-verify"
+    case nativeAnimationUploadOldMode = "--headless-native-animation-upload-oldmode"
 }
 
 private struct HeadlessInvocation {
@@ -812,6 +1412,23 @@ private func parseRGBHex(_ value: String) -> (UInt8, UInt8, UInt8)? {
     let green = UInt8((packed >> 8) & 0xff)
     let blue = UInt8(packed & 0xff)
     return (red, green, blue)
+}
+
+private func rgbComponents(from color: NSColor) -> (UInt8, UInt8, UInt8)? {
+    guard let rgb = color.usingColorSpace(.deviceRGB) else {
+        return nil
+    }
+    let red = UInt8(max(0, min(255, Int(round(rgb.redComponent * 255.0)))))
+    let green = UInt8(max(0, min(255, Int(round(rgb.greenComponent * 255.0)))))
+    let blue = UInt8(max(0, min(255, Int(round(rgb.blueComponent * 255.0)))))
+    return (red, green, blue)
+}
+
+private func hexString(for color: NSColor) -> String? {
+    guard let (red, green, blue) = rgbComponents(from: color) else {
+        return nil
+    }
+    return String(format: "#%02X%02X%02X", red, green, blue)
 }
 
 private final class HeadlessRunner {
@@ -965,6 +1582,30 @@ private final class HeadlessRunner {
         case .nativePomodoroTimer:
             let minutes = Int(invocation.parameter ?? "25") ?? 25
             bluetoothDiagnostics.runNativeBLEPomodoroTimer(minutes: minutes) { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeSendGIF:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                finish(code: 2, message: "Expected a .divoom16 file path after --headless-native-send-gif")
+                return
+            }
+            bluetoothDiagnostics.runNativeBLESendGIF(path: parameter) { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeAnimationVerify:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                finish(code: 2, message: "Expected a .divoom16 file path after --headless-native-animation-verify")
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEAnimationVerify(path: parameter) { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeAnimationUploadOldMode:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                finish(code: 2, message: "Expected a .divoom16 file path after --headless-native-animation-upload-oldmode")
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEAnimationUploadOldMode(path: parameter) { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         }

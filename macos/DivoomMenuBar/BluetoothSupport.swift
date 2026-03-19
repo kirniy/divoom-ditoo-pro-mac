@@ -10,7 +10,7 @@ private let ditooLightLEReadCharacteristicUUID = CBUUID(string: "49535343-6DAA-4
 private let ditooLightAca3CharacteristicUUID = CBUUID(string: "49535343-ACA3-481C-91EC-D85E28A60318")
 private let ditooLightLegacyWriteCharacteristicUUID = CBUUID(string: "49535343-1E4D-4BD9-BA61-23C647249616")
 private let lastDitooLightPeripheralUUIDDefaultsKey = "DivoomLastDitooLightPeripheralUUID"
-private let sampleAnimationPath = "/Users/kirniy/dev/divoom/andreas-js/images/witch.divoom16"
+private let sampleAnimationPath = "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_fire.divoom16"
 
 private func normalizeBluetoothAddress(_ address: String) -> String {
     address
@@ -228,6 +228,8 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
     var frames: [Divoom16AnimationFrame] = []
     var frameOffset = 0
 
+    var previousPalette: [RGBColor] = []
+
     while frameOffset + 7 <= data.count, data[frameOffset] == 0xAA {
         let frameLength = Int(UInt16(data[frameOffset + 1]) | (UInt16(data[frameOffset + 2]) << 8))
         guard frameLength >= 7, frameOffset + frameLength <= data.count else {
@@ -235,22 +237,32 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
         }
 
         let timeInMilliseconds = Int(UInt16(data[frameOffset + 3]) | (UInt16(data[frameOffset + 4]) << 8))
+        let reusePalette = data[frameOffset + 5] != 0
         let rawPaletteCount = Int(data[frameOffset + 6])
-        let localPaletteCount = rawPaletteCount == 0 ? 256 : rawPaletteCount
-        let localBitsPerPixel = max(1, Int(ceil(log2(Double(max(2, localPaletteCount))))))
 
-        var palette: [RGBColor] = []
-        palette.reserveCapacity(localPaletteCount)
-        let paletteStart = frameOffset + 7
-        for index in 0..<localPaletteCount {
-            let base = paletteStart + index * 3
-            guard base + 2 < data.count else {
-                break
+        var palette: [RGBColor]
+        let paletteDataSize: Int
+
+        if reusePalette && rawPaletteCount == 0 && !previousPalette.isEmpty {
+            palette = previousPalette
+            paletteDataSize = 0
+        } else {
+            let localPaletteCount = rawPaletteCount == 0 ? 256 : rawPaletteCount
+            palette = []
+            palette.reserveCapacity(localPaletteCount)
+            let paletteStart = frameOffset + 7
+            for index in 0..<localPaletteCount {
+                let base = paletteStart + index * 3
+                guard base + 2 < data.count else {
+                    break
+                }
+                palette.append(RGBColor(r: data[base], g: data[base + 1], b: data[base + 2]))
             }
-            palette.append(RGBColor(r: data[base], g: data[base + 1], b: data[base + 2]))
+            paletteDataSize = localPaletteCount * 3
         }
 
-        let pixelsOffset = paletteStart + localPaletteCount * 3
+        let localBitsPerPixel = max(1, Int(ceil(log2(Double(max(2, palette.count))))))
+        let pixelsOffset = frameOffset + 7 + paletteDataSize
         let pixelByteCount = (pixelCount * localBitsPerPixel + 7) / 8
         let pixelsEnd = pixelsOffset + pixelByteCount
         guard pixelsEnd <= frameOffset + frameLength else {
@@ -267,6 +279,8 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
             colors.append(color)
         }
 
+        previousPalette = palette
+
         frames.append(
             Divoom16AnimationFrame(
                 colors: colors,
@@ -282,6 +296,37 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
     }
 
     return frames
+}
+
+private func normalizedAnimationFrames(
+    _ frames: [Divoom16AnimationFrame],
+    minimumFrameDuration: TimeInterval = 0.16
+) -> [Divoom16AnimationFrame] {
+    frames.map { frame in
+        Divoom16AnimationFrame(
+            colors: frame.colors,
+            duration: max(minimumFrameDuration, frame.duration)
+        )
+    }
+}
+
+private func totalAnimationDuration(_ frames: [Divoom16AnimationFrame]) -> TimeInterval {
+    frames.reduce(0) { partial, frame in
+        partial + frame.duration
+    }
+}
+
+private func effectiveAnimationLoopCount(
+    requestedLoopCount: Int,
+    frames: [Divoom16AnimationFrame],
+    minimumPlaybackDuration: TimeInterval = 12.0
+) -> Int {
+    if requestedLoopCount <= 0 {
+        return 0
+    }
+    let totalDuration = max(0.001, totalAnimationDuration(frames))
+    let minimumLoops = max(1, Int(ceil(minimumPlaybackDuration / totalDuration)))
+    return max(1, max(requestedLoopCount, minimumLoops))
 }
 
 private func buildPublicStaticImageCommandBody(colors: [RGBColor], frameDelay: UInt16 = 0) -> Data {
@@ -1102,7 +1147,17 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
     private var ditooLightWriteCharacteristic: CBCharacteristic?
     private var ditooLightNotifyCharacteristic: CBCharacteristic?
     private var ditooLightState = "BLE light idle"
+    private var activeFrameStreamGeneration: UInt64 = 0
     var statusHandler: ((String, String?) -> Void)?
+
+    private func nextFrameStreamGeneration() -> UInt64 {
+        activeFrameStreamGeneration &+= 1
+        return activeFrameStreamGeneration
+    }
+
+    private func cancelActiveFrameStream() {
+        activeFrameStreamGeneration &+= 1
+    }
 
     func requestAccessAndScan() {
         AppLog.write("BluetoothDiagnostics.requestAccessAndScan")
@@ -1429,6 +1484,21 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         }
         let value = characteristic.value ?? Data()
         AppLog.write("didUpdateValue uuid=\(characteristic.uuid.uuidString) rx=\(hexString(value))")
+        recordDeviceResponse(value)
+    }
+
+    private var recentDeviceResponses: [(timestamp: Date, data: Data)] = []
+    private let maxStoredResponses = 64
+
+    private func recordDeviceResponse(_ data: Data) {
+        recentDeviceResponses.append((timestamp: Date(), data: data))
+        if recentDeviceResponses.count > maxStoredResponses {
+            recentDeviceResponses.removeFirst(recentDeviceResponses.count - maxStoredResponses)
+        }
+    }
+
+    func drainRecentResponses(since: Date) -> [Data] {
+        recentDeviceResponses.filter { $0.timestamp >= since }.map(\.data)
     }
 
     func deviceInquiryStarted(_ sender: IOBluetoothDeviceInquiry) {
@@ -1484,6 +1554,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         threeModeType: UInt8,
         completion: @escaping (NativeActionResult) -> Void
     ) {
+        cancelActiveFrameStream()
         guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
             let details = [
                 "BLE light transport not ready.",
@@ -1551,6 +1622,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         blue: UInt8,
         completion: @escaping (NativeActionResult) -> Void
     ) {
+        cancelActiveFrameStream()
         guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
             let details = [
                 "BLE light transport not ready.",
@@ -1609,6 +1681,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
     }
 
     func runNativeBLEAnimationSample(completion: @escaping (NativeActionResult) -> Void) {
+        cancelActiveFrameStream()
         guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
             let details = "BLE light transport not ready. State: \(ditooLightState)"
             AppLog.write("runNativeBLEAnimationSample unavailable \(details)")
@@ -1694,13 +1767,13 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             frames: buildObviousAnimationFrames(),
             label: "obvious-neon-signal",
             sourceDescription: "generated:obvious-neon-signal",
-            loopCount: 6,
+            loopCount: 0,
             completion: completion
         )
     }
 
     func runNativeBLEDivoom16Sample(completion: @escaping (NativeActionResult) -> Void) {
-        runNativeBLEDivoom16FrameStream(path: sampleAnimationPath, label: "witch-divoom16-stream", loopCount: 4, completion: completion)
+        runNativeBLEDivoom16FrameStream(path: sampleAnimationPath, label: "sample-divoom16-stream", loopCount: 0, completion: completion)
     }
 
     func runNativeBLEDivoom16Animation(
@@ -1708,6 +1781,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         label: String,
         completion: @escaping (NativeActionResult) -> Void
     ) {
+        cancelActiveFrameStream()
         guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
             let details = "BLE light transport not ready. State: \(ditooLightState)"
             AppLog.write("runNativeBLEDivoom16Animation unavailable \(details)")
@@ -1852,33 +1926,53 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             return
         }
 
+        let preparedFrames = normalizedAnimationFrames(frames)
+        let effectiveLoopCount = effectiveAnimationLoopCount(
+            requestedLoopCount: loopCount,
+            frames: preparedFrames
+        )
+        let loopsIndefinitely = effectiveLoopCount == 0
+        let generation = nextFrameStreamGeneration()
+        let totalDuration = totalAnimationDuration(preparedFrames)
         let writeType = preferredBLEWriteType(for: characteristic)
+        let effectiveLoopDescription = loopsIndefinitely ? "infinite" : String(effectiveLoopCount)
+        let startedDetails = [
+            "label=\(label)",
+            "source=\(sourceDescription)",
+            "frames=\(preparedFrames.count)",
+            "requestedLoopCount=\(loopCount)",
+            "effectiveLoopCount=\(effectiveLoopDescription)",
+            "totalDuration=\(String(format: "%.2f", totalDuration))",
+            "peripheral=\(peripheral.identifier.uuidString)",
+            "characteristic=\(characteristic.uuid.uuidString)",
+            "writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")",
+        ].joined(separator: "\n")
+        var didReportStart = false
         AppLog.write(
-            "runNativeBLEFrameStream label=\(label) source=\(sourceDescription) frames=\(frames.count) loopCount=\(loopCount) peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")"
+            "runNativeBLEFrameStream label=\(label) source=\(sourceDescription) frames=\(preparedFrames.count) requestedLoopCount=\(loopCount) effectiveLoopCount=\(effectiveLoopDescription) totalDuration=\(String(format: "%.2f", totalDuration)) generation=\(generation) peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")"
         )
 
         func sendFrame(frameIndex: Int, cycleIndex: Int) {
-            if cycleIndex >= loopCount {
-                let details = [
-                    "label=\(label)",
-                    "source=\(sourceDescription)",
-                    "frames=\(frames.count)",
-                    "loopCount=\(loopCount)",
-                    "peripheral=\(peripheral.identifier.uuidString)",
-                    "characteristic=\(characteristic.uuid.uuidString)",
-                    "writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse")",
-                ].joined(separator: "\n")
-                completion(
-                    NativeActionResult(
-                        success: true,
-                        summary: "Native BLE frame stream sent",
-                        details: details
-                    )
-                )
+            guard self.activeFrameStreamGeneration == generation else {
+                AppLog.write("runNativeBLEFrameStream cancelled label=\(label) generation=\(generation) frame=\(frameIndex) cycle=\(cycleIndex)")
                 return
             }
 
-            let frame = frames[frameIndex]
+            if !loopsIndefinitely && cycleIndex >= effectiveLoopCount {
+                if !didReportStart {
+                    completion(
+                        NativeActionResult(
+                            success: true,
+                            summary: "Native BLE frame stream sent",
+                            details: startedDetails
+                        )
+                    )
+                }
+                AppLog.write("runNativeBLEFrameStream finished label=\(label) generation=\(generation)")
+                return
+            }
+
+            let frame = preparedFrames[frameIndex]
             let imagePayload = buildPublicStaticImageCommandBody(colors: frame.colors)
             var packets: [Data] = []
             if frameIndex == 0 {
@@ -1897,9 +1991,19 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
                 characteristic: characteristic,
                 writeType: writeType
             ) {
+                if !didReportStart {
+                    didReportStart = true
+                    completion(
+                        NativeActionResult(
+                            success: true,
+                            summary: "Native BLE frame stream started",
+                            details: startedDetails
+                        )
+                    )
+                }
                 let nextFrameIndex = frameIndex + 1
-                let wrappedFrameIndex = nextFrameIndex % frames.count
-                let nextCycleIndex = nextFrameIndex >= frames.count ? cycleIndex + 1 : cycleIndex
+                let wrappedFrameIndex = nextFrameIndex % preparedFrames.count
+                let nextCycleIndex = nextFrameIndex >= preparedFrames.count ? cycleIndex + 1 : cycleIndex
                 DispatchQueue.main.asyncAfter(deadline: .now() + frame.duration) {
                     sendFrame(frameIndex: wrappedFrameIndex, cycleIndex: nextCycleIndex)
                 }
@@ -2024,11 +2128,179 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         )
     }
 
+    func runNativeBLESendGIF(path: String, loopCount: Int = 0, completion: @escaping (NativeActionResult) -> Void) {
+        let url = URL(fileURLWithPath: path)
+        let frames: [Divoom16AnimationFrame]
+        do {
+            frames = try loadDivoom16AnimationFrames(from: url)
+        } catch {
+            completion(NativeActionResult(
+                success: false,
+                summary: "send-gif failed",
+                details: "Could not load .divoom16 frames at \(path): \(error.localizedDescription)"
+            ))
+            return
+        }
+        let preparedFrames = normalizedAnimationFrames(frames)
+        let effectiveLoopCount = effectiveAnimationLoopCount(
+            requestedLoopCount: loopCount,
+            frames: preparedFrames
+        )
+        AppLog.write(
+            "runNativeBLESendGIF path=\(path) frames=\(preparedFrames.count) requestedLoopCount=\(loopCount) effectiveLoopCount=\(effectiveLoopCount) totalDuration=\(String(format: "%.2f", totalAnimationDuration(preparedFrames)))"
+        )
+        runNativeBLEFrameStream(
+            frames: preparedFrames,
+            label: "send-gif",
+            sourceDescription: path,
+            loopCount: effectiveLoopCount,
+            completion: completion
+        )
+    }
+
+    func runNativeBLEAnimationVerify(path: String, completion: @escaping (NativeActionResult) -> Void) {
+        cancelActiveFrameStream()
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            completion(NativeActionResult(
+                success: false,
+                summary: "animation-verify failed",
+                details: "BLE light transport not ready. State: \(ditooLightState)"
+            ))
+            return
+        }
+
+        let animationURL = URL(fileURLWithPath: path)
+        guard let animation = try? Data(contentsOf: animationURL), !animation.isEmpty else {
+            completion(NativeActionResult(
+                success: false,
+                summary: "animation-verify failed",
+                details: "Could not read animation payload at \(path)"
+            ))
+            return
+        }
+
+        let writeType = preferredBLEWriteType(for: characteristic)
+        let packets = buildNativeBLEAnimationUploadPacketSequence(animation: animation, characteristic: characteristic)
+        AppLog.write(
+            "runNativeBLEAnimationVerify path=\(path) bytes=\(animation.count) packets=\(packets.count)"
+        )
+
+        let uploadStart = Date()
+        writeBLEPackets(
+            packets,
+            packetIndex: 0,
+            peripheral: peripheral,
+            characteristic: characteristic,
+            writeType: writeType
+        ) { [weak self] in
+            guard let self else { return }
+            // Wait 2 seconds for any device responses after upload completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                let responses = self.drainRecentResponses(since: uploadStart)
+                let responseHex = responses.map { hexString($0) }
+                let details = [
+                    "path=\(path)",
+                    "bytes=\(animation.count)",
+                    "packets=\(packets.count)",
+                    "device_responses=\(responses.count)",
+                    "response_hex=\(responseHex.joined(separator: ","))",
+                ].joined(separator: "\n")
+                completion(NativeActionResult(
+                    success: true,
+                    summary: "animation-verify sent (\(responses.count) device responses captured)",
+                    details: details
+                ))
+            }
+        }
+    }
+
+    func runNativeBLEAnimationUploadOldMode(path: String, completion: @escaping (NativeActionResult) -> Void) {
+        cancelActiveFrameStream()
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            completion(NativeActionResult(
+                success: false,
+                summary: "animation-upload-oldmode failed",
+                details: "BLE light transport not ready. State: \(ditooLightState)"
+            ))
+            return
+        }
+
+        let animationURL = URL(fileURLWithPath: path)
+        guard let animation = try? Data(contentsOf: animationURL), !animation.isEmpty else {
+            completion(NativeActionResult(
+                success: false,
+                summary: "animation-upload-oldmode failed",
+                details: "Could not read animation payload at \(path)"
+            ))
+            return
+        }
+
+        // Experiment: skip the 0xBD [0x31] preamble and send just the 0x8B upload
+        // followed by scene switch with a delay, matching the Python serial path more closely.
+        var packets: [Data] = []
+        let totalSize = UInt32(animation.count)
+        // Start upload
+        var startPayload = Data([0x00])
+        startPayload.append(contentsOf: withUnsafeBytes(of: totalSize.littleEndian, Array.init))
+        packets.append(buildNewModeLECommandPacket(command: 0x8B, payload: startPayload))
+        // Data chunks
+        for (offset, chunkStart) in stride(from: 0, to: animation.count, by: 256).enumerated() {
+            let chunk = animation[chunkStart..<min(chunkStart + 256, animation.count)]
+            var payload = Data([0x01])
+            payload.append(contentsOf: withUnsafeBytes(of: totalSize.littleEndian, Array.init))
+            let offsetID = UInt16(offset).littleEndian
+            payload.append(contentsOf: withUnsafeBytes(of: offsetID, Array.init))
+            payload.append(chunk)
+            packets.append(buildNewModeLECommandPacket(command: 0x8B, payload: payload))
+        }
+        // End upload
+        packets.append(buildNewModeLECommandPacket(command: 0x8B, payload: Data([0x02])))
+        // Scene switch: mode 5 = user gallery
+        packets.append(buildNewModeLECommandPacket(command: 0x45, payload: Data([0x05])))
+        // Slot selection
+        packets.append(buildNewModeLECommandPacket(command: 0xBD, payload: Data([0x17, 0x00])))
+        // Recovered from iOS `sendAnimateSpeed` non-WiFi path.
+        packets.append(buildNewModeLECommandPacket(command: 0x35, payload: buildVendorAnimationPlaybackControlPayload()))
+        let writeType = preferredBLEWriteType(for: characteristic)
+        AppLog.write(
+            "runNativeBLEAnimationUploadOldMode path=\(path) bytes=\(animation.count) packets=\(packets.count)"
+        )
+
+        let uploadStart = Date()
+        writeBLEPackets(
+            packets,
+            packetIndex: 0,
+            peripheral: peripheral,
+            characteristic: characteristic,
+            writeType: writeType
+        ) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                let responses = self.drainRecentResponses(since: uploadStart)
+                let responseHex = responses.map { hexString($0) }
+                let details = [
+                    "path=\(path)",
+                    "bytes=\(animation.count)",
+                    "packets=\(packets.count)",
+                    "framing=old-mode",
+                    "device_responses=\(responses.count)",
+                    "response_hex=\(responseHex.joined(separator: ","))",
+                ].joined(separator: "\n")
+                completion(NativeActionResult(
+                    success: true,
+                    summary: "animation-upload-oldmode sent (\(responses.count) device responses captured)",
+                    details: details
+                ))
+            }
+        }
+    }
+
     private func runNativeBLEStaticImage(
         colors: [RGBColor],
         label: String,
         completion: @escaping (NativeActionResult) -> Void
     ) {
+        cancelActiveFrameStream()
         guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
             let details = "BLE light transport not ready. State: \(ditooLightState)"
             AppLog.write("runNativeBLEStaticImage unavailable \(details)")
@@ -2906,7 +3178,18 @@ private func buildAnimationUploadPacketSequence(
     packets.append(packetBuilder(0x8B, Data([0x02])))
     packets.append(packetBuilder(0x45, Data([0x05])))
     packets.append(packetBuilder(0xBD, Data([0x17, 0x00])))
+    // Reversed iOS `sendAnimateSpeed` shows that non-WiFi devices receive a
+    // follow-up `0x35` control payload after gallery upload/setup:
+    // [0x00, lensMode, aniSpeed_le16]. Without it, uploads are frequently
+    // accepted but remain stuck on a single frame.
+    packets.append(packetBuilder(0x35, buildVendorAnimationPlaybackControlPayload()))
     return packets
+}
+
+private func buildVendorAnimationPlaybackControlPayload(speed: UInt16 = 40, lensMode: UInt8 = 0) -> Data {
+    var payload = Data([0x00, lensMode])
+    payload.append(contentsOf: withUnsafeBytes(of: speed.littleEndian, Array.init))
+    return payload
 }
 
 private func buildModernVendorAnimationPacketSequence(animation: Data) -> [Data] {
@@ -2928,6 +3211,11 @@ private func buildModernVendorAnimationPacketSequence(animation: Data) -> [Data]
         payload.append(chunk)
         packets.append(buildDivoomPacket(command: 0x8B, payload: payload))
     }
+
+    packets.append(buildDivoomPacket(command: 0x8B, payload: Data([0x02])))
+    packets.append(buildDivoomPacket(command: 0x45, payload: Data([0x05])))
+    packets.append(buildDivoomPacket(command: 0xBD, payload: Data([0x17, 0x00])))
+    packets.append(buildDivoomPacket(command: 0x35, payload: buildVendorAnimationPlaybackControlPayload()))
 
     return packets
 }

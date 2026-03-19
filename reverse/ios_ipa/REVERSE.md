@@ -435,6 +435,9 @@ Confirmed Objective-C stubs:
 - `saveOrUploadGalleryFor16`: `0x1010711c0`
 - `uploadGalleryFor16:MusicData:CompletionHandler:`: `0x1010b1bc0`
 
+Important correction:
+- The `messageWithGIFImageData:width:height:` / `praseGIF*` addresses above resolve to Objective-C selector stubs in `__objc_stubs`, not to the final implementation bodies. They are still useful anchors for caller tracing, but not the place to recover real parsing logic directly.
+
 Confirmed direct callers:
 - `0x1000974a4 -> saveOrUploadGalleryFor16`
 - `0x1001a5c40 -> praseGIFDataToImageArray:`
@@ -450,12 +453,86 @@ Confirmed direct callers:
 - `0x1005aba18 -> praseGIFDelayTime:`
 - `0x10066ef4c -> messageWithGIFImageData:width:height:`
 
+Additional instruction-level findings from the `Aurabox` binary:
+- `sppSetSceneGIF:` IMP `0x10088dfac` zeroes a fixed `185`-byte buffer, copies a `DivoomTimeboxSceneGIf_t={CCC[182C]}` struct into it, wraps it as `NSData`, and sends it with command `0xB1`.
+- `DrawingBoard` owns:
+  - `sendAllFrameToDevice:galleryModel:` IMP `0x1007818bc`
+  - `sendAnimateSpeed` IMP `0x1007819b4`
+- The adjacent helper at `0x100781ac0` takes the output of `getTextModel:` -> `setRow` -> `encodeText:width:` -> `packetBlueData:`, enumerates the resulting packet array, and calls `sendSppCmd:data:` with command byte `0x87` for each packet (`mov w2, #0x87` at `0x100781c98`, branch to `sendSppCmd:data:` at `0x101075560`).
+- That means the vendor `16x16` gallery/drawing path is not just a monolithic `0x8B` blob upload. At least one neighboring branch uses prebuilt packet objects and explicit `0x87` packet sends.
+- `sendAllFrameToDevice:galleryModel:` does not directly inline obvious frame bytes in its first block; it branches through helper send routines after checking device mode and gallery state, which is consistent with a higher-level playback activation path rather than a raw uploader only.
+- `setCustomGalleryTimeConfig:galleryShowTimeFlag:SoundOnOff:customId:callback:ClockId:ParentClockId:ParentItemId:` IMP `0x1007f4ff8` builds a keyed config object containing at least:
+  - `LcdIndex`
+  - `LcdIndependence`
+  - `SingleGalleyTime`
+  - `GalleryShowTimeFlag`
+  - `SoundOnOff`
+  - `CustomId`
+  - `ClockId`
+  - `ParentClockId`
+  - `ParentItemId`
+  This strongly suggests gallery playback duration/loop behavior is controlled separately from raw GIF parsing/upload.
+
 Practical implication:
 - The vendor app clearly has a first-class `16x16` upload/gallery path.
 - The best next reverse-engineering move is to inspect the callers above and recover:
   - how GIF frames are decoded and timed
   - what intermediate image/message object `messageWithGIFImageData:width:height:` builds
   - where that object transitions into BLE/SPP commands for the Ditoo Pro
+  - how gallery playback timing is activated after upload (`sendAllFrameToDevice`, `sendAnimateSpeed`, `setCustomGalleryTimeConfig`, `sppSetSceneGIF:`)
+
+## Animation Upload Protocol (0x8B)
+
+### Packet sequence
+
+The Ditoo Pro `16x16` animation upload uses the `0x8B` command family with a `0xBD [0x31]` preamble. The full sequence is:
+
+1. `0xBD [0x31]` - marks the device as `NewAniSendMode2020` (required preamble)
+2. `0x8B [0x00, total_size_le32]` - start upload, declares total animation byte count
+3. `0x8B [0x01, total_size_le32, chunk_offset_le16, chunk_data...]` - data chunks (up to 256 bytes each)
+4. `0x8B [0x02]` - end upload marker
+5. `0x45 [0x05]` - switch to user-animation view
+6. `0xBD [0x17, 0x00]` - select animation slot 0
+
+### Device acknowledgment
+
+On 2026-03-19, real device testing confirmed the Ditoo Pro responds to the `0x8B` upload with an old-mode ACK packet:
+
+```text
+01 07 00 04 8b 55 00 01 ec 00 02
+```
+
+Decoded:
+- `01` / `02` = old-mode frame delimiters
+- `07 00` = length (little-endian)
+- `04` = command 0x04 = ACK response
+- `8b` = ACKed command: 0x8B (animation upload)
+- `55` = 0x55 = vendor "OK" marker
+- `00 01` = status bytes (upload accepted)
+- `ec 00` = checksum (verified correct)
+
+This confirms the device accepts and acknowledges the `0x8B` upload traffic. Whether it then plays the animation autonomously depends on the `.divoom16` payload format matching what the firmware expects.
+
+### .divoom16 frame format
+
+Each frame in the upload blob starts with:
+
+```text
+0xAA  frame_length_le16  duration_ms_le16  reuse_palette_flag  palette_count  [palette_rgb...]  [packed_pixel_indices...]
+```
+
+Where:
+- `frame_length` = total bytes from `0xAA` to end of pixel data (inclusive)
+- `duration_ms` = display time per frame in milliseconds
+- `reuse_palette_flag` = 0 for local palette, 1 to reuse the previous frame's palette
+- `palette_count` = number of RGB entries (0 = 256), only present when `reuse_palette_flag == 0`
+- `palette_rgb` = 3 bytes per color (R, G, B)
+- pixel indices are bit-packed at `ceil(log2(max(2, palette_count)))` bits per pixel, LSB-first
+
+### Animation playback status
+
+- **0x44 frame streaming (proven)**: Mac sends each frame individually with timing controlled by `DispatchQueue`. Visually confirmed on the device display.
+- **0x8B bulk upload (ACKed but unverified playback)**: Device acknowledges the upload with cmd 0x04 ACK. On-device autonomous playback has not been visually confirmed yet. The display may require an additional scene-switch or playback command not yet identified.
 
 ## Open Questions
 
