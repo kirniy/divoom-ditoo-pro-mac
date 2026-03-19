@@ -458,8 +458,8 @@ Additional instruction-level findings from the `Aurabox` binary:
 - `DrawingBoard` owns:
   - `sendAllFrameToDevice:galleryModel:` IMP `0x1007818bc`
   - `sendAnimateSpeed` IMP `0x1007819b4`
-- The adjacent helper at `0x100781ac0` takes the output of `getTextModel:` -> `setRow` -> `encodeText:width:` -> `packetBlueData:`, enumerates the resulting packet array, and calls `sendSppCmd:data:` with command byte `0x87` for each packet (`mov w2, #0x87` at `0x100781c98`, branch to `sendSppCmd:data:` at `0x101075560`).
-- That means the vendor `16x16` gallery/drawing path is not just a monolithic `0x8B` blob upload. At least one neighboring branch uses prebuilt packet objects and explicit `0x87` packet sends.
+- The adjacent `DrawingBoard.sendDeviceText` helper at `0x100781ac0` takes the output of `getTextModel:` -> `setRow` -> `encodeText:width:` -> `packetBlueData:`, enumerates the resulting packet array, and calls `sendSppCmd:data:` with command byte `0x87` for each packet (`mov w2, #0x87` at `0x100781c98`, branch to `sendSppCmd:data:` at `0x101075560`).
+- `DrawingBoard.sendDeviceTextFrame` is the neighboring method at `0x100781d30`, and it uses `set32TextFrame:startY:frameWidth:frameHeight:`. So the discovered `0x87` branch is now clearly part of the text/drawing pipeline, not the gallery upload pipeline.
 - `sendAllFrameToDevice:galleryModel:` does not directly inline obvious frame bytes in its first block; it branches through helper send routines after checking device mode and gallery state, which is consistent with a higher-level playback activation path rather than a raw uploader only.
 - `setCustomGalleryTimeConfig:galleryShowTimeFlag:SoundOnOff:customId:callback:ClockId:ParentClockId:ParentItemId:` IMP `0x1007f4ff8` builds a keyed config object containing at least:
   - `LcdIndex`
