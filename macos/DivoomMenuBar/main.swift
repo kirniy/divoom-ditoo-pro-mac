@@ -33,10 +33,10 @@ enum AppLog {
     }
 }
 
-private let rootMenuSurfaceWidth: CGFloat = 408
+private let rootMenuSurfaceWidth: CGFloat = 432
 private let studioMenuSurfaceWidth: CGFloat = 396
-private let summaryCardHeight: CGFloat = 118
-private let quickHubHeight: CGFloat = 214
+private let summaryCardHeight: CGFloat = 148
+private let quickHubHeight: CGFloat = 272
 private let colorStudioHeight: CGFloat = 246
 private let cloudLibraryEnabledDefaultsKey = "dev.kirniy.divoom.cloud-library-enabled"
 private let cloudSyncOnLaunchDefaultsKey = "dev.kirniy.divoom.cloud-sync-on-launch"
@@ -186,10 +186,6 @@ private enum DivoomCloudCredentialResolver {
             passiveSyncedCredentialsCache = nil
         }
         return nil
-    }
-
-    static func resolvedCredentials() -> DivoomCloudCredentials? {
-        appKeychainCredentials() ?? syncedInternetPasswordCredentials()
     }
 
     private static func readInternetPassword(server: String, allowInteraction: Bool) -> DivoomCloudCredentials? {
@@ -504,6 +500,18 @@ private enum AutoRefreshMode {
         case .favorites:
             return .favorites
         }
+    }
+}
+
+private struct SummaryChipSpec {
+    let text: String
+    let symbolName: String
+    let accentColor: NSColor?
+
+    init(text: String, symbolName: String, accentColor: NSColor? = nil) {
+        self.text = text
+        self.symbolName = symbolName
+        self.accentColor = accentColor
     }
 }
 
@@ -873,11 +881,21 @@ private final class MenuSummaryView: NSView {
     private let glassView = NSVisualEffectView()
     private let backdropView = PixelShaderBackdropView()
     private let iconView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "Ditoo Pro 16x16 RGB")
-    private let connectionLabel = NSTextField(labelWithString: "Ready for native BLE beaming.")
-    private let actionLabel = NSTextField(labelWithString: "Last action: idle")
-    private let connectionPill = SummaryPillView(text: "Scanning", symbolName: "dot.radiowaves.left.and.right")
-    private let automationPill = SummaryPillView(text: "Automation Off", symbolName: "pause.circle")
+    private let titleLabel = NSTextField(labelWithString: "Divoom Ditoo Pro Mac")
+    private let subtitleLabel = NSTextField(labelWithString: "Native control deck for the 16x16 display.")
+    private let headlineLabel = NSTextField(labelWithString: "Beam colors, live feeds, and library picks.")
+    private let rotatingLabel = NSTextField(labelWithString: "Open Library for curated, favorite, and cloud picks.")
+    private let chipViews: [SummaryPillView] = [
+        SummaryPillView(text: "Device Ready", symbolName: "dot.radiowaves.left.and.right"),
+        SummaryPillView(text: "Manual", symbolName: "hand.tap"),
+        SummaryPillView(text: "0 Favorites", symbolName: "star.fill"),
+        SummaryPillView(text: "Cloud Idle", symbolName: "icloud"),
+    ]
+    private let chipRowOne = NSStackView()
+    private let chipRowTwo = NSStackView()
+    private var rotatingLines: [String] = ["Open Library for curated and cloud picks."]
+    private var rotatingLineIndex = 0
+    private var rotatingLineTimer: Timer?
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: rootMenuSurfaceWidth, height: summaryCardHeight)
@@ -893,10 +911,20 @@ private final class MenuSummaryView: NSView {
         setup()
     }
 
-    func update(state: StatusIconState, connection: String, action: String, refresh: String) {
+    deinit {
+        rotatingLineTimer?.invalidate()
+    }
+
+    func update(
+        state: StatusIconState,
+        subtitle: String,
+        headline: String,
+        rotatingLines: [String],
+        chips: [SummaryChipSpec]
+    ) {
         iconView.image = makeStatusItemIcon(state: state)
-        connectionLabel.stringValue = connection
-        actionLabel.stringValue = action
+        subtitleLabel.stringValue = subtitle
+        headlineLabel.stringValue = headline
         backdropView.palette = {
             switch state {
             case .idle: return .idle
@@ -904,17 +932,9 @@ private final class MenuSummaryView: NSView {
             case .error: return .error
             }
         }()
-        backdropView.activityBoost = refresh == "Automation: Off" ? 0.84 : 1.16
-        connectionPill.update(
-            text: summaryConnectionChipText(connection),
-            symbolName: "dot.radiowaves.left.and.right",
-            accentColor: state == .error ? .systemOrange : nil
-        )
-        automationPill.update(
-            text: refresh.replacingOccurrences(of: "Automation: ", with: ""),
-            symbolName: refresh == "Automation: Off" ? "pause.circle" : "arrow.triangle.2.circlepath",
-            accentColor: refresh == "Automation: Off" ? nil : .systemBlue
-        )
+        backdropView.activityBoost = chips.contains(where: { $0.accentColor != nil }) ? 1.02 : 0.82
+        updateRotatingLines(rotatingLines)
+        updateChips(chips)
     }
 
     private func setup() {
@@ -945,21 +965,26 @@ private final class MenuSummaryView: NSView {
         iconView.imageScaling = .scaleNone
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 14, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 15, weight: .bold)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
 
-        connectionLabel.translatesAutoresizingMaskIntoConstraints = false
-        connectionLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
-        connectionLabel.textColor = .secondaryLabelColor
-        connectionLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.lineBreakMode = .byTruncatingTail
 
-        actionLabel.translatesAutoresizingMaskIntoConstraints = false
-        actionLabel.font = .systemFont(ofSize: 13.5, weight: .bold)
-        actionLabel.textColor = .labelColor
-        actionLabel.lineBreakMode = .byTruncatingTail
+        headlineLabel.translatesAutoresizingMaskIntoConstraints = false
+        headlineLabel.font = .systemFont(ofSize: 17, weight: .bold)
+        headlineLabel.textColor = .labelColor
+        headlineLabel.lineBreakMode = .byTruncatingTail
 
-        let headerStack = NSStackView(views: [titleLabel, connectionLabel])
+        rotatingLabel.translatesAutoresizingMaskIntoConstraints = false
+        rotatingLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        rotatingLabel.textColor = .secondaryLabelColor
+        rotatingLabel.lineBreakMode = .byTruncatingTail
+
+        let headerStack = NSStackView(views: [titleLabel, subtitleLabel])
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
         headerStack.spacing = 2
@@ -971,16 +996,23 @@ private final class MenuSummaryView: NSView {
         topRow.spacing = 10
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let pillRow = NSStackView(views: [connectionPill, automationPill])
-        pillRow.orientation = .horizontal
-        pillRow.alignment = .centerY
-        pillRow.spacing = 8
-        pillRow.translatesAutoresizingMaskIntoConstraints = false
+        chipRowOne.orientation = .horizontal
+        chipRowOne.alignment = .centerY
+        chipRowOne.spacing = 8
+        chipRowOne.translatesAutoresizingMaskIntoConstraints = false
 
-        let contentStack = NSStackView(views: [topRow, actionLabel, pillRow])
+        chipRowTwo.orientation = .horizontal
+        chipRowTwo.alignment = .centerY
+        chipRowTwo.spacing = 8
+        chipRowTwo.translatesAutoresizingMaskIntoConstraints = false
+
+        chipViews.prefix(2).forEach { chipRowOne.addArrangedSubview($0) }
+        chipViews.suffix(2).forEach { chipRowTwo.addArrangedSubview($0) }
+
+        let contentStack = NSStackView(views: [topRow, headlineLabel, rotatingLabel, chipRowOne, chipRowTwo])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 7
+        contentStack.spacing = 6
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(glassView)
@@ -1006,24 +1038,47 @@ private final class MenuSummaryView: NSView {
         ])
     }
 
-    private func summaryConnectionChipText(_ connection: String) -> String {
-        let lower = connection.lowercased()
-        if lower.contains("write characteristic ready") || lower.contains("scan finished") {
-            return "Device Ready"
+    private func updateRotatingLines(_ lines: [String]) {
+        let sanitized = lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let resolvedLines = sanitized.isEmpty ? ["Open Library for curated and cloud picks."] : sanitized
+        if resolvedLines != rotatingLines {
+            rotatingLines = resolvedLines
+            rotatingLineIndex = 0
         }
-        if lower.contains("requested bluetooth access") {
-            return "Waiting Access"
+
+        rotatingLabel.stringValue = rotatingLines[min(rotatingLineIndex, rotatingLines.count - 1)]
+        rotatingLineTimer?.invalidate()
+        guard rotatingLines.count > 1 else {
+            rotatingLineTimer = nil
+            return
         }
-        if lower.contains("not granted") || lower.contains("unauthorized") {
-            return "Bluetooth Needed"
+
+        let timer = Timer.scheduledTimer(withTimeInterval: 3.4, repeats: true) { [weak self] _ in
+            guard let self, self.rotatingLines.count > 1 else { return }
+            self.rotatingLineIndex = (self.rotatingLineIndex + 1) % self.rotatingLines.count
+            self.rotatingLabel.stringValue = self.rotatingLines[self.rotatingLineIndex]
         }
-        if lower.contains("scan progress") || lower.contains("scanning") {
-            return "Scanning"
+        RunLoop.main.add(timer, forMode: .common)
+        rotatingLineTimer = timer
+    }
+
+    private func updateChips(_ chips: [SummaryChipSpec]) {
+        for (index, chipView) in chipViews.enumerated() {
+            guard index < chips.count else {
+                chipView.isHidden = true
+                continue
+            }
+            let chip = chips[index]
+            chipView.isHidden = false
+            chipView.update(
+                text: chip.text,
+                symbolName: chip.symbolName,
+                accentColor: chip.accentColor
+            )
         }
-        if lower.contains("connecting") {
-            return "Connecting"
-        }
-        return connection.replacingOccurrences(of: "BLE ", with: "").replacingOccurrences(of: "finished", with: "ready")
     }
 }
 
@@ -1538,6 +1593,7 @@ private final class QuickActionTileView: NSControl {
     private let iconView = NSImageView()
     private let spinner = NSProgressIndicator()
     private let titleLabel = NSTextField(labelWithString: "")
+    private let subtitleLabel = NSTextField(labelWithString: "")
     private var trackingAreaRef: NSTrackingArea?
     private var isHovering = false {
         didSet {
@@ -1551,12 +1607,13 @@ private final class QuickActionTileView: NSControl {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 112, height: 86)
+        NSSize(width: 120, height: 98)
     }
 
-    init(title: String, image: NSImage?, tooltip: String) {
+    init(title: String, subtitle: String, image: NSImage?, tooltip: String) {
         super.init(frame: .zero)
         titleLabel.stringValue = title
+        subtitleLabel.stringValue = subtitle
         iconView.image = image
         self.toolTip = tooltip
         setup()
@@ -1605,11 +1662,11 @@ private final class QuickActionTileView: NSControl {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 22
+        layer?.cornerRadius = 24
         layer?.cornerCurve = .continuous
-        layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.07).cgColor
         layer?.shadowOpacity = 1
-        layer?.shadowRadius = 12
+        layer?.shadowRadius = 14
         layer?.shadowOffset = NSSize(width: 0, height: -3)
 
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
@@ -1617,7 +1674,7 @@ private final class QuickActionTileView: NSControl {
         backgroundView.blendingMode = .withinWindow
         backgroundView.state = .active
         backgroundView.wantsLayer = true
-        backgroundView.layer?.cornerRadius = 22
+        backgroundView.layer?.cornerRadius = 24
         backgroundView.layer?.cornerCurve = .continuous
         backgroundView.layer?.borderWidth = 1
 
@@ -1627,7 +1684,7 @@ private final class QuickActionTileView: NSControl {
 
         badgeView.translatesAutoresizingMaskIntoConstraints = false
         badgeView.wantsLayer = true
-        badgeView.layer?.cornerRadius = 18
+        badgeView.layer?.cornerRadius = 19
         badgeView.layer?.cornerCurve = .continuous
         badgeView.layer?.borderWidth = 1
 
@@ -1637,52 +1694,62 @@ private final class QuickActionTileView: NSControl {
         spinner.isDisplayedWhenStopped = false
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 12, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .bold)
         titleLabel.textColor = .labelColor
-        titleLabel.alignment = .center
+        titleLabel.alignment = .left
         titleLabel.lineBreakMode = .byWordWrapping
         titleLabel.maximumNumberOfLines = 2
         titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.alignment = .left
+        subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.maximumNumberOfLines = 1
 
         addSubview(backgroundView)
         addSubview(badgeView)
         badgeView.addSubview(iconView)
         badgeView.addSubview(spinner)
         addSubview(titleLabel)
+        addSubview(subtitleLabel)
 
         NSLayoutConstraint.activate([
             backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
             backgroundView.trailingAnchor.constraint(equalTo: trailingAnchor),
             backgroundView.topAnchor.constraint(equalTo: topAnchor),
             backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            badgeView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            badgeView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             badgeView.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            badgeView.widthAnchor.constraint(equalToConstant: 36),
-            badgeView.heightAnchor.constraint(equalToConstant: 36),
+            badgeView.widthAnchor.constraint(equalToConstant: 38),
+            badgeView.heightAnchor.constraint(equalToConstant: 38),
             iconView.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
             iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 18),
             iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 18),
             spinner.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            titleLabel.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 11),
-            titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
-            titleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            titleLabel.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 14),
+            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            subtitleLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
         ])
 
         updateAppearance()
     }
 
     private func updateAppearance() {
-        let activeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.78)
-        let inactiveBorderColor = NSColor.separatorColor.withAlphaComponent(0.22)
+        let activeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.72)
+        let inactiveBorderColor = NSColor.separatorColor.withAlphaComponent(0.18)
         backgroundView.layer?.borderColor = (isActive ? activeBorderColor : inactiveBorderColor).cgColor
-        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.97 : 0.92)
+        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.975 : 0.94)
         backgroundView.layer?.backgroundColor = (isActive
-            ? NSColor.controlAccentColor.withAlphaComponent(0.12)
-            : NSColor.clear).cgColor
+            ? NSColor.controlAccentColor.withAlphaComponent(0.13)
+            : NSColor.white.withAlphaComponent(0.02)).cgColor
         badgeView.layer?.backgroundColor = (isActive
             ? badgeFillColor.blended(withFraction: 0.16, of: .white) ?? badgeFillColor
             : badgeFillColor).cgColor
@@ -1691,7 +1758,10 @@ private final class QuickActionTileView: NSControl {
             : NSColor.separatorColor.withAlphaComponent(isHovering ? 0.34 : 0.22)).cgColor
         iconView.contentTintColor = usesOriginalIconColors ? nil : iconTintColor
         titleLabel.textColor = isActive ? NSColor.labelColor : NSColor.labelColor.withAlphaComponent(0.94)
-        alphaValue = isPressing ? 0.88 : 1.0
+        subtitleLabel.textColor = isActive
+            ? NSColor.secondaryLabelColor.withAlphaComponent(0.94)
+            : NSColor.secondaryLabelColor.withAlphaComponent(isHovering ? 0.92 : 0.84)
+        alphaValue = isPressing ? 0.9 : 1.0
         iconView.isHidden = isLoading
         if isLoading {
             spinner.startAnimation(nil)
@@ -1723,6 +1793,8 @@ private final class QuickActionHubView: NSView {
 
     private var tiles: [QuickActionKind: QuickActionTileView] = [:]
     private let glassView = NSVisualEffectView()
+    private let eyebrowLabel = NSTextField(labelWithString: "Launch Pad")
+    private let summaryLabel = NSTextField(labelWithString: "Jump into live feeds, browse the library, or hand off to favorites mode.")
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: rootMenuSurfaceWidth, height: quickHubHeight)
@@ -1757,6 +1829,15 @@ private final class QuickActionHubView: NSView {
         glassView.layer?.borderWidth = 1
         glassView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
 
+        eyebrowLabel.translatesAutoresizingMaskIntoConstraints = false
+        eyebrowLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        eyebrowLabel.textColor = .secondaryLabelColor
+
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.lineBreakMode = .byTruncatingTail
+
         let topRow = NSStackView(views: [
             makeTile(title: "Codex Live", actionID: .codex),
             makeTile(title: "Claude Live", actionID: .claude),
@@ -1777,7 +1858,13 @@ private final class QuickActionHubView: NSView {
         bottomRow.distribution = .fillEqually
         bottomRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [topRow, bottomRow])
+        let headerStack = NSStackView(views: [eyebrowLabel, summaryLabel])
+        headerStack.orientation = .vertical
+        headerStack.alignment = .leading
+        headerStack.spacing = 2
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [headerStack, topRow, bottomRow])
         stack.orientation = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -1801,7 +1888,12 @@ private final class QuickActionHubView: NSView {
     }
 
     private func makeTile(title: String, actionID: QuickActionKind) -> QuickActionTileView {
-        let tile = QuickActionTileView(title: title, image: image(for: actionID), tooltip: tooltip(for: actionID))
+        let tile = QuickActionTileView(
+            title: title,
+            subtitle: subtitle(for: actionID),
+            image: image(for: actionID),
+            tooltip: tooltip(for: actionID)
+        )
         tile.translatesAutoresizingMaskIntoConstraints = false
         tile.iconTintColor = iconTint(for: actionID)
         tile.usesOriginalIconColors = actionID == .codex || actionID == .claude
@@ -1811,6 +1903,25 @@ private final class QuickActionHubView: NSView {
         }
         tiles[actionID] = tile
         return tile
+    }
+
+    private func subtitle(for actionID: QuickActionKind) -> String {
+        switch actionID {
+        case .codex:
+            return "OpenAI usage feed"
+        case .claude:
+            return "Anthropic usage feed"
+        case .pair:
+            return "Dual live meter"
+        case .ipFlag:
+            return "Live geolocation"
+        case .library:
+            return "Browse and beam"
+        case .favorites:
+            return "Playlist mode"
+        case .screenPick:
+            return "Sample any pixel"
+        }
     }
 
     private func image(for actionID: QuickActionKind) -> NSImage? {
@@ -2845,6 +2956,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private let onSend: (AnimationLibraryItem) -> Void
     private let onReveal: (AnimationLibraryItem) -> Void
     private let onOpenCloudSettings: () -> Void
+    private let onImportSyncedCloudCredentials: () -> Void
     private let onSyncCloudNow: () -> Void
     private let onSearchCloud: (String) -> Void
     private let onToggleCloudLike: (AnimationLibraryItem, Bool, @escaping @MainActor (Bool, String) -> Void) -> Void
@@ -2903,6 +3015,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         onSend: @escaping (AnimationLibraryItem) -> Void,
         onReveal: @escaping (AnimationLibraryItem) -> Void,
         onOpenCloudSettings: @escaping () -> Void,
+        onImportSyncedCloudCredentials: @escaping () -> Void,
         onSyncCloudNow: @escaping () -> Void,
         onSearchCloud: @escaping (String) -> Void,
         onToggleCloudLike: @escaping (AnimationLibraryItem, Bool, @escaping @MainActor (Bool, String) -> Void) -> Void
@@ -2910,6 +3023,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         self.onSend = onSend
         self.onReveal = onReveal
         self.onOpenCloudSettings = onOpenCloudSettings
+        self.onImportSyncedCloudCredentials = onImportSyncedCloudCredentials
         self.onSyncCloudNow = onSyncCloudNow
         self.onSearchCloud = onSearchCloud
         self.onToggleCloudLike = onToggleCloudLike
@@ -3026,12 +3140,12 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         backdropView.activityBoost = 0.42
         rootView.addSubview(backdropView)
 
-        let headerCard = NSVisualEffectView()
-        configureCard(headerCard, material: .underWindowBackground, radius: 30)
+        let heroCard = NSVisualEffectView()
+        configureCard(heroCard, material: .underWindowBackground, radius: 30)
         let headerBackdrop = PixelShaderBackdropView()
         headerBackdrop.palette = .library
         headerBackdrop.activityBoost = 0.34
-        headerCard.addSubview(headerBackdrop)
+        heroCard.addSubview(headerBackdrop)
 
         headerIconView.translatesAutoresizingMaskIntoConstraints = false
         let headerSymbolConfig = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
@@ -3136,7 +3250,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         let headerSpacer = NSView()
         headerSpacer.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerTopRow = NSStackView(views: [titleRow, headerSpacer, cloudLoginButton])
+        let headerTopRow = NSStackView(views: [titleRow, headerSpacer, resultsLabel, syncCloudButton, searchCloudButton, cloudLoginButton])
         headerTopRow.orientation = .horizontal
         headerTopRow.alignment = .centerY
         headerTopRow.spacing = 12
@@ -3148,41 +3262,24 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         chipRow.spacing = 8
         chipRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerStack = NSStackView(views: [headerTopRow, summaryLabel, chipRow])
-        headerStack.orientation = .vertical
-        headerStack.alignment = .leading
-        headerStack.spacing = 8
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-
-        headerCard.addSubview(headerStack)
-
-        let toolbarCard = NSVisualEffectView()
-        configureCard(toolbarCard, material: .underWindowBackground, radius: 26)
-
-        let searchRow = NSStackView(views: [searchField, resultsLabel])
+        let searchRow = NSStackView(views: [searchField, displayModeControl, favoritesOnlyButton, refreshButton])
         searchRow.orientation = .horizontal
         searchRow.alignment = .centerY
         searchRow.spacing = 12
         searchRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let filterRow = NSStackView(views: [sourcePopUp, scopePopUp, categoryPopUp, collectionPopUp, sortPopUp, displayModeControl, favoritesOnlyButton, refreshButton])
+        let filterRow = NSStackView(views: [sourcePopUp, scopePopUp, categoryPopUp, collectionPopUp, sortPopUp])
         filterRow.orientation = .horizontal
         filterRow.alignment = .centerY
         filterRow.spacing = 10
         filterRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let cloudActionRow = NSStackView(views: [syncCloudButton, searchCloudButton])
-        cloudActionRow.orientation = .horizontal
-        cloudActionRow.alignment = .centerY
-        cloudActionRow.spacing = 10
-        cloudActionRow.translatesAutoresizingMaskIntoConstraints = false
-
-        let toolbarStack = NSStackView(views: [searchRow, filterRow, cloudActionRow])
-        toolbarStack.orientation = .vertical
-        toolbarStack.alignment = .leading
-        toolbarStack.spacing = 10
-        toolbarStack.translatesAutoresizingMaskIntoConstraints = false
-        toolbarCard.addSubview(toolbarStack)
+        let heroStack = NSStackView(views: [headerTopRow, summaryLabel, chipRow, searchRow, filterRow])
+        heroStack.orientation = .vertical
+        heroStack.alignment = .leading
+        heroStack.spacing = 10
+        heroStack.translatesAutoresizingMaskIntoConstraints = false
+        heroCard.addSubview(heroStack)
 
         let splitView = NSSplitView()
         splitView.translatesAutoresizingMaskIntoConstraints = false
@@ -3302,8 +3399,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         splitView.addArrangedSubview(browserPane)
         splitView.addArrangedSubview(inspectorView)
 
-        rootView.addSubview(headerCard)
-        rootView.addSubview(toolbarCard)
+        rootView.addSubview(heroCard)
         rootView.addSubview(splitView)
 
         let safeGuide = rootView.safeAreaLayoutGuide
@@ -3319,30 +3415,21 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             backdropView.topAnchor.constraint(equalTo: rootView.topAnchor),
             backdropView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
 
-            headerCard.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
-            headerCard.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
-            headerCard.topAnchor.constraint(equalTo: safeGuide.topAnchor, constant: 18),
+            heroCard.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
+            heroCard.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
+            heroCard.topAnchor.constraint(equalTo: safeGuide.topAnchor, constant: 18),
 
-            headerBackdrop.leadingAnchor.constraint(equalTo: headerCard.leadingAnchor),
-            headerBackdrop.trailingAnchor.constraint(equalTo: headerCard.trailingAnchor),
-            headerBackdrop.topAnchor.constraint(equalTo: headerCard.topAnchor),
-            headerBackdrop.bottomAnchor.constraint(equalTo: headerCard.bottomAnchor),
+            headerBackdrop.leadingAnchor.constraint(equalTo: heroCard.leadingAnchor),
+            headerBackdrop.trailingAnchor.constraint(equalTo: heroCard.trailingAnchor),
+            headerBackdrop.topAnchor.constraint(equalTo: heroCard.topAnchor),
+            headerBackdrop.bottomAnchor.constraint(equalTo: heroCard.bottomAnchor),
 
-            headerStack.leadingAnchor.constraint(equalTo: headerCard.leadingAnchor, constant: 20),
-            headerStack.trailingAnchor.constraint(equalTo: headerCard.trailingAnchor, constant: -20),
-            headerStack.topAnchor.constraint(equalTo: headerCard.topAnchor, constant: 18),
-            headerStack.bottomAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: -18),
+            heroStack.leadingAnchor.constraint(equalTo: heroCard.leadingAnchor, constant: 20),
+            heroStack.trailingAnchor.constraint(equalTo: heroCard.trailingAnchor, constant: -20),
+            heroStack.topAnchor.constraint(equalTo: heroCard.topAnchor, constant: 18),
+            heroStack.bottomAnchor.constraint(equalTo: heroCard.bottomAnchor, constant: -18),
 
-            toolbarCard.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
-            toolbarCard.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
-            toolbarCard.topAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: 12),
-
-            toolbarStack.leadingAnchor.constraint(equalTo: toolbarCard.leadingAnchor, constant: 16),
-            toolbarStack.trailingAnchor.constraint(equalTo: toolbarCard.trailingAnchor, constant: -16),
-            toolbarStack.topAnchor.constraint(equalTo: toolbarCard.topAnchor, constant: 14),
-            toolbarStack.bottomAnchor.constraint(equalTo: toolbarCard.bottomAnchor, constant: -14),
-
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
             sourcePopUp.widthAnchor.constraint(equalToConstant: 150),
             scopePopUp.widthAnchor.constraint(equalToConstant: 146),
             categoryPopUp.widthAnchor.constraint(equalToConstant: 148),
@@ -3352,7 +3439,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
             splitView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
             splitView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
-            splitView.topAnchor.constraint(equalTo: toolbarCard.bottomAnchor, constant: 16),
+            splitView.topAnchor.constraint(equalTo: heroCard.bottomAnchor, constant: 16),
             splitView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -22),
 
             collectionScrollView.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor, constant: 10),
@@ -3363,7 +3450,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             emptyLabel.centerXAnchor.constraint(equalTo: browserPane.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: browserPane.centerYAnchor),
 
-            inspectorView.widthAnchor.constraint(equalToConstant: 352),
+            inspectorView.widthAnchor.constraint(equalToConstant: 396),
 
             detailPreviewView.topAnchor.constraint(equalTo: inspectorView.topAnchor, constant: 18),
             detailPreviewView.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
@@ -3451,6 +3538,11 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     @objc private func openCloudSettings() {
         onOpenCloudSettings()
+    }
+
+    @objc private func importCloudCredentials() {
+        onImportSyncedCloudCredentials()
+        reloadLibrary()
     }
 
     @objc private func sendSelectedItem() {
@@ -3657,40 +3749,38 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 
     private func updateCloudLoginButton() {
-        if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
-            cloudLoginButton.title = credentials.email
-            cloudLoginButton.toolTip = "Using credentials saved in the app Keychain."
-            cloudLoginButton.image = makeMenuSymbol("lock.icloud", description: "Cloud Ready")
-            return
-        }
+        let hasLocalCredentials = DivoomCloudCredentialResolver.appKeychainCredentials() != nil
+        syncCloudButton.isEnabled = hasLocalCredentials
+        searchCloudButton.isEnabled = hasLocalCredentials
 
-        if let credentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials() {
-            cloudLoginButton.title = credentials.email
-            cloudLoginButton.toolTip = "Using a synced Passwords entry for Divoom Cloud."
-            cloudLoginButton.image = makeMenuSymbol("icloud", description: "Cloud Synced")
+        if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
+            cloudLoginButton.title = "Manage Cloud"
+            cloudLoginButton.toolTip = "Cloud ready as \(credentials.email). Click to manage credentials and sync."
+            cloudLoginButton.image = makeMenuSymbol("lock.icloud", description: "Cloud Ready")
+            cloudLoginButton.action = #selector(openCloudSettings)
             return
         }
 
         if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
-            cloudLoginButton.title = hint.email
-            cloudLoginButton.toolTip = "A synced Passwords entry exists for \(hint.server). Open Settings to import it into the app Keychain."
-            cloudLoginButton.image = makeMenuSymbol("icloud", description: "Cloud Passwords Hint")
+            cloudLoginButton.title = "Import from Passwords"
+            cloudLoginButton.toolTip = "A synced Passwords entry exists for \(hint.email) on \(hint.server). Import it into the app Keychain."
+            cloudLoginButton.image = makeMenuSymbol("square.and.arrow.down.on.square", description: "Import Cloud Login")
+            cloudLoginButton.action = #selector(importCloudCredentials)
             return
         }
 
-        cloudLoginButton.title = "Cloud Login"
+        cloudLoginButton.title = "Cloud Login…"
         cloudLoginButton.toolTip = "Add Divoom cloud credentials."
         cloudLoginButton.image = makeMenuSymbol("person.crop.circle.badge.plus", description: "Cloud Login")
+        cloudLoginButton.action = #selector(openCloudSettings)
     }
 
     private func updateLibrarySummary(visibleSourceCount: Int) {
         let cloudSummary: String
         if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
             cloudSummary = "Cloud ready as \(credentials.email)."
-        } else if let credentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials() {
-            cloudSummary = "Cloud ready via Passwords as \(credentials.email)."
         } else if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
-            cloudSummary = "Cloud Passwords entry detected for \(hint.email). Import it once in Settings."
+            cloudSummary = "A Passwords entry exists for \(hint.email). Import it once to enable native cloud features."
         } else {
             cloudSummary = "Cloud login not set yet."
         }
@@ -3960,11 +4050,24 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 }
 
-private enum AppSettingsTab: Int {
+private enum AppSettingsTab: Int, CaseIterable {
     case general = 0
     case live = 1
     case library = 2
     case about = 3
+
+    var title: String {
+        switch self {
+        case .general:
+            return "General"
+        case .live:
+            return "Live"
+        case .library:
+            return "Library"
+        case .about:
+            return "About"
+        }
+    }
 }
 
 private struct AppSettingsSnapshot {
@@ -4015,6 +4118,15 @@ private final class AppSettingsWindowController: NSWindowController {
     private let onOpenLogs: () -> Void
 
     private let tabView = NSTabView()
+    private let settingsHeaderCard = NSVisualEffectView()
+    private let settingsTitleLabel = NSTextField(labelWithString: "Divoom Ditoo Pro Mac")
+    private let settingsSubtitleLabel = NSTextField(labelWithString: "Tune the desktop shell, live feeds, and cloud-backed library from one native control deck.")
+    private let tabPicker = NSSegmentedControl(
+        labels: AppSettingsTab.allCases.map(\.title),
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     private let favoritesPlaybackPopUp = NSPopUpButton()
     private let usageModePopUp = NSPopUpButton()
@@ -4072,7 +4184,7 @@ private final class AppSettingsWindowController: NSWindowController {
         self.onOpenLogs = onOpenLogs
 
         let window = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 628, height: 492),
+            contentRect: NSRect(x: 0, y: 0, width: 648, height: 536),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -4083,7 +4195,7 @@ private final class AppSettingsWindowController: NSWindowController {
         window.isFloatingPanel = false
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        window.minSize = NSSize(width: 628, height: 492)
+        window.minSize = NSSize(width: 648, height: 536)
 
         super.init(window: window)
         buildUI(in: window)
@@ -4095,7 +4207,7 @@ private final class AppSettingsWindowController: NSWindowController {
     }
 
     func showSettings(tab: AppSettingsTab = .general) {
-        tabView.selectTabViewItem(at: tab.rawValue)
+        select(tab: tab)
         refresh()
         window?.center()
         showWindow(nil)
@@ -4105,6 +4217,12 @@ private final class AppSettingsWindowController: NSWindowController {
 
     func refresh() {
         let snapshot = snapshotProvider()
+        if let selectedItem = tabView.selectedTabViewItem ?? tabView.tabViewItems.first {
+            let selectedIndex = tabView.indexOfTabViewItem(selectedItem)
+            tabPicker.selectedSegment = selectedIndex == NSNotFound ? AppSettingsTab.general.rawValue : selectedIndex
+        } else {
+            tabPicker.selectedSegment = AppSettingsTab.general.rawValue
+        }
         launchAtLoginButton.state = snapshot.launchAtLoginEnabled ? .on : .off
 
         usageModePopUp.selectItem(at: snapshot.showUsed ? 0 : 1)
@@ -4147,27 +4265,67 @@ private final class AppSettingsWindowController: NSWindowController {
         rootView.state = .active
         contentView.addSubview(rootView)
 
+        settingsHeaderCard.translatesAutoresizingMaskIntoConstraints = false
+        settingsHeaderCard.material = .menu
+        settingsHeaderCard.blendingMode = .withinWindow
+        settingsHeaderCard.state = .active
+        settingsHeaderCard.wantsLayer = true
+        settingsHeaderCard.layer?.cornerRadius = 24
+        settingsHeaderCard.layer?.cornerCurve = .continuous
+        settingsHeaderCard.layer?.borderWidth = 1
+        settingsHeaderCard.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.22).cgColor
+        settingsHeaderCard.layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        settingsHeaderCard.layer?.shadowOpacity = 1
+        settingsHeaderCard.layer?.shadowRadius = 16
+        settingsHeaderCard.layer?.shadowOffset = NSSize(width: 0, height: -4)
+        rootView.addSubview(settingsHeaderCard)
+
+        settingsTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        settingsTitleLabel.font = .systemFont(ofSize: 24, weight: .bold)
+        settingsTitleLabel.textColor = .labelColor
+
+        settingsSubtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        settingsSubtitleLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        settingsSubtitleLabel.textColor = .secondaryLabelColor
+        settingsSubtitleLabel.maximumNumberOfLines = 2
+        settingsSubtitleLabel.lineBreakMode = .byWordWrapping
+
+        tabPicker.translatesAutoresizingMaskIntoConstraints = false
+        tabPicker.segmentStyle = .rounded
+        tabPicker.controlSize = .large
+        tabPicker.target = self
+        tabPicker.action = #selector(changeSelectedTab)
+        tabPicker.selectedSegment = AppSettingsTab.general.rawValue
+        tabPicker.setContentCompressionResistancePriority(.required, for: .vertical)
+
+        let headerStack = NSStackView(views: [settingsTitleLabel, settingsSubtitleLabel, tabPicker])
+        headerStack.orientation = .vertical
+        headerStack.alignment = .leading
+        headerStack.spacing = 10
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+        settingsHeaderCard.addSubview(headerStack)
+
         tabView.translatesAutoresizingMaskIntoConstraints = false
-        tabView.tabViewType = .topTabsBezelBorder
+        tabView.tabViewType = .noTabsNoBorder
         rootView.addSubview(tabView)
 
         let generalItem = NSTabViewItem(identifier: AppSettingsTab.general.rawValue)
-        generalItem.label = "General"
+        generalItem.label = AppSettingsTab.general.title
         generalItem.view = buildGeneralPane()
         tabView.addTabViewItem(generalItem)
 
         let liveItem = NSTabViewItem(identifier: AppSettingsTab.live.rawValue)
-        liveItem.label = "Live"
+        liveItem.label = AppSettingsTab.live.title
         liveItem.view = buildLivePane()
         tabView.addTabViewItem(liveItem)
 
         let libraryItem = NSTabViewItem(identifier: AppSettingsTab.library.rawValue)
-        libraryItem.label = "Library"
+        libraryItem.label = AppSettingsTab.library.title
         libraryItem.view = buildLibraryPane()
         tabView.addTabViewItem(libraryItem)
 
         let aboutItem = NSTabViewItem(identifier: AppSettingsTab.about.rawValue)
-        aboutItem.label = "About"
+        aboutItem.label = AppSettingsTab.about.title
         aboutItem.view = buildAboutPane()
         tabView.addTabViewItem(aboutItem)
 
@@ -4177,9 +4335,18 @@ private final class AppSettingsWindowController: NSWindowController {
             rootView.topAnchor.constraint(equalTo: contentView.topAnchor),
             rootView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
+            settingsHeaderCard.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 18),
+            settingsHeaderCard.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -18),
+            settingsHeaderCard.topAnchor.constraint(equalTo: rootView.safeAreaLayoutGuide.topAnchor, constant: 14),
+
+            headerStack.leadingAnchor.constraint(equalTo: settingsHeaderCard.leadingAnchor, constant: 20),
+            headerStack.trailingAnchor.constraint(equalTo: settingsHeaderCard.trailingAnchor, constant: -20),
+            headerStack.topAnchor.constraint(equalTo: settingsHeaderCard.topAnchor, constant: 18),
+            headerStack.bottomAnchor.constraint(equalTo: settingsHeaderCard.bottomAnchor, constant: -18),
+
             tabView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 18),
             tabView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -18),
-            tabView.topAnchor.constraint(equalTo: rootView.safeAreaLayoutGuide.topAnchor, constant: 14),
+            tabView.topAnchor.constraint(equalTo: settingsHeaderCard.bottomAnchor, constant: 14),
             tabView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -18),
         ])
     }
@@ -4509,6 +4676,18 @@ private final class AppSettingsWindowController: NSWindowController {
         return label
     }
 
+    private func select(tab: AppSettingsTab) {
+        tabView.selectTabViewItem(at: tab.rawValue)
+        tabPicker.selectedSegment = tab.rawValue
+    }
+
+    @objc private func changeSelectedTab() {
+        guard let tab = AppSettingsTab(rawValue: tabPicker.selectedSegment) else {
+            return
+        }
+        select(tab: tab)
+    }
+
     @objc private func toggleLaunchAtLogin() {
         onToggleLaunchAtLogin(launchAtLoginButton.state == .on)
         refresh()
@@ -4776,26 +4955,33 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
         studioMenu.addItem(colorStudioItem)
         studioMenu.addItem(.separator())
-        studioMenu.addItem(makeSectionHeader("Beam"))
+        studioMenu.addItem(makeSectionHeader("Beam Now"))
         studioMenu.addItem(makeItem("Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
         studioMenu.addItem(makeItem("Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
         studioMenu.addItem(makeItem("Pixel Badge Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
         studioMenu.addItem(.separator())
-        studioMenu.addItem(makeSectionHeader("Motion"))
+        studioMenu.addItem(makeSectionHeader("Loops"))
         studioMenu.addItem(makeItem("Signal Sweep Loop", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
         studioMenu.addItem(makeItem("Doom Fire Loop", action: #selector(runNativeUploadDoomFire), symbolName: "flame.fill"))
         studioMenu.addItem(makeItem("Nyan Cat", action: #selector(runNativeUploadNyan), symbolName: "star"))
         studioMenu.addItem(makeItem("Bunny Hop", action: #selector(runNativeUploadBunny), symbolName: "hare"))
         studioMenu.addItem(makeRecentAnimationsMenuItem())
-        studioMenu.addItem(.separator())
-        studioMenu.addItem(makeSectionHeader("Library"))
-        studioMenu.addItem(makeItem("Open Animation Library", action: #selector(openAnimationLibrary), symbolName: "photo.stack"))
-        studioMenu.addItem(makeItem("Reveal Curated Folder", action: #selector(revealCuratedAnimations), symbolName: "folder"))
+
+        let libraryMenu = NSMenu(title: "Library")
+        libraryMenu.addItem(makeSectionHeader("Browse"))
+        libraryMenu.addItem(makeItem("Open Animation Library", action: #selector(openAnimationLibrary), symbolName: "photo.stack"))
+        libraryMenu.addItem(makeItem("Open Library Settings…", action: #selector(openLibrarySettings), symbolName: "slider.horizontal.3"))
+        libraryMenu.addItem(makeItem("Reveal Curated Folder", action: #selector(revealCuratedAnimations), symbolName: "folder"))
+        libraryMenu.addItem(.separator())
+        libraryMenu.addItem(makeSectionHeader("Divoom Cloud"))
+        libraryMenu.addItem(makeItem("Sync Divoom Cloud Now", action: #selector(syncDivoomCloudLibrary), symbolName: "arrow.triangle.2.circlepath"))
+        libraryMenu.addItem(makeItem("Reveal Divoom Cloud Folder", action: #selector(revealDivoomCloudFolder), symbolName: "shippingbox"))
+        libraryMenu.addItem(makeItem("Open Cloud Guide", action: #selector(openDivoomCloudGuide), symbolName: "book"))
 
         let liveMenu = NSMenu(title: "Live")
-        liveMenu.addItem(makeSectionHeader("Sources"))
-        autoCodexItem = makeItem("Codex", action: #selector(toggleAutoCodex), symbolName: "brain")
-        autoClaudeItem = makeItem("Claude", action: #selector(toggleAutoClaude), symbolName: "message")
+        liveMenu.addItem(makeSectionHeader("Live Surfaces"))
+        autoCodexItem = makeItem("Codex Live", action: #selector(toggleAutoCodex), symbolName: "brain")
+        autoClaudeItem = makeItem("Claude Live", action: #selector(toggleAutoClaude), symbolName: "message")
         autoPairItem = makeItem("Codex + Claude", action: #selector(toggleAutoPair), symbolName: "rectangle.split.2x1")
         autoIPFlagItem = makeItem("IP Flag", action: #selector(toggleAutoIPFlag), symbolName: "flag.2.crossed")
         autoFavoritesItem = makeItem("Rotate Favorites", action: #selector(toggleAutoFavorites), symbolName: "arrow.triangle.2.circlepath")
@@ -4805,51 +4991,49 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         liveMenu.addItem(autoIPFlagItem)
         liveMenu.addItem(autoFavoritesItem)
         liveMenu.addItem(.separator())
-        liveMenu.addItem(makeItem("Live Settings…", action: #selector(openLiveSettings), symbolName: "slider.horizontal.3"))
+        liveMenu.addItem(makeItem("Open Live Settings…", action: #selector(openLiveSettings), symbolName: "slider.horizontal.3"))
 
         let deviceMenu = NSMenu(title: "Device")
-        deviceMenu.addItem(makeSectionHeader("Bluetooth"))
+        deviceMenu.addItem(makeSectionHeader("Connection"))
         deviceMenu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
         deviceMenu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
         deviceMenu.addItem(makeItem("Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
         deviceMenu.addItem(.separator())
-        deviceMenu.addItem(makeSectionHeader("Ambient"))
-        deviceMenu.addItem(makeItem("Battery Panel", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
-        deviceMenu.addItem(makeItem("System Panel", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
-        deviceMenu.addItem(makeItem("Network Panel", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
+        deviceMenu.addItem(makeSectionHeader("Ambient Panels"))
+        deviceMenu.addItem(makeItem("Battery Dashboard", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
+        deviceMenu.addItem(makeItem("System Dashboard", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
+        deviceMenu.addItem(makeItem("Network Dashboard", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
         deviceMenu.addItem(makeItem("Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
         deviceMenu.addItem(makeItem("Analog Clock", action: #selector(runNativeClockFace), symbolName: "clock"))
         deviceMenu.addItem(makeItem("Animated Clock", action: #selector(runNativeAnimatedClock), symbolName: "clock.arrow.2.circlepath"))
         deviceMenu.addItem(makeItem("Pomodoro Timer", action: #selector(runNativePomodoroTimer), symbolName: "timer"))
         deviceMenu.addItem(.separator())
-        deviceMenu.addItem(makeSectionHeader("Feedback"))
+        deviceMenu.addItem(makeSectionHeader("Sounds"))
         deviceMenu.addItem(makeItem("Attention Chime", action: #selector(playAttentionSound), symbolName: "bell.badge"))
         deviceMenu.addItem(makeItem("Completion Chime", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
 
         let settingsMenu = NSMenu(title: "Settings")
         settingsMenu.addItem(makeSectionHeader("App"))
-        settingsMenu.addItem(makeItem("Settings…", action: #selector(openSettings), keyEquivalent: ",", symbolName: "gearshape"))
+        settingsMenu.addItem(makeItem("Open Settings…", action: #selector(openSettings), keyEquivalent: ",", symbolName: "gearshape"))
         settingsMenu.addItem(makeItem("About Divoom Ditoo Pro Mac", action: #selector(showAboutPanel), symbolName: "info.circle"))
-        settingsMenu.addItem(makeItem("GitHub Repo", action: #selector(openGitHubRepo), symbolName: "chevron.left.forwardslash.chevron.right"))
-        settingsMenu.addItem(makeItem("Releases", action: #selector(openReleasesPage), symbolName: "shippingbox"))
+        settingsMenu.addItem(.separator())
+        settingsMenu.addItem(makeSectionHeader("Support"))
+        settingsMenu.addItem(makeItem("Open GitHub Repo", action: #selector(openGitHubRepo), symbolName: "chevron.left.forwardslash.chevron.right"))
+        settingsMenu.addItem(makeItem("Open Releases", action: #selector(openReleasesPage), symbolName: "shippingbox"))
         settingsMenu.addItem(makeItem("Read Logs", action: #selector(openLogFile), symbolName: "doc.text.magnifyingglass"))
         settingsMenu.addItem(makeItem("Reveal Log File", action: #selector(revealLogFile), symbolName: "folder"))
         settingsMenu.addItem(makeItem("Export Logs…", action: #selector(exportLogFile), symbolName: "square.and.arrow.up"))
         settingsMenu.addItem(.separator())
-        settingsMenu.addItem(makeSectionHeader("Cloud"))
-        settingsMenu.addItem(makeItem("Sync Divoom Cloud Library", action: #selector(syncDivoomCloudLibrary), symbolName: "arrow.triangle.2.circlepath"))
-        settingsMenu.addItem(makeItem("Reveal Divoom Cloud Folder", action: #selector(revealDivoomCloudFolder), symbolName: "shippingbox"))
-        settingsMenu.addItem(makeItem("Open Divoom Cloud Guide", action: #selector(openDivoomCloudGuide), symbolName: "book"))
-        settingsMenu.addItem(.separator())
-        settingsMenu.addItem(makeSectionHeader("Workspace"))
+        settingsMenu.addItem(makeSectionHeader("Workspace Notes"))
         settingsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
         settingsMenu.addItem(makeItem("Open OpenClaw Notes", action: #selector(openOpenClawNotes), symbolName: "doc.richtext"))
 
         menu.addItem(makeSubmenuItem("Studio", symbolName: "wand.and.stars", submenu: studioMenu))
-        menu.addItem(makeSubmenuItem("Live", symbolName: "brain", submenu: liveMenu))
-        menu.addItem(makeSubmenuItem("Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
+        menu.addItem(makeSubmenuItem("Library", symbolName: "photo.stack", submenu: libraryMenu))
+        menu.addItem(makeSubmenuItem("Live Feeds", symbolName: "brain", submenu: liveMenu))
+        menu.addItem(makeSubmenuItem("Ambient & Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
         menu.addItem(.separator())
-        menu.addItem(makeSubmenuItem("Settings", symbolName: "gearshape", submenu: settingsMenu))
+        menu.addItem(makeSubmenuItem("Settings & Info", symbolName: "gearshape", submenu: settingsMenu))
         menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
         updateAutoRefreshUI()
         refreshSummaryCard()
@@ -5011,30 +5195,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 email: localCredentials.email,
                 passwordPlaceholder: "Password saved in this app's Keychain",
                 status: "Using credentials saved in Ditoo Pro Mac Keychain.",
-                canImportSyncedCredentials: false
-            )
-        }
-
-        if let syncedCredentials = DivoomCloudCredentialResolver.syncedInternetPasswordCredentials() {
-            let sourceLabel: String
-            if case let .syncedInternetPassword(server) = syncedCredentials.source {
-                sourceLabel = server
-            } else {
-                sourceLabel = "divoom-gz.com"
-            }
-            return DivoomCloudCredentialUIState(
-                email: syncedCredentials.email,
-                passwordPlaceholder: "Using synced Passwords entry",
-                status: "Using synced Passwords entry from \(sourceLabel). Save it locally if you want the app to stop depending on Passwords access.",
-                canImportSyncedCredentials: true
+                canImportSyncedCredentials: DivoomCloudCredentialResolver.syncedInternetPasswordHint() != nil
             )
         }
 
         if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
             return DivoomCloudCredentialUIState(
                 email: hint.email,
-                passwordPlaceholder: "Use Synced Password to import securely",
-                status: "A synced Passwords entry exists for \(hint.server). Use the import button once to copy it into the app Keychain and avoid repeated Passwords prompts.",
+                passwordPlaceholder: "Import from Passwords or enter manually",
+                status: "A synced Passwords entry exists for \(hint.server). Import it once into the app Keychain so cloud features stop depending on Passwords prompts.",
                 canImportSyncedCredentials: true
             )
         }
@@ -5042,15 +5211,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         return DivoomCloudCredentialUIState(
             email: "",
             passwordPlaceholder: "Enter Divoom password",
-            status: "No Divoom cloud credentials found yet. Enter them here, or keep a synced Passwords entry for divoom-gz.com.",
+            status: "No app-local Divoom cloud credentials found yet. Save them here or import them from Passwords.",
             canImportSyncedCredentials: false
         )
     }
 
+    private func loadCurrentCloudManifest() -> DivoomCloudManifest? {
+        guard let data = try? Data(contentsOf: cloudManifestURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(DivoomCloudManifest.self, from: data)
+    }
+
     private func currentCloudManifestSummary() -> String {
-        guard let data = try? Data(contentsOf: cloudManifestURL),
-              let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data)
-        else {
+        guard let manifest = loadCurrentCloudManifest() else {
             return "No synced Divoom cloud manifest yet. Use Sync Now after saving credentials in Settings, or reuse the synced Passwords entry for divoom-gz.com."
         }
 
@@ -5607,53 +5781,177 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func refreshSummaryCard() {
-        let actionText = currentSummaryActionLine()
+        let presentation = currentSummaryPresentation()
         summaryCard.update(
             state: statusIconState,
-            connection: currentSummaryConnectionLine(),
-            action: actionText,
-            refresh: "Automation: \(autoRefreshDescription())"
+            subtitle: presentation.subtitle,
+            headline: presentation.headline,
+            rotatingLines: presentation.rotatingLines,
+            chips: presentation.chips
         )
     }
 
-    private func currentSummaryConnectionLine() -> String {
+    private func currentSummaryPresentation() -> (subtitle: String, headline: String, rotatingLines: [String], chips: [SummaryChipSpec]) {
+        let favoritesCount = AnimationLibraryCatalog.loadFavorites().count
+        let cloudItemCount = loadCurrentCloudManifest()?.itemCount ?? 0
+        return (
+            subtitle: currentSummarySubtitle(),
+            headline: currentSummaryHeadline(),
+            rotatingLines: currentSummaryRotatingLines(favoritesCount: favoritesCount, cloudItemCount: cloudItemCount),
+            chips: currentSummaryChips(favoritesCount: favoritesCount, cloudItemCount: cloudItemCount)
+        )
+    }
+
+    private func currentSummarySubtitle() -> String {
         let lower = connectionSummary.lowercased()
         if lower.contains("scan finished") || lower.contains("write characteristic ready") || lower.contains("ready") {
-            return "Ditoo link is ready for native BLE beaming."
+            return "The Ditoo is connected and ready."
         }
         if lower.contains("requested bluetooth access") {
-            return "Waiting for Bluetooth permission."
+            return "Bluetooth permission is still waiting on macOS."
         }
         if lower.contains("not granted") || lower.contains("unauthorized") {
-            return "Bluetooth permission is required."
+            return "Bluetooth permission is required before anything can beam."
         }
         if lower.contains("scan progress") || lower.contains("scanning") {
-            return "Scanning for the paired Ditoo channels."
+            return "Looking for the paired Ditoo link."
         }
         if lower.contains("connecting") {
             return "Connecting to the paired Ditoo."
         }
         if connectionSummary.isEmpty {
-            return "Ready to beam."
+            return "Ready for the next beam."
         }
-        return connectionSummary.replacingOccurrences(of: "BLE ", with: "")
+        return connectionSummary
+            .replacingOccurrences(of: "BLE ", with: "")
+            .replacingOccurrences(of: "finished", with: "ready")
     }
 
-    private func currentSummaryActionLine() -> String {
-        if autoRefreshMode != .off {
-            if let lastActionDate {
-                return "Live \(autoRefreshMode.title) active · last sync \(timestampFormatter.string(from: lastActionDate))"
-            }
-            return "Live \(autoRefreshMode.title) active."
+    private func currentSummaryHeadline() -> String {
+        let lower = connectionSummary.lowercased()
+        if lower.contains("requested bluetooth access") || lower.contains("not granted") || lower.contains("unauthorized") {
+            return "Allow Bluetooth and the Ditoo is back online."
         }
-        if let lastActionDate {
-            let actionPrefix = lastActionSuccess ? "Last beam" : "Needs attention"
-            let cleanedSummary = lastActionSummary
-                .replacingOccurrences(of: "Native BLE ", with: "")
-                .replacingOccurrences(of: "ipc-", with: "")
-            return "\(actionPrefix): \(cleanedSummary) · \(timestampFormatter.string(from: lastActionDate))"
+        if lower.contains("scan progress") || lower.contains("scanning") {
+            return "Searching for the Ditoo."
+        }
+        if lower.contains("connecting") {
+            return "Locking onto the Ditoo."
+        }
+        if autoRefreshMode != .off {
+            return "\(autoRefreshMode.title) is live on the Ditoo."
+        }
+        if lastActionDate != nil {
+            let cleaned = cleanedActionSummary()
+            if lastActionSuccess {
+                return cleaned.isEmpty ? "The last beam landed cleanly." : cleaned
+            }
+            return cleaned.isEmpty ? "Something needs attention." : "Needs attention: \(cleaned)"
         }
         return "Ready to beam colors, feeds, and animations."
+    }
+
+    private func currentSummaryRotatingLines(favoritesCount: Int, cloudItemCount: Int) -> [String] {
+        var lines: [String] = []
+
+        if autoRefreshMode != .off {
+            if let lastActionDate {
+                lines.append("Last live sync \(timestampFormatter.string(from: lastActionDate)).")
+            }
+            lines.append("Tap another live tile to switch the display instantly.")
+            if autoRefreshMode == .favorites {
+                lines.append("Favorites rotate \(currentFavoritesPlaybackOption().title.lowercased()) per animation.")
+            }
+        } else if let lastActionDate {
+            lines.append(lastActionSuccess ? "Last beam finished at \(timestampFormatter.string(from: lastActionDate))." : "Open Settings > Logs for the full failure trace.")
+        }
+
+        if favoritesCount > 0 {
+            lines.append("\(favoritesCount) favorites are ready for quick sends and rotation.")
+        }
+        if cloudItemCount > 0 {
+            lines.append("\(cloudItemCount) cloud animations are cached in the native library.")
+        } else if isCloudLibraryEnabled() {
+            lines.append("Sync Cloud to pull fresh Divoom animations into the library.")
+        }
+
+        lines.append("Open Library for curated picks, cloud browsing, and favorites.")
+        lines.append("Studio can beam multi-color motion palettes, not just flat fills.")
+
+        var uniqueLines: [String] = []
+        for line in lines where !uniqueLines.contains(line) {
+            uniqueLines.append(line)
+        }
+        return Array(uniqueLines.prefix(5))
+    }
+
+    private func currentSummaryChips(favoritesCount: Int, cloudItemCount: Int) -> [SummaryChipSpec] {
+        [
+            currentLinkChip(),
+            currentLiveModeChip(),
+            SummaryChipSpec(
+                text: favoritesCount == 0 ? "No Favorites" : "\(favoritesCount) Favorites",
+                symbolName: "star.fill",
+                accentColor: favoritesCount == 0 ? nil : .systemYellow
+            ),
+            currentCloudChip(cloudItemCount: cloudItemCount),
+        ]
+    }
+
+    private func currentLinkChip() -> SummaryChipSpec {
+        let lower = connectionSummary.lowercased()
+        if lower.contains("requested bluetooth access") {
+            return SummaryChipSpec(text: "Waiting Access", symbolName: "dot.radiowaves.left.and.right", accentColor: .systemOrange)
+        }
+        if lower.contains("not granted") || lower.contains("unauthorized") {
+            return SummaryChipSpec(text: "Bluetooth Needed", symbolName: "bolt.horizontal.circle", accentColor: .systemOrange)
+        }
+        if lower.contains("scan progress") || lower.contains("scanning") {
+            return SummaryChipSpec(text: "Scanning", symbolName: "magnifyingglass")
+        }
+        if lower.contains("connecting") {
+            return SummaryChipSpec(text: "Connecting", symbolName: "link")
+        }
+        return SummaryChipSpec(text: "Device Ready", symbolName: "dot.radiowaves.left.and.right", accentColor: statusIconState == .error ? .systemOrange : .systemMint)
+    }
+
+    private func currentLiveModeChip() -> SummaryChipSpec {
+        switch autoRefreshMode {
+        case .off:
+            return SummaryChipSpec(text: "Manual", symbolName: "hand.tap")
+        case .favorites:
+            return SummaryChipSpec(text: "Favorites \(currentFavoritesPlaybackOption().title)", symbolName: "arrow.triangle.2.circlepath", accentColor: .systemPink)
+        case .codex, .claude, .pair, .ipFlag:
+            return SummaryChipSpec(text: autoRefreshMode.title, symbolName: "livephoto", accentColor: .systemBlue)
+        }
+    }
+
+    private func currentCloudChip(cloudItemCount: Int) -> SummaryChipSpec {
+        if DivoomCloudCredentialResolver.appKeychainCredentials() != nil {
+            let text = cloudItemCount > 0 ? "\(cloudItemCount) Cloud" : "Cloud Ready"
+            return SummaryChipSpec(text: text, symbolName: "lock.icloud", accentColor: .systemTeal)
+        }
+        if DivoomCloudCredentialResolver.syncedInternetPasswordHint() != nil {
+            return SummaryChipSpec(text: "Import Cloud", symbolName: "square.and.arrow.down.on.square", accentColor: .systemBlue)
+        }
+        if isCloudLibraryEnabled() {
+            return SummaryChipSpec(text: "Cloud Login", symbolName: "icloud")
+        }
+        return SummaryChipSpec(text: "Cloud Hidden", symbolName: "icloud.slash")
+    }
+
+    private func cleanedActionSummary() -> String {
+        let cleaned = lastActionSummary
+            .replacingOccurrences(of: "Native BLE ", with: "")
+            .replacingOccurrences(of: "ipc-", with: "")
+            .replacingOccurrences(of: "OK ", with: "")
+            .replacingOccurrences(of: "ERR ", with: "")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else {
+            return ""
+        }
+        return String(cleaned.prefix(1)).uppercased() + cleaned.dropFirst()
     }
 
     private func updateStatusItemButton(summary: String, details: String?) {
@@ -6486,6 +6784,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         ensureSettingsController().showSettings(tab: .live)
     }
 
+    @objc private func openLibrarySettings() {
+        ensureSettingsController().showSettings(tab: .library)
+    }
+
     @objc private func showAboutPanel() {
         let version = appVersionString()
         let build = appBuildString()
@@ -6597,16 +6899,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         reloadLibrary: Bool,
         completion: (@MainActor (Bool, String) -> Void)? = nil
     ) {
-        guard let credentials = DivoomCloudCredentialResolver.resolvedCredentials() else {
+        guard let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() else {
             settingsController?.refresh()
             if !silent {
+                ensureSettingsController().showSettings(tab: .library)
                 updateActionStatus(
                     summary: "\(label) needs credentials",
                     success: false,
-                    details: "Save credentials in Settings, or keep a synced Passwords entry for divoom-gz.com."
+                    details: "Save Divoom cloud credentials locally, or import them from Passwords in Settings."
                 )
             }
-            completion?(false, "Save credentials in Settings, or keep a synced Passwords entry for divoom-gz.com.")
+            completion?(false, "Save Divoom cloud credentials locally, or import them from Passwords in Settings.")
             return
         }
 
@@ -6861,6 +7164,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             },
             onOpenCloudSettings: { [weak self] in
                 self?.ensureSettingsController().showSettings(tab: .library)
+            },
+            onImportSyncedCloudCredentials: { [weak self] in
+                self?.importSyncedCloudCredentials()
+                self?.animationLibraryController?.reloadFromExternalSync()
             },
             onSyncCloudNow: { [weak self] in
                 self?.syncDivoomCloudLibrary()
