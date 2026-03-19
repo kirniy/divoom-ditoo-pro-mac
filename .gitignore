@@ -18,6 +18,8 @@ codexbar/
 divoom-ditoo-pro-controller/
 futpib-divoom-ditoo-pro-controller/
 andreas-js/
+assets/16x16/divoom-cloud/
+vendor/apixoo/__pycache__/
 
 reverse/android/
 reverse/ios/

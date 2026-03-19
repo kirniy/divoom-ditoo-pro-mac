@@ -31,10 +31,10 @@ enum AppLog {
     }
 }
 
-private let rootMenuSurfaceWidth: CGFloat = 436
-private let studioMenuSurfaceWidth: CGFloat = 416
-private let summaryCardHeight: CGFloat = 110
-private let quickHubHeight: CGFloat = 198
+private let rootMenuSurfaceWidth: CGFloat = 408
+private let studioMenuSurfaceWidth: CGFloat = 396
+private let summaryCardHeight: CGFloat = 118
+private let quickHubHeight: CGFloat = 214
 private let colorStudioHeight: CGFloat = 246
 
 private enum FavoritesPlaybackOption: Int, CaseIterable {
@@ -142,6 +142,33 @@ private struct SavedColorCombo: Codable, Equatable {
     let name: String
     let mode: ColorMotionMode
     let colors: [String]
+}
+
+private struct DivoomCloudManifestEntry: Decodable {
+    let source: String
+    let scope: String
+    let category: String
+    let collection: String
+    let gallery_id: Int
+    let file_id: String
+    let file_name: String
+    let likes: Int
+    let views: Int
+    let shares: Int
+    let comments: Int
+    let country: String
+    let user_name: String
+    let relative_path: String
+}
+
+private struct DivoomCloudManifest: Decodable {
+    let generatedAt: String
+    let source: String
+    let outputRoot: String
+    let itemCount: Int
+    let categories: [String]
+    let includesAlbums: Bool
+    let items: [DivoomCloudManifestEntry]
 }
 
 private enum SavedColorComboStore {
@@ -527,22 +554,22 @@ private final class PixelShaderBackdropView: NSView {
         super.draw(dirtyRect)
 
         let colors = paletteColors()
-        let columns = max(10, Int(bounds.width / 26))
-        let rows = max(4, Int(bounds.height / 24))
+        let columns = max(11, Int(bounds.width / 24))
+        let rows = max(4, Int(bounds.height / 22))
         let cellWidth = bounds.width / CGFloat(columns)
         let cellHeight = bounds.height / CGFloat(rows)
 
         for row in 0..<rows {
             for column in 0..<columns {
                 let wave = (sin(CGFloat(column) * 0.58 + CGFloat(row) * 0.94 + phase) + 1) / 2
-                let fade = 0.22 + pow(CGFloat(column) / CGFloat(max(columns - 1, 1)), 1.45) * 0.78
+                let fade = 0.22 + pow(CGFloat(column) / CGFloat(max(columns - 1, 1)), 1.35) * 0.78
                 let glow = colors.0.blended(withFraction: wave * 0.72, of: colors.1) ?? colors.1
-                let alpha = (0.02 + wave * 0.12) * fade * activityBoost
+                let alpha = (0.028 + wave * 0.14) * fade * activityBoost
                 let rect = NSRect(
                     x: CGFloat(column) * cellWidth + cellWidth * 0.18,
                     y: CGFloat(row) * cellHeight + cellHeight * 0.2,
-                    width: cellWidth * 0.58,
-                    height: cellHeight * 0.54
+                    width: cellWidth * 0.56,
+                    height: cellHeight * 0.52
                 )
                 let pixel = NSBezierPath(roundedRect: rect, xRadius: 3.8, yRadius: 3.8)
                 glow.withAlphaComponent(alpha).setFill()
@@ -550,10 +577,10 @@ private final class PixelShaderBackdropView: NSView {
             }
         }
 
-        let beamX = ((phase.truncatingRemainder(dividingBy: .pi * 2)) / (.pi * 2)) * (bounds.width + 80) - 40
-        let beamRect = NSRect(x: beamX, y: 0, width: 46, height: bounds.height)
+        let beamX = ((phase.truncatingRemainder(dividingBy: .pi * 2)) / (.pi * 2)) * (bounds.width + 96) - 48
+        let beamRect = NSRect(x: beamX, y: 0, width: 44, height: bounds.height)
         let beamPath = NSBezierPath(roundedRect: beamRect, xRadius: 18, yRadius: 18)
-        (colors.2 ?? colors.1).withAlphaComponent(0.08 * activityBoost).setFill()
+        (colors.2 ?? colors.1).withAlphaComponent(0.10 * activityBoost).setFill()
         beamPath.fill()
     }
 
@@ -592,7 +619,7 @@ private final class MenuSummaryView: NSView {
     private let backdropView = PixelShaderBackdropView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Ditoo Pro 16x16 RGB")
-    private let connectionLabel = NSTextField(labelWithString: "Connection: scanning...")
+    private let connectionLabel = NSTextField(labelWithString: "Ready for native BLE beaming.")
     private let actionLabel = NSTextField(labelWithString: "Last action: idle")
     private let connectionPill = SummaryPillView(text: "Scanning", symbolName: "dot.radiowaves.left.and.right")
     private let automationPill = SummaryPillView(text: "Automation Off", symbolName: "pause.circle")
@@ -622,7 +649,7 @@ private final class MenuSummaryView: NSView {
             case .error: return .error
             }
         }()
-        backdropView.activityBoost = refresh == "Automation: Off" ? 0.62 : 1.0
+        backdropView.activityBoost = refresh == "Automation: Off" ? 0.84 : 1.16
         connectionPill.update(
             text: summaryConnectionChipText(connection),
             symbolName: "dot.radiowaves.left.and.right",
@@ -663,17 +690,17 @@ private final class MenuSummaryView: NSView {
         iconView.imageScaling = .scaleNone
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .bold)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
 
         connectionLabel.translatesAutoresizingMaskIntoConstraints = false
-        connectionLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        connectionLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
         connectionLabel.textColor = .secondaryLabelColor
         connectionLabel.lineBreakMode = .byTruncatingTail
 
         actionLabel.translatesAutoresizingMaskIntoConstraints = false
-        actionLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        actionLabel.font = .systemFont(ofSize: 13.5, weight: .bold)
         actionLabel.textColor = .labelColor
         actionLabel.lineBreakMode = .byTruncatingTail
 
@@ -698,7 +725,7 @@ private final class MenuSummaryView: NSView {
         let contentStack = NSStackView(views: [topRow, actionLabel, pillRow])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 8
+        contentStack.spacing = 7
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(glassView)
@@ -719,8 +746,8 @@ private final class MenuSummaryView: NSView {
             backdropView.bottomAnchor.constraint(equalTo: bottomAnchor),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 13),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -13),
         ])
     }
 
@@ -1269,7 +1296,7 @@ private final class QuickActionTileView: NSControl {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 120, height: 80)
+        NSSize(width: 112, height: 86)
     }
 
     init(title: String, image: NSImage?, tooltip: String) {
@@ -1345,7 +1372,7 @@ private final class QuickActionTileView: NSControl {
 
         badgeView.translatesAutoresizingMaskIntoConstraints = false
         badgeView.wantsLayer = true
-        badgeView.layer?.cornerRadius = 15
+        badgeView.layer?.cornerRadius = 18
         badgeView.layer?.cornerCurve = .continuous
         badgeView.layer?.borderWidth = 1
 
@@ -1355,7 +1382,7 @@ private final class QuickActionTileView: NSControl {
         spinner.isDisplayedWhenStopped = false
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .bold)
         titleLabel.textColor = .labelColor
         titleLabel.alignment = .center
         titleLabel.lineBreakMode = .byWordWrapping
@@ -1374,19 +1401,19 @@ private final class QuickActionTileView: NSControl {
             backgroundView.topAnchor.constraint(equalTo: topAnchor),
             backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
             badgeView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            badgeView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            badgeView.widthAnchor.constraint(equalToConstant: 30),
-            badgeView.heightAnchor.constraint(equalToConstant: 30),
+            badgeView.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            badgeView.widthAnchor.constraint(equalToConstant: 36),
+            badgeView.heightAnchor.constraint(equalToConstant: 36),
             iconView.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
-            iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 15),
-            iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 15),
+            iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 18),
+            iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 18),
             spinner.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            titleLabel.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 10),
-            titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -10),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            titleLabel.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 11),
+            titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
             titleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
         ])
 
@@ -1394,18 +1421,18 @@ private final class QuickActionTileView: NSControl {
     }
 
     private func updateAppearance() {
-        let activeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.72)
+        let activeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.78)
         let inactiveBorderColor = NSColor.separatorColor.withAlphaComponent(0.22)
         backgroundView.layer?.borderColor = (isActive ? activeBorderColor : inactiveBorderColor).cgColor
-        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.96 : 0.9)
+        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.97 : 0.92)
         backgroundView.layer?.backgroundColor = (isActive
-            ? NSColor.controlAccentColor.withAlphaComponent(0.08)
+            ? NSColor.controlAccentColor.withAlphaComponent(0.12)
             : NSColor.clear).cgColor
         badgeView.layer?.backgroundColor = (isActive
-            ? badgeFillColor.blended(withFraction: 0.28, of: .white) ?? badgeFillColor
+            ? badgeFillColor.blended(withFraction: 0.16, of: .white) ?? badgeFillColor
             : badgeFillColor).cgColor
         badgeView.layer?.borderColor = (usesOriginalIconColors
-            ? badgeFillColor.withAlphaComponent(isActive ? 0.8 : 0.55)
+            ? badgeFillColor.withAlphaComponent(isActive ? 0.96 : 0.78)
             : NSColor.separatorColor.withAlphaComponent(isHovering ? 0.34 : 0.22)).cgColor
         iconView.contentTintColor = usesOriginalIconColors ? nil : iconTintColor
         titleLabel.textColor = isActive ? NSColor.labelColor : NSColor.labelColor.withAlphaComponent(0.94)
@@ -1497,7 +1524,7 @@ private final class QuickActionHubView: NSView {
 
         let stack = NSStackView(views: [topRow, bottomRow])
         stack.orientation = .vertical
-        stack.spacing = 14
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(glassView)
@@ -1509,10 +1536,10 @@ private final class QuickActionHubView: NSView {
             glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
             glassView.topAnchor.constraint(equalTo: topAnchor),
             glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
         ])
 
         updateTileAppearance()
@@ -1564,19 +1591,19 @@ private final class QuickActionHubView: NSView {
     private func badgeFill(for actionID: QuickActionKind) -> NSColor {
         switch actionID {
         case .codex:
-            return providerTileTintColor("codex")
+            return providerTileTintColor("codex").withAlphaComponent(0.94)
         case .claude:
-            return providerTileTintColor("claude")
+            return providerTileTintColor("claude").withAlphaComponent(0.94)
         case .pair:
-            return NSColor.controlAccentColor.withAlphaComponent(0.18)
+            return NSColor.controlAccentColor.withAlphaComponent(0.20)
         case .ipFlag:
-            return NSColor.systemIndigo.withAlphaComponent(0.16)
+            return NSColor.systemIndigo.withAlphaComponent(0.18)
         case .library:
-            return NSColor.systemTeal.withAlphaComponent(0.16)
+            return NSColor.systemTeal.withAlphaComponent(0.18)
         case .favorites:
-            return NSColor.systemPink.withAlphaComponent(0.16)
+            return NSColor.systemPink.withAlphaComponent(0.18)
         case .screenPick:
-            return NSColor.systemOrange.withAlphaComponent(0.16)
+            return NSColor.systemOrange.withAlphaComponent(0.18)
         }
     }
 
@@ -1628,6 +1655,8 @@ private final class QuickActionHubView: NSView {
 
 private struct AnimationLibraryItem: Hashable {
     let id: String
+    let source: String
+    let scope: String
     let title: String
     let category: String
     let collection: String
@@ -1635,57 +1664,84 @@ private struct AnimationLibraryItem: Hashable {
     let fileURL: URL
     let searchText: String
     let duplicateCount: Int
+    let likes: Int
+    let views: Int
 }
 
 private enum AnimationLibraryCatalog {
-    static let rootURL = divoomRepoURL("assets/16x16/curated", isDirectory: true)
+    static let roots: [(source: String, url: URL)] = [
+        ("curated", divoomRepoURL("assets/16x16/curated", isDirectory: true)),
+        ("divoom-cloud", divoomRepoURL("assets/16x16/divoom-cloud", isDirectory: true)),
+    ]
     static let favoritesDefaultsKey = "dev.kirniy.divoom.animation-library-favorites"
+    private static let cloudManifestURL = divoomRepoURL(".cache/divoom-cloud/manifest.json")
 
     static func loadItems() -> [AnimationLibraryItem] {
-        guard FileManager.default.fileExists(atPath: rootURL.path) else {
-            return []
-        }
-
         var groupedItems: [String: [AnimationLibraryItem]] = [:]
         let keys: Set<URLResourceKey> = [.isRegularFileKey]
-        let enumerator = FileManager.default.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        )
+        let cloudManifestLookup = loadCloudManifestLookup()
 
-        while let fileURL = enumerator?.nextObject() as? URL {
-            guard fileURL.pathExtension.lowercased() == "gif" else {
-                continue
-            }
-            guard let values = try? fileURL.resourceValues(forKeys: keys), values.isRegularFile == true else {
+        for root in roots {
+            guard FileManager.default.fileExists(atPath: root.url.path) else {
                 continue
             }
 
-            let relativePath = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
-            let parts = relativePath.split(separator: "/").map(String.init)
-            let category = parts.first ?? "misc"
-            let collection = parts.count > 2 ? parts[1] : (parts.count == 2 ? "root" : "root")
-            let title = prettifyAnimationTitle(fileURL.deletingPathExtension().lastPathComponent)
-            let id = relativePath
-            let searchText = [title, category, collection, relativePath].joined(separator: " ").lowercased()
-            guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
-                continue
-            }
-            let digest = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let enumerator = FileManager.default.enumerator(
+                at: root.url,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )
 
-            let item =
-                AnimationLibraryItem(
+            while let fileURL = enumerator?.nextObject() as? URL {
+                guard fileURL.pathExtension.lowercased() == "gif" else {
+                    continue
+                }
+                guard let values = try? fileURL.resourceValues(forKeys: keys), values.isRegularFile == true else {
+                    continue
+                }
+
+                let relativeWithinRoot = fileURL.path.replacingOccurrences(of: root.url.path + "/", with: "")
+                let parts = relativeWithinRoot.split(separator: "/").map(String.init)
+                let category = parts.first ?? "misc"
+                let collection = parts.count > 2 ? parts[1] : (parts.count == 2 ? "root" : "root")
+                let title = prettifyAnimationTitle(fileURL.deletingPathExtension().lastPathComponent)
+                let relativePath = "\(root.source)/\(relativeWithinRoot)"
+                let id = "\(root.source):\(relativeWithinRoot)"
+                let cloudMetadata = cloudManifestLookup[relativePath]
+                let scope = cloudMetadata?.scope ?? (root.source == "divoom-cloud" ? "cloud" : "local")
+                let likes = cloudMetadata?.likes ?? 0
+                let views = cloudMetadata?.views ?? 0
+                let searchText = [
+                    title,
+                    root.source,
+                    category,
+                    collection,
+                    scope,
+                    relativePath,
+                    cloudMetadata?.user_name ?? "",
+                    cloudMetadata?.country ?? "",
+                ].joined(separator: " ").lowercased()
+                guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
+                    continue
+                }
+                let digest = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
+
+                let item = AnimationLibraryItem(
                     id: id,
+                    source: root.source,
+                    scope: scope,
                     title: title,
                     category: category,
                     collection: collection,
                     relativePath: relativePath,
                     fileURL: fileURL,
                     searchText: searchText,
-                    duplicateCount: 1
+                    duplicateCount: 1,
+                    likes: likes,
+                    views: views
                 )
-            groupedItems[digest, default: []].append(item)
+                groupedItems[digest, default: []].append(item)
+            }
         }
 
         let items = groupedItems.values.compactMap { group -> AnimationLibraryItem? in
@@ -1694,13 +1750,17 @@ private enum AnimationLibraryCatalog {
             }
             return AnimationLibraryItem(
                 id: canonical.id,
+                source: canonical.source,
+                scope: canonical.scope,
                 title: canonical.title,
                 category: canonical.category,
                 collection: canonical.collection,
                 relativePath: canonical.relativePath,
                 fileURL: canonical.fileURL,
                 searchText: canonical.searchText,
-                duplicateCount: group.count
+                duplicateCount: group.count,
+                likes: canonical.likes,
+                views: canonical.views
             )
         }
 
@@ -1727,6 +1787,17 @@ private enum AnimationLibraryCatalog {
         }.joined(separator: " ")
     }
 
+    static func displaySourceTitle(for value: String) -> String {
+        switch value {
+        case "divoom-cloud":
+            return "Divoom Cloud"
+        case "curated":
+            return "Curated"
+        default:
+            return displayTitle(for: value)
+        }
+    }
+
     private static func prettifyAnimationTitle(_ value: String) -> String {
         let pattern = #"[._-]\d{4,}$"#
         let trimmed = value.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
@@ -1743,11 +1814,28 @@ private enum AnimationLibraryCatalog {
         if item.collection == "root" {
             score += 8
         }
+        if item.source == "divoom-cloud" {
+            score += 5
+        }
         if item.category == "pixel-displays" || item.category == "divoom" {
             score += 4
         }
+        score += min(item.likes, 2000) / 20
+        score += min(item.views, 5000) / 120
         score -= item.relativePath.count
         return score
+    }
+
+    private static func loadCloudManifestLookup() -> [String: DivoomCloudManifestEntry] {
+        guard let data = try? Data(contentsOf: cloudManifestURL) else {
+            return [:]
+        }
+        guard let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data) else {
+            return [:]
+        }
+        return Dictionary(uniqueKeysWithValues: manifest.items.map { entry in
+            ("divoom-cloud/\(entry.relative_path)", entry)
+        })
     }
 }
 
@@ -2070,7 +2158,7 @@ private final class HoverActionPreviewView: NSView {
     }
 
     private func updateOverlay(animated: Bool) {
-        let targetAlpha: CGFloat = hasContent && isHovering ? (style == .hero ? 0.82 : 0.70) : 0.0
+        let targetAlpha: CGFloat = hasContent && isHovering ? (style == .hero ? 0.64 : 0.48) : 0.0
         let updates = { self.overlayView.animator().alphaValue = targetAlpha }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
@@ -2146,6 +2234,7 @@ private enum AnimationLibraryDisplayMode: Int {
 
 private enum AnimationLibrarySortMode: Int, CaseIterable {
     case spotlight = 0
+    case popularity
     case title
     case category
     case collection
@@ -2156,6 +2245,8 @@ private enum AnimationLibrarySortMode: Int, CaseIterable {
         switch self {
         case .spotlight:
             return "Spotlight"
+        case .popularity:
+            return "Popularity"
         case .title:
             return "Title"
         case .category:
@@ -2178,6 +2269,7 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
     private let metaLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
     private let favoriteButton = NSButton(title: "", target: nil, action: nil)
+    private let sourceChip = HeaderStatChipView(symbolName: "shippingbox", text: "Source")
     private let duplicateChip = HeaderStatChipView(symbolName: "square.on.square", text: "2x")
     private var currentItem: AnimationLibraryItem?
     private var gridConstraints: [NSLayoutConstraint] = []
@@ -2209,8 +2301,13 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
         currentDisplayMode = displayMode
         titleLabel.stringValue = item.title
         let collectionTitle = item.collection == "root" ? "Root" : AnimationLibraryCatalog.displayTitle(for: item.collection)
+        let sourceTitle = AnimationLibraryCatalog.displaySourceTitle(for: item.source)
         metaIconView.image = makeMenuSymbol(animationCategorySymbolName(item.category), description: item.category)
-        metaLabel.stringValue = "\(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+        if item.likes > 0 {
+            metaLabel.stringValue = "\(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle) · \(item.likes) likes"
+        } else {
+            metaLabel.stringValue = "\(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+        }
         pathLabel.stringValue = item.relativePath
         previewView.setFileURL(item.fileURL)
         previewView.onPrimaryAction = { [weak self] in
@@ -2221,6 +2318,7 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
         if item.duplicateCount > 1 {
             duplicateChip.update(text: "\(item.duplicateCount)x", symbolName: "square.on.square")
         }
+        sourceChip.update(text: sourceTitle, symbolName: item.source == "divoom-cloud" ? "icloud" : "shippingbox")
         updateFavoriteAppearance(isFavorite: isFavorite)
         applyDisplayMode(displayMode)
         updateSelectionAppearance()
@@ -2276,6 +2374,8 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
         duplicateChip.translatesAutoresizingMaskIntoConstraints = false
         duplicateChip.isHidden = true
 
+        sourceChip.translatesAutoresizingMaskIntoConstraints = false
+
         let metaRow = NSStackView(views: [metaIconView, metaLabel])
         metaRow.orientation = .horizontal
         metaRow.alignment = .centerY
@@ -2292,6 +2392,7 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
         glassView.addSubview(previewView)
         glassView.addSubview(textStack)
         glassView.addSubview(favoriteButton)
+        glassView.addSubview(sourceChip)
         glassView.addSubview(duplicateChip)
 
         NSLayoutConstraint.activate([
@@ -2310,6 +2411,9 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
 
             duplicateChip.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 12),
             duplicateChip.topAnchor.constraint(equalTo: glassView.topAnchor, constant: 12),
+
+            sourceChip.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 12),
+            sourceChip.bottomAnchor.constraint(equalTo: glassView.bottomAnchor, constant: -12),
         ])
 
         gridConstraints = [
@@ -2321,7 +2425,7 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
             textStack.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 16),
             textStack.trailingAnchor.constraint(equalTo: glassView.trailingAnchor, constant: -16),
             textStack.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 12),
-            textStack.bottomAnchor.constraint(lessThanOrEqualTo: glassView.bottomAnchor, constant: -16),
+            textStack.bottomAnchor.constraint(lessThanOrEqualTo: sourceChip.topAnchor, constant: -10),
         ]
 
         listConstraints = [
@@ -2344,10 +2448,12 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
             NSLayoutConstraint.deactivate(listConstraints)
             NSLayoutConstraint.activate(gridConstraints)
             pathLabel.isHidden = true
+            sourceChip.isHidden = false
         case .list:
             NSLayoutConstraint.deactivate(gridConstraints)
             NSLayoutConstraint.activate(listConstraints)
             pathLabel.isHidden = false
+            sourceChip.isHidden = true
         }
     }
 
@@ -2360,7 +2466,7 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
     private func updateSelectionAppearance() {
         let accentColor = isSelected ? NSColor.systemBlue.withAlphaComponent(0.42) : NSColor.separatorColor.withAlphaComponent(0.22)
         glassView.layer?.borderColor = accentColor.cgColor
-        glassView.layer?.backgroundColor = (isSelected ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18) : NSColor.controlBackgroundColor.withAlphaComponent(0.18)).cgColor
+        glassView.layer?.backgroundColor = (isSelected ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.16) : NSColor.controlBackgroundColor.withAlphaComponent(0.14)).cgColor
     }
 }
 
@@ -2371,12 +2477,14 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     private let headerIconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Animation Library")
-    private let summaryLabel = NSTextField(labelWithString: "Native Swift picker with direct Ditoo beam.")
-    private let assetChip = HeaderStatChipView(symbolName: "sparkles", text: "0 curated")
+    private let summaryLabel = NSTextField(labelWithString: "Native Swift library with direct Ditoo beam.")
+    private let assetChip = HeaderStatChipView(symbolName: "sparkles", text: "0 assets")
     private let categoryChip = HeaderStatChipView(symbolName: "square.grid.3x3.fill", text: "0 categories")
+    private let sourceChip = HeaderStatChipView(symbolName: "shippingbox", text: "0 sources")
     private let favoriteChip = HeaderStatChipView(symbolName: "star.fill", text: "0 favorites")
     private let resultsLabel = NSTextField(labelWithString: "0 visible")
     private let searchField = NSSearchField()
+    private let sourcePopUp = NSPopUpButton()
     private let categoryPopUp = NSPopUpButton()
     private let collectionPopUp = NSPopUpButton()
     private let sortPopUp = NSPopUpButton()
@@ -2403,6 +2511,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private var allItems: [AnimationLibraryItem] = []
     private var filteredItems: [AnimationLibraryItem] = []
     private var favorites = AnimationLibraryCatalog.loadFavorites()
+    private var selectedSource = "all"
     private var selectedCategory = "all"
     private var selectedCollection = "all"
     private var selectedItemID: String?
@@ -2414,7 +2523,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         self.onReveal = onReveal
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: 1160, height: 760),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -2442,6 +2551,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func reloadFromExternalSync() {
+        reloadLibrary()
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -2533,10 +2646,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         headerIconView.contentTintColor = .systemOrange
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 30, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 24, weight: .bold)
 
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        summaryLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
         summaryLabel.textColor = .secondaryLabelColor
 
         resultsLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -2549,6 +2662,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.sendsSearchStringImmediately = true
+
+        sourcePopUp.translatesAutoresizingMaskIntoConstraints = false
+        sourcePopUp.target = self
+        sourcePopUp.action = #selector(sourceChanged)
 
         categoryPopUp.translatesAutoresizingMaskIntoConstraints = false
         categoryPopUp.target = self
@@ -2596,7 +2713,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         titleRow.spacing = 10
         titleRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let chipRow = NSStackView(views: [assetChip, categoryChip, favoriteChip])
+        let chipRow = NSStackView(views: [assetChip, categoryChip, sourceChip, favoriteChip])
         chipRow.orientation = .horizontal
         chipRow.alignment = .centerY
         chipRow.spacing = 8
@@ -2619,7 +2736,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         searchRow.spacing = 12
         searchRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let filterRow = NSStackView(views: [categoryPopUp, collectionPopUp, sortPopUp, displayModeControl, favoritesOnlyButton, refreshButton])
+        let filterRow = NSStackView(views: [sourcePopUp, categoryPopUp, collectionPopUp, sortPopUp, displayModeControl, favoritesOnlyButton, refreshButton])
         filterRow.orientation = .horizontal
         filterRow.alignment = .centerY
         filterRow.spacing = 10
@@ -2783,9 +2900,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             toolbarStack.bottomAnchor.constraint(equalTo: toolbarCard.bottomAnchor, constant: -14),
 
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
-            categoryPopUp.widthAnchor.constraint(equalToConstant: 170),
-            collectionPopUp.widthAnchor.constraint(equalToConstant: 180),
-            sortPopUp.widthAnchor.constraint(equalToConstant: 176),
+            sourcePopUp.widthAnchor.constraint(equalToConstant: 150),
+            categoryPopUp.widthAnchor.constraint(equalToConstant: 148),
+            collectionPopUp.widthAnchor.constraint(equalToConstant: 154),
+            sortPopUp.widthAnchor.constraint(equalToConstant: 150),
             displayModeControl.widthAnchor.constraint(equalToConstant: 120),
 
             splitView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
@@ -2821,6 +2939,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 
     @objc private func searchChanged() {
+        applyFilters()
+    }
+
+    @objc private func sourceChanged() {
+        selectedSource = (sourcePopUp.selectedItem?.representedObject as? String) ?? "all"
+        rebuildCategoryMenu()
+        rebuildCollectionMenu()
         applyFilters()
     }
 
@@ -2887,12 +3012,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 
     private func reloadLibrary() {
-        summaryLabel.stringValue = "Loading curated animation library…"
+        summaryLabel.stringValue = "Loading native animation library…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let items = AnimationLibraryCatalog.loadItems()
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.allItems = items
+                self.rebuildSourceMenu()
                 self.rebuildCategoryMenu()
                 self.rebuildCollectionMenu()
                 self.applyFilters()
@@ -2900,9 +3026,38 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         }
     }
 
+    private func rebuildSourceMenu() {
+        let previousSource = selectedSource
+        let sources = Array(Set(allItems.map(\.source))).sorted()
+        sourcePopUp.removeAllItems()
+        sourcePopUp.addItem(withTitle: "All Sources")
+        sourcePopUp.lastItem?.representedObject = "all"
+        sourcePopUp.lastItem?.image = makeMenuSymbol("shippingbox", description: "All Sources")
+        for source in sources {
+            let title = AnimationLibraryCatalog.displaySourceTitle(for: source)
+            sourcePopUp.addItem(withTitle: title)
+            sourcePopUp.lastItem?.representedObject = source
+            sourcePopUp.lastItem?.image = makeMenuSymbol(source == "divoom-cloud" ? "icloud" : "shippingbox", description: title)
+        }
+
+        let targetSource = previousSource != "all" && sources.contains(previousSource) ? previousSource : "all"
+        selectedSource = targetSource
+        if let item = sourcePopUp.itemArray.first(where: { ($0.representedObject as? String) == targetSource }) {
+            sourcePopUp.select(item)
+        } else {
+            sourcePopUp.selectItem(at: 0)
+        }
+    }
+
     private func rebuildCategoryMenu() {
         let previousCategory = selectedCategory
-        let categories = Array(Set(allItems.map(\.category))).sorted()
+        let categories = Array(
+            Set(
+                allItems
+                    .filter { selectedSource == "all" || $0.source == selectedSource }
+                    .map(\.category)
+            )
+        ).sorted()
         categoryPopUp.removeAllItems()
         categoryPopUp.addItem(withTitle: "All Categories")
         categoryPopUp.lastItem?.representedObject = "all"
@@ -2927,6 +3082,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         let collections = Array(
             Set(
                 allItems
+                    .filter { selectedSource == "all" || $0.source == selectedSource }
                     .filter { selectedCategory == "all" || $0.category == selectedCategory }
                     .map(\.collection)
             )
@@ -2958,6 +3114,9 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         let preservedSelectionID = selectedItemID
 
         let matches = allItems.filter { item in
+            if selectedSource != "all" && item.source != selectedSource {
+                return false
+            }
             if selectedCategory != "all" && item.category != selectedCategory {
                 return false
             }
@@ -2977,10 +3136,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         collectionView.reloadData()
         emptyLabel.isHidden = !filteredItems.isEmpty
-        let collectionCount = Set(allItems.map(\.collection)).count
-        summaryLabel.stringValue = "Curated native picker with \(collectionCount) collections, crisp previews, and direct Ditoo beam."
+        let visibleSourceCount = Set(filteredItems.map(\.source)).count
+        summaryLabel.stringValue = "Native pixel library with curated and Divoom cloud sources, live previews, and direct Ditoo beaming."
         updateHeaderChips()
-        resultsLabel.stringValue = "\(filteredItems.count) visible"
+        resultsLabel.stringValue = "\(filteredItems.count) visible · \(visibleSourceCount) sources"
 
         if let preservedSelectionID, let index = filteredItems.firstIndex(where: { $0.id == preservedSelectionID }) {
             selectItem(at: index)
@@ -2999,6 +3158,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             case .spotlight:
                 let leftScore = spotlightScore(for: lhs)
                 let rightScore = spotlightScore(for: rhs)
+                if leftScore == rightScore {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return leftScore > rightScore
+            case .popularity:
+                let leftScore = lhs.likes * 4 + lhs.views
+                let rightScore = rhs.likes * 4 + rhs.views
                 if leftScore == rightScore {
                     return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
                 }
@@ -3043,6 +3209,8 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         if item.category == "pixel-displays" || item.category == "divoom" {
             score += 10
         }
+        score += min(item.likes, 1200) / 16
+        score += min(item.views, 4000) / 180
         if !item.relativePath.contains("/textfiles/") {
             score += 6
         }
@@ -3091,7 +3259,8 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             self.sendButton.title = "Beam to Ditoo"
             self.sendButton.image = makeMenuSymbol("paperplane.circle.fill", description: "Beam to Ditoo")
             self.sendButton.isEnabled = self.currentSelectedItem != nil
-            self.resultsLabel.stringValue = "\(self.filteredItems.count) visible"
+            let visibleSourceCount = Set(self.filteredItems.map(\.source)).count
+            self.resultsLabel.stringValue = "\(self.filteredItems.count) visible · \(visibleSourceCount) sources"
         }
     }
 
@@ -3112,9 +3281,14 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         }
 
         let collectionTitle = item.collection == "root" ? "Root" : AnimationLibraryCatalog.displayTitle(for: item.collection)
+        let sourceTitle = AnimationLibraryCatalog.displaySourceTitle(for: item.source)
         detailPreviewView.setFileURL(item.fileURL)
         detailTitleLabel.stringValue = item.title
-        detailMetaLabel.stringValue = "\(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+        if item.likes > 0 || item.views > 0 {
+            detailMetaLabel.stringValue = "\(sourceTitle) · \(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle) · \(item.likes) likes · \(item.views) views"
+        } else {
+            detailMetaLabel.stringValue = "\(sourceTitle) · \(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+        }
         detailCategoryChip.update(text: AnimationLibraryCatalog.displayTitle(for: item.category), symbolName: animationCategorySymbolName(item.category))
         detailCollectionChip.update(text: collectionTitle, symbolName: item.collection == "root" ? "shippingbox" : "folder")
         detailDuplicateChip.update(text: item.duplicateCount > 1 ? "\(item.duplicateCount) dupes" : "Unique", symbolName: "square.on.square")
@@ -3141,8 +3315,11 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 
     private func updateHeaderChips() {
-        assetChip.update(text: "\(allItems.count) curated")
-        categoryChip.update(text: "\(Set(allItems.map(\.category)).count) categories · \(Set(allItems.map(\.collection)).count) collections")
+        let sourceCount = Set(allItems.map(\.source)).count
+        let visibleCollections = Set(filteredItems.map(\.collection)).count
+        assetChip.update(text: "\(filteredItems.count) / \(allItems.count) assets")
+        categoryChip.update(text: "\(Set(allItems.map(\.category)).count) categories · \(visibleCollections) collections")
+        sourceChip.update(text: "\(sourceCount) sources", symbolName: sourceCount > 1 ? "shippingbox.circle" : "shippingbox")
         favoriteChip.update(text: "\(favorites.count) favorites")
     }
 }
@@ -3799,6 +3976,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         settingsMenu.addItem(makeItem("Reveal Log File", action: #selector(revealLogFile), symbolName: "folder"))
         settingsMenu.addItem(makeItem("Export Logs…", action: #selector(exportLogFile), symbolName: "square.and.arrow.up"))
         settingsMenu.addItem(.separator())
+        settingsMenu.addItem(makeSectionHeader("Cloud"))
+        settingsMenu.addItem(makeItem("Sync Divoom Cloud Library", action: #selector(syncDivoomCloudLibrary), symbolName: "arrow.triangle.2.circlepath"))
+        settingsMenu.addItem(makeItem("Reveal Divoom Cloud Folder", action: #selector(revealDivoomCloudFolder), symbolName: "shippingbox"))
+        settingsMenu.addItem(makeItem("Open Divoom Cloud Guide", action: #selector(openDivoomCloudGuide), symbolName: "book"))
+        settingsMenu.addItem(.separator())
         settingsMenu.addItem(makeSectionHeader("Workspace"))
         settingsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
         settingsMenu.addItem(makeItem("Open OpenClaw Notes", action: #selector(openOpenClawNotes), symbolName: "doc.richtext"))
@@ -4325,7 +4507,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func currentSummaryConnectionLine() -> String {
         let lower = connectionSummary.lowercased()
         if lower.contains("scan finished") || lower.contains("write characteristic ready") || lower.contains("ready") {
-            return "Ready for native BLE beaming."
+            return "Ditoo link is ready for native BLE beaming."
         }
         if lower.contains("requested bluetooth access") {
             return "Waiting for Bluetooth permission."
@@ -4348,13 +4530,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func currentSummaryActionLine() -> String {
         if autoRefreshMode != .off {
             if let lastActionDate {
-                return "Live \(autoRefreshMode.title) is active · last sync \(timestampFormatter.string(from: lastActionDate))"
+                return "Live \(autoRefreshMode.title) active · last sync \(timestampFormatter.string(from: lastActionDate))"
             }
-            return "Live \(autoRefreshMode.title) is active."
+            return "Live \(autoRefreshMode.title) active."
         }
         if let lastActionDate {
-            let actionPrefix = lastActionSuccess ? "OK" : "ERR"
-            return "\(actionPrefix) \(lastActionSummary) · \(timestampFormatter.string(from: lastActionDate))"
+            let actionPrefix = lastActionSuccess ? "Last beam" : "Needs attention"
+            let cleanedSummary = lastActionSummary
+                .replacingOccurrences(of: "Native BLE ", with: "")
+                .replacingOccurrences(of: "ipc-", with: "")
+            return "\(actionPrefix): \(cleanedSummary) · \(timestampFormatter.string(from: lastActionDate))"
         }
         return "Ready to beam colors, feeds, and animations."
     }
@@ -5188,7 +5373,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func showAboutPanel() {
         let version = appVersionString()
         let build = appBuildString()
-        let versionString = "\(version) (\(build))"
         let separator = NSAttributedString(string: " · ", attributes: [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
         ])
@@ -5208,8 +5392,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Divoom Ditoo Pro Mac",
-            .applicationVersion: versionString,
-            .version: versionString,
+            .applicationVersion: version,
+            .version: build,
             .credits: credits,
             .applicationIcon: (NSApplication.shared.applicationIconImage ?? NSImage()) as Any,
         ])
@@ -5229,12 +5413,81 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         )
     }
 
+    @objc private func syncDivoomCloudLibrary() {
+        let pythonURL = divoomRepoURL(".venv/bin/python")
+        let executableURL = FileManager.default.isExecutableFile(atPath: pythonURL.path)
+            ? pythonURL
+            : URL(fileURLWithPath: "/usr/bin/env")
+
+        updateActionStatus(
+            summary: "Syncing Divoom cloud library",
+            success: true,
+            details: "Fetching 16x16 cloud animations into the native library."
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.executableURL = executableURL
+            process.arguments = executableURL == pythonURL
+                ? [divoomRepoURL("tools/divoom_cloud_sync.py").path]
+                : ["python3", divoomRepoURL("tools/divoom_cloud_sync.py").path]
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let details = stderr.isEmpty ? stdout : stderr
+
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let success = process.terminationStatus == 0
+                    self.updateActionStatus(
+                        summary: success ? "Divoom cloud library synced" : "Divoom cloud sync failed",
+                        success: success,
+                        details: details
+                    )
+                    if success {
+                        self.animationLibraryController?.reloadFromExternalSync()
+                    }
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.updateActionStatus(
+                        summary: "Divoom cloud sync failed",
+                        success: false,
+                        details: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    @objc private func revealDivoomCloudFolder() {
+        let cloudURL = divoomRepoURL("assets/16x16/divoom-cloud", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cloudURL, withIntermediateDirectories: true)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: cloudURL.path)
+        updateActionStatus(
+            summary: "Revealed Divoom cloud folder",
+            success: true,
+            details: cloudURL.path
+        )
+    }
+
+    @objc private func openDivoomCloudGuide() {
+        NSWorkspace.shared.open(divoomRepoURL("docs/DIVOOM_CLOUD_SYNC.md"))
+    }
+
     @objc private func sendRecentAnimation(_ sender: NSMenuItem) {
         guard let relativePath = sender.representedObject as? String else {
             NSSound.beep()
             return
         }
-        let animationURL = curatedAnimationsURL.appendingPathComponent(relativePath)
+        let animationURL = divoomRepoURL("assets/16x16", isDirectory: true).appendingPathComponent(relativePath)
         guard FileManager.default.fileExists(atPath: animationURL.path) else {
             updateActionStatus(
                 summary: "Recent animation missing",
