@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLIST_DIR="$HOME/Library/LaunchAgents"
+PLIST_PATH="$PLIST_DIR/dev.kirniy.divoom.ralph-verify-morning.plist"
+LOG_DIR="$ROOT/.cache/ralph-verify-worktree/.ralph/logs"
+
+mkdir -p "$PLIST_DIR" "$LOG_DIR"
+
+cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.kirniy.divoom.ralph-verify-morning</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>$ROOT/bin/start-morning-ralph-verify</string>
+    <string>--refresh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>$ROOT</string>
+
+  <key>AbandonProcessGroup</key>
+  <true/>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>600</integer>
+
+  <key>StandardOutPath</key>
+  <string>$LOG_DIR/morning-verify.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>$LOG_DIR/morning-verify.err.log</string>
+</dict>
+</plist>
+EOF
+
+launchctl bootout "gui/$(id -u)/dev.kirniy.divoom.ralph-verify-morning" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+launchctl enable "gui/$(id -u)/dev.kirniy.divoom.ralph-verify-morning"
+
+echo "$PLIST_PATH"

@@ -953,6 +953,11 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
         "network-status": "--headless-native-network-status",
         "animation-sample": "--headless-native-animation-sample",
         "sample": "--headless-native-sample",
+        "animation-upload": "--headless-native-animation-upload",
+        "animated-monitor": "--headless-native-animated-monitor",
+        "clock-face": "--headless-native-clock-face",
+        "animated-clock": "--headless-native-animated-clock",
+        "pomodoro-timer": "--headless-native-pomodoro-timer",
     }
     parameter = None
     if args.action == "light-mode":
@@ -962,6 +967,22 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
         red, green, blue = ImageColor.getrgb(args.color)
         parameter = f"{red:02x}{green:02x}{blue:02x}"
         mode = mode_map[args.action]
+    elif args.action == "animation-upload":
+        mode = mode_map[args.action]
+        parameter = str(Path(args.path).expanduser().resolve()) if args.path else None
+    elif args.action == "send-gif":
+        input_path = Path(args.path).expanduser().resolve()
+        if not input_path.exists():
+            print(json.dumps({"error": "FileNotFoundError", "message": f"file not found: {input_path}"}, indent=2), file=sys.stderr)
+            return 1
+        divoom16_path = Path(tempfile.gettempdir()) / f"divoom-gif-{input_path.stem}.divoom16"
+        payload = serialize_path(input_path)
+        divoom16_path.write_bytes(payload)
+        mode = "--headless-native-animation-upload"
+        parameter = str(divoom16_path)
+    elif args.action == "pomodoro-timer":
+        mode = mode_map[args.action]
+        parameter = str(args.minutes)
     else:
         mode = mode_map[args.action]
     print(json.dumps(run_native_headless(mode=mode, parameter=parameter), indent=2))
@@ -1061,7 +1082,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     native_headless.add_argument(
         "action",
-        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample"],
+        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer"],
     )
     native_headless.add_argument(
         "--color",
@@ -1073,6 +1094,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Mode byte for action=light-mode",
+    )
+    native_headless.add_argument(
+        "--path",
+        help="File path for action=animation-upload (a .divoom16 or pre-serialized animation file)",
+    )
+    native_headless.add_argument(
+        "--minutes",
+        type=int,
+        default=25,
+        help="Timer duration in minutes for action=pomodoro-timer (default: 25)",
     )
     native_headless.set_defaults(func=cmd_native_headless)
 

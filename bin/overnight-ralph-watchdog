@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export HOME="${HOME:-$(eval echo ~"$(whoami)")}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SESSION_NAME="${1:-divoom-ralph}"
+TMUX_BIN="${TMUX_BIN:-$(command -v tmux || echo /opt/homebrew/bin/tmux)}"
+TMUX_SOCKET="${TMUX_SOCKET:-$ROOT/.cache/tmux/divoom-ralph.sock}"
+LOG_DIR="$ROOT/.ralph/logs"
+STALE_SECONDS=1800  # 30 minutes without status update = stale
+
+mkdir -p "$LOG_DIR"
+
+# Rotate watchdog logs if they exceed 1 MB.
+for logfile in "$LOG_DIR/watchdog.out.log" "$LOG_DIR/watchdog.err.log"; do
+    if [[ -f "$logfile" ]] && [[ "$(stat -f%z "$logfile" 2>/dev/null || echo 0)" -gt 1048576 ]]; then
+        mv "$logfile" "${logfile}.prev"
+    fi
+done
+
+log() {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+}
+
+# Guard against overlapping watchdog runs (mkdir is atomic on all POSIX systems).
+LOCKDIR="$ROOT/.cache/ralph-watchdog.lock"
+mkdir -p "$ROOT/.cache"
+cleanup_lock() { rmdir "$LOCKDIR" 2>/dev/null || true; }
+trap cleanup_lock EXIT
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    # Stale lock? If the lockdir is older than 10 minutes, remove and retry.
+    if [[ -d "$LOCKDIR" ]]; then
+        lock_age=$(( $(date +%s) - $(stat -f%m "$LOCKDIR" 2>/dev/null || echo 0) ))
+        if (( lock_age > 600 )); then
+            log "Removing stale lock (${lock_age}s old)"
+            rmdir "$LOCKDIR" 2>/dev/null || true
+            mkdir "$LOCKDIR" 2>/dev/null || { log "Another watchdog instance is running; skipping."; exit 0; }
+        else
+            log "Another watchdog instance is running; skipping."
+            exit 0
+        fi
+    fi
+fi
+
+# Clean up stale tmux socket.  If the file exists but no tmux server is
+# listening, remove it so the next start gets a clean slate.
+if [[ -S "$TMUX_SOCKET" ]]; then
+    if ! "$TMUX_BIN" -S "$TMUX_SOCKET" list-sessions >/dev/null 2>&1; then
+        log "Removing stale tmux socket $TMUX_SOCKET"
+        rm -f "$TMUX_SOCKET"
+    fi
+fi
+
+session_alive() {
+    "$TMUX_BIN" -S "$TMUX_SOCKET" has-session -t "$SESSION_NAME" 2>/dev/null
+}
+
+session_stale() {
+    local status_file="$ROOT/.ralph/status.json"
+    [[ ! -f "$status_file" ]] && return 0
+    local mtime
+    mtime="$(stat -f%m "$status_file" 2>/dev/null || echo 0)"
+    local now
+    now="$(date +%s)"
+    (( now - mtime > STALE_SECONDS ))
+}
+
+if session_alive; then
+    if session_stale; then
+        log "Ralph session $SESSION_NAME is alive but status.json is stale (>${STALE_SECONDS}s). Killing and restarting."
+        "$TMUX_BIN" -S "$TMUX_SOCKET" kill-session -t "$SESSION_NAME" 2>/dev/null || true
+        sleep 2
+    else
+        log "Ralph session already running: $SESSION_NAME"
+        exit 0
+    fi
+fi
+
+log "Starting Ralph session: $SESSION_NAME"
+echo "{\"watchdog_restart\":\"$(date -u +%FT%TZ)\"}" >> "$LOG_DIR/watchdog-restarts.jsonl"
+exec "$ROOT/bin/start-overnight-ralph" --session "$SESSION_NAME" --no-fetch

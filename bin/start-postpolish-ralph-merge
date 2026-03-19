@@ -3,33 +3,29 @@
 set -euo pipefail
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-export HOME="${HOME:-$(eval echo ~"$(whoami)")}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="$ROOT/.cache/ralph-claude-code"
-SESSION_NAME="divoom-ralph"
+SESSION_NAME="divoom-ralph-merge"
 TMUX_BIN="${TMUX_BIN:-$(command -v tmux || echo /opt/homebrew/bin/tmux)}"
-TMUX_SOCKET="${TMUX_SOCKET:-$ROOT/.cache/tmux/divoom-ralph.sock}"
-CALLS=80
-TIMEOUT=25
+TMUX_SOCKET="${TMUX_SOCKET:-$ROOT/.cache/tmux/divoom-ralph-merge.sock}"
+CALLS=30
+TIMEOUT=20
 REFRESH=0
-ATTACH=0
 FETCH=1
-LIVE=0
+
+OVERNIGHT_SOCKET="$ROOT/.cache/tmux/divoom-ralph.sock"
+VERIFY_SOCKET="$ROOT/.cache/tmux/divoom-ralph-verify.sock"
+POLISH_SOCKET="$ROOT/.cache/tmux/divoom-ralph-polish.sock"
 
 usage() {
     cat <<'EOF'
-Usage: start-overnight-ralph [options]
+Usage: start-postpolish-ralph-merge [options]
 
 Options:
-  --refresh           Refresh .ralph project files from ops/ralph templates
-  --attach            Attach to the tmux session after launching
-  --no-fetch          Reuse cached Ralph instead of pulling latest upstream
-  --session NAME      tmux session name (default: divoom-ralph)
-  --calls NUM         Max Ralph calls per hour (default: 80)
-  --timeout MIN       Claude timeout in minutes (default: 25)
-  --live              Enable Ralph live streaming mode
-  -h, --help          Show this help
+  --refresh    Refresh merge templates
+  --no-fetch   Reuse cached Ralph instead of pulling latest upstream
+  -h, --help   Show this help
 EOF
 }
 
@@ -39,28 +35,8 @@ while [[ $# -gt 0 ]]; do
             REFRESH=1
             shift
             ;;
-        --attach)
-            ATTACH=1
-            shift
-            ;;
         --no-fetch)
             FETCH=0
-            shift
-            ;;
-        --session)
-            SESSION_NAME="$2"
-            shift 2
-            ;;
-        --calls)
-            CALLS="$2"
-            shift 2
-            ;;
-        --timeout)
-            TIMEOUT="$2"
-            shift 2
-            ;;
-        --live)
-            LIVE=1
             shift
             ;;
         -h|--help)
@@ -75,7 +51,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-mkdir -p "$ROOT/.cache" "$ROOT/.cache/tmux" "$ROOT/.ralph/specs" "$ROOT/.ralph/docs/generated" "$ROOT/.ralph/logs"
+if "$TMUX_BIN" -S "$OVERNIGHT_SOCKET" has-session -t divoom-ralph 2>/dev/null; then
+    echo "Overnight Ralph still running; postponing merge start."
+    exit 0
+fi
+
+if "$TMUX_BIN" -S "$VERIFY_SOCKET" has-session -t divoom-ralph-verify 2>/dev/null; then
+    echo "Morning verify Ralph still running; postponing merge start."
+    exit 0
+fi
+
+if "$TMUX_BIN" -S "$POLISH_SOCKET" has-session -t divoom-ralph-polish 2>/dev/null; then
+    echo "Post-verify polish Ralph still running; postponing merge start."
+    exit 0
+fi
+
+if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+    echo "Main worktree is dirty; postponing merge start."
+    exit 0
+fi
+
+mkdir -p "$ROOT/.cache" "$ROOT/.cache/tmux" "$ROOT/.ralph-merge/docs/generated" "$ROOT/.ralph-merge/logs"
 
 "$ROOT/bin/ensure-ralph-sudo" >/dev/null 2>&1 || true
 if [[ -x "$ROOT/.cache/ralph-bin/sudo" ]]; then
@@ -84,10 +80,7 @@ if [[ -x "$ROOT/.cache/ralph-bin/sudo" ]]; then
 fi
 
 if [[ ! -d "$CACHE_DIR/.git" ]]; then
-    if ! git clone --depth 1 https://github.com/frankbria/ralph-claude-code.git "$CACHE_DIR"; then
-        echo "Warning: git clone failed (network?). Cannot start without Ralph cache." >&2
-        exit 1
-    fi
+    git clone --depth 1 https://github.com/frankbria/ralph-claude-code.git "$CACHE_DIR"
 elif [[ "$FETCH" == "1" ]]; then
     git -C "$CACHE_DIR" pull --ff-only || echo "Warning: git pull failed (network?). Using cached Ralph." >&2
 fi
@@ -120,30 +113,21 @@ copy_if_needed() {
     fi
 }
 
-copy_if_needed "$ROOT/ops/ralph/PROMPT.md" "$ROOT/.ralph/PROMPT.md"
-copy_if_needed "$ROOT/ops/ralph/AGENT.md" "$ROOT/.ralph/AGENT.md"
-copy_if_needed "$ROOT/ops/ralph/fix_plan.md" "$ROOT/.ralph/fix_plan.md"
-copy_if_needed "$ROOT/ops/ralph/specs/animation-roadmap.md" "$ROOT/.ralph/specs/animation-roadmap.md"
-copy_if_needed "$ROOT/ops/ralph/ralphrc" "$ROOT/.ralphrc"
+copy_if_needed "$ROOT/ops/ralph-merge/PROMPT.md" "$ROOT/.ralph-merge/PROMPT.md"
+copy_if_needed "$ROOT/ops/ralph-merge/AGENT.md" "$ROOT/.ralph-merge/AGENT.md"
+copy_if_needed "$ROOT/ops/ralph-merge/fix_plan.md" "$ROOT/.ralph-merge/fix_plan.md"
+copy_if_needed "$ROOT/ops/ralph-merge/ralphrc" "$ROOT/.ralph-merge/.ralphrc"
 
 if "$TMUX_BIN" -S "$TMUX_SOCKET" has-session -t "$SESSION_NAME" 2>/dev/null; then
-    echo "Ralph session already running: $SESSION_NAME"
+    echo "Post-polish Ralph merge already running: $SESSION_NAME"
 else
-    CMD="exec '$CACHE_DIR/ralph_loop.sh' --calls $CALLS --timeout $TIMEOUT"
-    if [[ "$LIVE" == "1" ]]; then
-        CMD="$CMD --live"
-    fi
-    "$TMUX_BIN" -S "$TMUX_SOCKET" new-session -d -s "$SESSION_NAME" -c "$ROOT" "$CMD"
-    echo "Started Ralph session: $SESSION_NAME"
+    "$TMUX_BIN" -S "$TMUX_SOCKET" new-session -d -s "$SESSION_NAME" -c "$ROOT" "export RALPH_DIR='$ROOT/.ralph-merge'; export CLAUDE_PROJECT_DIR='$ROOT'; exec '$CACHE_DIR/ralph_loop.sh' --calls $CALLS --timeout $TIMEOUT"
+    echo "Started post-polish Ralph merge: $SESSION_NAME"
 fi
 
-echo "Repo root: $ROOT"
+echo "Merge root: $ROOT"
 echo "Ralph cache: $CACHE_DIR"
 echo "Ralph commit: $(git -C "$CACHE_DIR" rev-parse --short HEAD)"
-echo "Status: $ROOT/.ralph/status.json"
-echo "Logs: $ROOT/.ralph/logs/ralph.log"
+echo "Status: $ROOT/.ralph-merge/status.json"
+echo "Logs: $ROOT/.ralph-merge/logs/ralph.log"
 echo "$TMUX_BIN -S $TMUX_SOCKET attach -t $SESSION_NAME"
-
-if [[ "$ATTACH" == "1" ]]; then
-    exec "$TMUX_BIN" -S "$TMUX_SOCKET" attach -t "$SESSION_NAME"
-fi

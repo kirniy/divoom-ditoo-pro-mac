@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE_NAME="divoom-ralph-sudo"
+PASSWORD=""
+
+usage() {
+    cat <<'EOF'
+Usage: setup-ralph-sudo [--password VALUE | --stdin]
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --password)
+            PASSWORD="$2"
+            shift 2
+            ;;
+        --stdin)
+            PASSWORD="$(cat)"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ -z "$PASSWORD" ]]; then
+    echo "Password is required." >&2
+    exit 1
+fi
+
+security add-generic-password -U -a "$(whoami)" -s "$SERVICE_NAME" -w "$PASSWORD" >/dev/null
+"$ROOT/bin/ensure-ralph-sudo"
+echo "Configured Ralph sudo bridge via macOS Keychain."

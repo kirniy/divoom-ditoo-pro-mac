@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+POLISH_ROOT="$ROOT/.cache/ralph-polish-worktree"
+CACHE_DIR="$ROOT/.cache/ralph-claude-code"
+SESSION_NAME="divoom-ralph-polish"
+TMUX_BIN="${TMUX_BIN:-$(command -v tmux || echo /opt/homebrew/bin/tmux)}"
+TMUX_SOCKET="${TMUX_SOCKET:-$ROOT/.cache/tmux/divoom-ralph-polish.sock}"
+CALLS=40
+TIMEOUT=20
+REFRESH=0
+FETCH=1
+
+OVERNIGHT_SOCKET="$ROOT/.cache/tmux/divoom-ralph.sock"
+VERIFY_SOCKET="$ROOT/.cache/tmux/divoom-ralph-verify.sock"
+
+usage() {
+    cat <<'EOF'
+Usage: start-postverify-ralph-polish [options]
+
+Options:
+  --refresh    Refresh polish templates and worktree metadata
+  --no-fetch   Reuse cached Ralph instead of pulling latest upstream
+  -h, --help   Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --refresh)
+            REFRESH=1
+            shift
+            ;;
+        --no-fetch)
+            FETCH=0
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if "$TMUX_BIN" -S "$OVERNIGHT_SOCKET" has-session -t divoom-ralph 2>/dev/null; then
+    echo "Overnight Ralph still running; postponing polish start."
+    exit 0
+fi
+
+if "$TMUX_BIN" -S "$VERIFY_SOCKET" has-session -t divoom-ralph-verify 2>/dev/null; then
+    echo "Morning verify Ralph still running; postponing polish start."
+    exit 0
+fi
+
+mkdir -p "$ROOT/.cache" "$ROOT/.cache/tmux"
+
+"$ROOT/bin/ensure-ralph-sudo" >/dev/null 2>&1 || true
+if [[ -x "$ROOT/.cache/ralph-bin/sudo" ]]; then
+    export PATH="$ROOT/.cache/ralph-bin:$PATH"
+    export SUDO_ASKPASS="$ROOT/.cache/ralph-sudo/askpass.sh"
+fi
+
+if [[ ! -d "$CACHE_DIR/.git" ]]; then
+    git clone --depth 1 https://github.com/frankbria/ralph-claude-code.git "$CACHE_DIR"
+elif [[ "$FETCH" == "1" ]]; then
+    git -C "$CACHE_DIR" pull --ff-only
+fi
+
+python3 - "$CACHE_DIR/ralph_loop.sh" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+before = text
+text = text.replace(
+    'local uncompleted_items=$(grep -cE "^[[:space:]]*- \\[ \\]" "$RALPH_DIR/fix_plan.md" 2>/dev/null || echo "0")',
+    'local uncompleted_items=$(grep -cE "^[[:space:]]*- \\[ \\]" "$RALPH_DIR/fix_plan.md" 2>/dev/null); uncompleted_items=${uncompleted_items:-0}',
+)
+text = text.replace(
+    'local completed_items=$(grep -cE "^[[:space:]]*- \\[[xX]\\]" "$RALPH_DIR/fix_plan.md" 2>/dev/null || echo "0")',
+    'local completed_items=$(grep -cE "^[[:space:]]*- \\[[xX]\\]" "$RALPH_DIR/fix_plan.md" 2>/dev/null); completed_items=${completed_items:-0}',
+)
+if text != before:
+    path.write_text(text)
+PY
+
+git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+
+if [[ -e "$POLISH_ROOT" && ! -e "$POLISH_ROOT/.git" ]]; then
+    rm -rf "$POLISH_ROOT"
+fi
+
+if [[ ! -e "$POLISH_ROOT/.git" ]]; then
+    git -C "$ROOT" worktree add --detach "$POLISH_ROOT" HEAD
+fi
+
+mkdir -p "$POLISH_ROOT/.ralph/specs" "$POLISH_ROOT/.ralph/docs/generated" "$POLISH_ROOT/.ralph/logs"
+
+copy_if_needed() {
+    local src="$1"
+    local dst="$2"
+    if [[ "$REFRESH" == "1" || ! -f "$dst" ]]; then
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+    fi
+}
+
+copy_if_needed "$ROOT/ops/ralph-polish/PROMPT.md" "$POLISH_ROOT/.ralph/PROMPT.md"
+copy_if_needed "$ROOT/ops/ralph-polish/AGENT.md" "$POLISH_ROOT/.ralph/AGENT.md"
+copy_if_needed "$ROOT/ops/ralph-polish/fix_plan.md" "$POLISH_ROOT/.ralph/fix_plan.md"
+copy_if_needed "$ROOT/ops/ralph-polish/ralphrc" "$POLISH_ROOT/.ralphrc"
+
+if "$TMUX_BIN" -S "$TMUX_SOCKET" has-session -t "$SESSION_NAME" 2>/dev/null; then
+    echo "Post-verify Ralph polish already running: $SESSION_NAME"
+else
+    "$TMUX_BIN" -S "$TMUX_SOCKET" new-session -d -s "$SESSION_NAME" -c "$POLISH_ROOT" "exec '$CACHE_DIR/ralph_loop.sh' --calls $CALLS --timeout $TIMEOUT"
+    echo "Started post-verify Ralph polish: $SESSION_NAME"
+fi
+
+echo "Polish root: $POLISH_ROOT"
+echo "Ralph cache: $CACHE_DIR"
+echo "Ralph commit: $(git -C "$CACHE_DIR" rev-parse --short HEAD)"
+echo "Status: $POLISH_ROOT/.ralph/status.json"
+echo "Logs: $POLISH_ROOT/.ralph/logs/ralph.log"
+echo "$TMUX_BIN -S $TMUX_SOCKET attach -t $SESSION_NAME"

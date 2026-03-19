@@ -23,6 +23,7 @@ Strict constraints:
 - Do not guess protocol details when reverse-engineering display features.
 - Ground animation and gallery work in `reverse/ios_ipa/REVERSE.md` and the IPA analysis artifacts.
 - Prefer extending the proven `8841` write path instead of reviving dead RFCOMM or shortcut-based UI ideas.
+- Full sudo is available on this machine through the configured `sudo` wrapper if a task genuinely needs it.
 - Keep commits small and truthful.
 - If blocked on device protocol, improve tooling, docs, instrumentation, or RE notes instead of looping aimlessly.
 

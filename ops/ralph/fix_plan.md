@@ -1,7 +1,24 @@
 # Divoom D2 Pro Mac Fix Plan
 
-- [ ] Implement native GIF or multi-frame animation upload for the Ditoo Pro `16x16` RGB display using the iOS gallery pipeline evidence in `reverse/ios_ipa/REVERSE.md`
-- [ ] Build a reusable asset pipeline for `16x16` display content: image conversion, frame extraction, quantization, and payload preparation for native macOS sends
-- [ ] Add at least one polished native animated status surface that can be driven from the Mac menu bar app without any iPhone bridge
-- [ ] Add one more useful native display mode built on the proven static pixel path, such as focused-app icon mirroring or richer CodexBar-style status visuals
-- [ ] Improve README and reverse-engineering docs so the working native path, testing workflow, and animation progress are clear and reproducible
+- [x] Implement native animation upload entrypoints for the Ditoo Pro `16x16` RGB display and verify the upload path reaches the live menu bar app over IPC
+- [x] Build a reusable asset pipeline entrypoint for `16x16` display content so native smoke tests can pass a serialized animation file into the app
+- [x] Enhance `convert_to_divoom16.py` with `--info` inspection for `.divoom16` binary files and `--duration` override for frame timing
+- [x] Add a polished native animated status surface (`buildAnimatedSystemMonitorFrames` with CPU/memory/battery scan-line sweep, wired to `animated-monitor` headless mode and menu item)
+- [x] Add one more useful native display mode (analog clock face via `buildClockFaceImage` with hour/minute hands and circular tick marks, wired to `clock-face` headless mode and menu item)
+- [ ] Verify visible on-device animation playback instead of only proving upload and view-switch traffic
+  - `0xBD [0x31]` preamble and negotiated MTU path are implemented
+  - Frame-by-frame streaming via `0x44` is proven for Mac-driven visuals
+  - Bulk `0x8B` upload still needs truthful on-device confirmation
+- [x] Harden the overnight worker so it survives launchd restarts cleanly and can continue unattended without path/socket drift
+  - Watchdog detects stale sessions (>30 min without status.json update) and kills/restarts them
+  - mkdir-based lock guard against overlapping watchdog runs (macOS-compatible, replaces flock)
+  - Stale lock auto-cleanup after 10 minutes
+  - Log rotation for watchdog stdout/stderr (>1 MB triggers rotation)
+  - Stale tmux socket cleanup on startup
+  - Recovery logging to `watchdog-restarts.jsonl` with UTC timestamps
+  - `overnight-ralph-status` now shows restart count and last restart time
+  - HOME/USER/PATH set in launchd plist EnvironmentVariables
+  - git pull failure in `start-overnight-ralph` no longer kills the script (warns and uses cache)
+  - Watchdog uses `--no-fetch` on restarts to avoid network dependency
+- [x] Improve README and reverse-engineering docs so the working native path, testing workflow, animation limitations, and automation workflow are clear and reproducible
+- [ ] Expand native animation tooling and reverse-engineering notes until the playback path is product-ready and honestly documented

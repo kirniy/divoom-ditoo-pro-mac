@@ -1,7 +1,7 @@
-PROJECT_NAME="divoom-d2-pro-mac"
+PROJECT_NAME="divoom-d2-pro-mac-polish"
 PROJECT_TYPE="swift-python"
 CLAUDE_CODE_CMD="/opt/homebrew/bin/claude"
-MAX_CALLS_PER_HOUR=80
-CLAUDE_TIMEOUT_MINUTES=25
+MAX_CALLS_PER_HOUR=40
+CLAUDE_TIMEOUT_MINUTES=20
 CLAUDE_OUTPUT_FORMAT="json"
 ALLOWED_TOOLS="Write,Read,Edit,Bash(*)"

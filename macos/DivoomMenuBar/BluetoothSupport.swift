@@ -224,25 +224,7 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
         throw NSError(domain: "Divoom16", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid Divoom16 header"])
     }
 
-    let firstPaletteCount = max(1, Int(data[6]))
-    let bitsPerPixel = max(1, Int(ceil(log2(Double(firstPaletteCount)))))
-
-    var palette: [RGBColor] = []
-    palette.reserveCapacity(firstPaletteCount)
-    let firstPaletteOffset = 7
-    for index in 0..<firstPaletteCount {
-        let base = firstPaletteOffset + index * 3
-        guard base + 2 < data.count else {
-            throw NSError(domain: "Divoom16", code: 2, userInfo: [NSLocalizedDescriptionKey: "Palette truncated"])
-        }
-        palette.append(RGBColor(r: data[base], g: data[base + 1], b: data[base + 2]))
-    }
-
-    let width = 16
-    let height = 16
-    let pixelCount = width * height
-    let pixelByteCount = (pixelCount * bitsPerPixel + 7) / 8
-
+    let pixelCount = 16 * 16
     var frames: [Divoom16AnimationFrame] = []
     var frameOffset = 0
 
@@ -253,8 +235,23 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
         }
 
         let timeInMilliseconds = Int(UInt16(data[frameOffset + 3]) | (UInt16(data[frameOffset + 4]) << 8))
-        let localPaletteCount = Int(data[frameOffset + 6])
-        let pixelsOffset = frameOffset + 7 + localPaletteCount * 3
+        let rawPaletteCount = Int(data[frameOffset + 6])
+        let localPaletteCount = rawPaletteCount == 0 ? 256 : rawPaletteCount
+        let localBitsPerPixel = max(1, Int(ceil(log2(Double(max(2, localPaletteCount))))))
+
+        var palette: [RGBColor] = []
+        palette.reserveCapacity(localPaletteCount)
+        let paletteStart = frameOffset + 7
+        for index in 0..<localPaletteCount {
+            let base = paletteStart + index * 3
+            guard base + 2 < data.count else {
+                break
+            }
+            palette.append(RGBColor(r: data[base], g: data[base + 1], b: data[base + 2]))
+        }
+
+        let pixelsOffset = paletteStart + localPaletteCount * 3
+        let pixelByteCount = (pixelCount * localBitsPerPixel + 7) / 8
         let pixelsEnd = pixelsOffset + pixelByteCount
         guard pixelsEnd <= frameOffset + frameLength else {
             break
@@ -265,7 +262,7 @@ private func loadDivoom16AnimationFrames(from url: URL) throws -> [Divoom16Anima
         colors.reserveCapacity(pixelCount)
 
         for pixelIndex in 0..<pixelCount {
-            let paletteIndex = readBitsFromData(pixelData, startingBit: pixelIndex * bitsPerPixel, bitCount: bitsPerPixel)
+            let paletteIndex = readBitsFromData(pixelData, startingBit: pixelIndex * localBitsPerPixel, bitCount: localBitsPerPixel)
             let color = palette.indices.contains(paletteIndex) ? palette[paletteIndex] : RGBColor(r: 0, g: 0, b: 0)
             colors.append(color)
         }
@@ -655,6 +652,329 @@ private func buildSystemStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
     }
 
     return colors
+}
+
+private func buildAnimatedSystemMonitorFrames() -> [Divoom16AnimationFrame] {
+    let snapshot = currentSystemSnapshot()
+    let background = RGBColor(r: 0x06, g: 0x0d, b: 0x16)
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let cpuColor = RGBColor(r: 0xff, g: 0x8a, b: 0x00)
+    let memColor = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+    let batteryColor = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+    let scanColor = RGBColor(r: 0xff, g: 0xff, b: 0xff)
+
+    let cpuHeight = max(1, min(10, Int(round(Double(snapshot.cpuPercent) / 10.0))))
+    let memHeight = max(1, min(10, Int(round(Double(snapshot.memoryPercent) / 10.0))))
+    let batteryPercent = snapshot.battery?.percent ?? 0
+    let batteryColumns = max(1, min(4, Int(round(Double(batteryPercent) / 25.0))))
+
+    var frames: [Divoom16AnimationFrame] = []
+
+    // 8 frames: scan line sweeps left-to-right across the display
+    for scanX in stride(from: 1, to: 15, by: 2) {
+        var colors = Array(repeating: background, count: 16 * 16)
+
+        func setPixel(x: Int, y: Int, color: RGBColor) {
+            guard (0..<16).contains(x), (0..<16).contains(y) else { return }
+            colors[y * 16 + x] = color
+        }
+
+        // Border
+        for x in 0..<16 {
+            setPixel(x: x, y: 0, color: frame)
+            setPixel(x: x, y: 15, color: frame)
+        }
+        for y in 0..<16 {
+            setPixel(x: 0, y: y, color: frame)
+            setPixel(x: 15, y: y, color: frame)
+        }
+
+        // CPU bar (columns 3-5)
+        for x in 3...5 {
+            for y in 4...13 { setPixel(x: x, y: y, color: dim) }
+            for offset in 0..<cpuHeight { setPixel(x: x, y: 13 - offset, color: cpuColor) }
+        }
+
+        // Memory bar (columns 10-12)
+        for x in 10...12 {
+            for y in 4...13 { setPixel(x: x, y: y, color: dim) }
+            for offset in 0..<memHeight { setPixel(x: x, y: 13 - offset, color: memColor) }
+        }
+
+        // Battery indicator (rows 4-5, columns 6-9)
+        for x in 6...9 {
+            setPixel(x: x, y: 4, color: dim)
+            setPixel(x: x, y: 5, color: dim)
+        }
+        for x in 6..<(6 + batteryColumns) {
+            setPixel(x: x, y: 4, color: batteryColor)
+            setPixel(x: x, y: 5, color: batteryColor)
+        }
+
+        // Scan line
+        for y in 1...14 {
+            setPixel(x: scanX, y: y, color: scanColor)
+        }
+
+        frames.append(Divoom16AnimationFrame(colors: colors, duration: 0.18))
+    }
+
+    return frames
+}
+
+private func buildClockFaceImage(date: Date = Date()) -> [RGBColor] {
+    let calendar = Calendar.current
+    let components = calendar.dateComponents([.hour, .minute], from: date)
+    let hour = components.hour ?? 0
+    let minute = components.minute ?? 0
+
+    var colors = Array(repeating: RGBColor(r: 0x06, g: 0x0d, b: 0x16), count: 16 * 16)
+
+    func setPixel(x: Int, y: Int, color: RGBColor) {
+        guard (0..<16).contains(x), (0..<16).contains(y) else { return }
+        colors[y * 16 + x] = color
+    }
+
+    let frame = RGBColor(r: 0x2a, g: 0x3a, b: 0x50)
+    let hourColor = RGBColor(r: 0xff, g: 0x8a, b: 0x00)
+    let minuteColor = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+    let centerColor = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let tickColor = RGBColor(r: 0x33, g: 0x44, b: 0x55)
+
+    // Circular clock face ticks at 12, 3, 6, 9 o'clock positions
+    let tickPositions: [(Int, Int)] = [
+        (7, 1), (8, 1),    // 12
+        (14, 7), (14, 8),  // 3
+        (7, 14), (8, 14),  // 6
+        (1, 7), (1, 8),    // 9
+    ]
+    for (tx, ty) in tickPositions {
+        setPixel(x: tx, y: ty, color: tickColor)
+    }
+
+    // Circular outline approximation
+    let circlePixels: [(Int, Int)] = [
+        (5, 1), (6, 1), (9, 1), (10, 1),
+        (3, 2), (4, 2), (11, 2), (12, 2),
+        (2, 3), (13, 3),
+        (2, 4), (13, 4),
+        (1, 5), (14, 5),
+        (1, 6), (14, 6),
+        (1, 9), (14, 9),
+        (1, 10), (14, 10),
+        (2, 11), (13, 11),
+        (2, 12), (13, 12),
+        (3, 13), (4, 13), (11, 13), (12, 13),
+        (5, 14), (6, 14), (9, 14), (10, 14),
+    ]
+    for (cx, cy) in circlePixels {
+        setPixel(x: cx, y: cy, color: frame)
+    }
+
+    // Center dot
+    setPixel(x: 7, y: 7, color: centerColor)
+    setPixel(x: 8, y: 7, color: centerColor)
+    setPixel(x: 7, y: 8, color: centerColor)
+    setPixel(x: 8, y: 8, color: centerColor)
+
+    // Hour hand (short, 3 pixels from center)
+    let hourAngle = (Double(hour % 12) + Double(minute) / 60.0) * (Double.pi * 2.0 / 12.0) - Double.pi / 2.0
+    for length in 1...3 {
+        let hx = 7 + Int(round(Double(length) * cos(hourAngle)))
+        let hy = 7 + Int(round(Double(length) * sin(hourAngle)))
+        setPixel(x: hx, y: hy, color: hourColor)
+        setPixel(x: hx + 1, y: hy, color: hourColor)
+    }
+
+    // Minute hand (longer, 5 pixels from center)
+    let minuteAngle = Double(minute) * (Double.pi * 2.0 / 60.0) - Double.pi / 2.0
+    for length in 1...5 {
+        let mx = 7 + Int(round(Double(length) * cos(minuteAngle)))
+        let my = 7 + Int(round(Double(length) * sin(minuteAngle)))
+        setPixel(x: mx, y: my, color: minuteColor)
+    }
+
+    return colors
+}
+
+private func buildAnimatedClockFaceFrames(date: Date = Date()) -> [Divoom16AnimationFrame] {
+    let calendar = Calendar.current
+    let components = calendar.dateComponents([.hour, .minute, .second], from: date)
+    let hour = components.hour ?? 0
+    let minute = components.minute ?? 0
+    let second = components.second ?? 0
+
+    let background = RGBColor(r: 0x06, g: 0x0d, b: 0x16)
+    let outline = RGBColor(r: 0x2a, g: 0x3a, b: 0x50)
+    let hourColor = RGBColor(r: 0xff, g: 0x8a, b: 0x00)
+    let minuteColor = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+    let secondColor = RGBColor(r: 0xff, g: 0x35, b: 0x5e)
+    let centerColor = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let tickColor = RGBColor(r: 0x33, g: 0x44, b: 0x55)
+
+    let tickPositions: [(Int, Int)] = [
+        (7, 1), (8, 1),
+        (14, 7), (14, 8),
+        (7, 14), (8, 14),
+        (1, 7), (1, 8),
+    ]
+
+    let circlePixels: [(Int, Int)] = [
+        (5, 1), (6, 1), (9, 1), (10, 1),
+        (3, 2), (4, 2), (11, 2), (12, 2),
+        (2, 3), (13, 3),
+        (2, 4), (13, 4),
+        (1, 5), (14, 5),
+        (1, 6), (14, 6),
+        (1, 9), (14, 9),
+        (1, 10), (14, 10),
+        (2, 11), (13, 11),
+        (2, 12), (13, 12),
+        (3, 13), (4, 13), (11, 13), (12, 13),
+        (5, 14), (6, 14), (9, 14), (10, 14),
+    ]
+
+    // 12 frames, each representing 5 seconds of the sweep
+    let frameCount = 12
+    var frames: [Divoom16AnimationFrame] = []
+
+    for frameIndex in 0..<frameCount {
+        let currentSecond = (second + frameIndex * 5) % 60
+        let currentMinute = minute + (second + frameIndex * 5) / 60
+
+        var colors = Array(repeating: background, count: 16 * 16)
+
+        func setPixel(x: Int, y: Int, color: RGBColor) {
+            guard (0..<16).contains(x), (0..<16).contains(y) else { return }
+            colors[y * 16 + x] = color
+        }
+
+        for (cx, cy) in circlePixels {
+            setPixel(x: cx, y: cy, color: outline)
+        }
+        for (tx, ty) in tickPositions {
+            setPixel(x: tx, y: ty, color: tickColor)
+        }
+
+        // Center dot
+        setPixel(x: 7, y: 7, color: centerColor)
+        setPixel(x: 8, y: 7, color: centerColor)
+        setPixel(x: 7, y: 8, color: centerColor)
+        setPixel(x: 8, y: 8, color: centerColor)
+
+        // Hour hand
+        let hourAngle = (Double(hour % 12) + Double(currentMinute) / 60.0) * (Double.pi * 2.0 / 12.0) - Double.pi / 2.0
+        for length in 1...3 {
+            let hx = 7 + Int(round(Double(length) * cos(hourAngle)))
+            let hy = 7 + Int(round(Double(length) * sin(hourAngle)))
+            setPixel(x: hx, y: hy, color: hourColor)
+            setPixel(x: hx + 1, y: hy, color: hourColor)
+        }
+
+        // Minute hand
+        let minuteAngle = Double(currentMinute) * (Double.pi * 2.0 / 60.0) - Double.pi / 2.0
+        for length in 1...5 {
+            let mx = 7 + Int(round(Double(length) * cos(minuteAngle)))
+            let my = 7 + Int(round(Double(length) * sin(minuteAngle)))
+            setPixel(x: mx, y: my, color: minuteColor)
+        }
+
+        // Second hand (thin, 6 pixels from center)
+        let secondAngle = Double(currentSecond) * (Double.pi * 2.0 / 60.0) - Double.pi / 2.0
+        for length in 1...6 {
+            let sx = 7 + Int(round(Double(length) * cos(secondAngle)))
+            let sy = 7 + Int(round(Double(length) * sin(secondAngle)))
+            setPixel(x: sx, y: sy, color: secondColor)
+        }
+
+        frames.append(Divoom16AnimationFrame(colors: colors, duration: 5.0))
+    }
+
+    return frames
+}
+
+private func buildPomodoroTimerFrames(totalMinutes: Int = 25) -> [Divoom16AnimationFrame] {
+    let background = RGBColor(r: 0x06, g: 0x0d, b: 0x16)
+    let ringFull = RGBColor(r: 0xff, g: 0x35, b: 0x5e)
+    let ringDim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+    let digitColor = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let accentColor = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+
+    // 20 ring positions (rough circle), clockwise from 12 o'clock
+    let ringPositions: [(Int, Int)] = [
+        (7, 0), (8, 0),   (10, 1), (12, 2),
+        (13, 4), (14, 6), (14, 8), (13, 10),
+        (12, 12), (10, 13), (8, 14), (7, 14),
+        (5, 13), (3, 12), (2, 10), (1, 8),
+        (1, 6), (2, 4),  (3, 2),  (5, 1),
+    ]
+
+    // Tiny 3x5 digit bitmaps for 0-9
+    let digitBitmaps: [[UInt8]] = [
+        [0b111, 0b101, 0b101, 0b101, 0b111], // 0
+        [0b010, 0b110, 0b010, 0b010, 0b111], // 1
+        [0b111, 0b001, 0b111, 0b100, 0b111], // 2
+        [0b111, 0b001, 0b111, 0b001, 0b111], // 3
+        [0b101, 0b101, 0b111, 0b001, 0b001], // 4
+        [0b111, 0b100, 0b111, 0b001, 0b111], // 5
+        [0b111, 0b100, 0b111, 0b101, 0b111], // 6
+        [0b111, 0b001, 0b010, 0b010, 0b010], // 7
+        [0b111, 0b101, 0b111, 0b101, 0b111], // 8
+        [0b111, 0b101, 0b111, 0b001, 0b111], // 9
+    ]
+
+    func drawDigit(_ digit: Int, x: Int, y: Int, colors: inout [RGBColor], color: RGBColor) {
+        guard (0...9).contains(digit) else { return }
+        let bitmap = digitBitmaps[digit]
+        for row in 0..<5 {
+            for col in 0..<3 {
+                if bitmap[row] & (1 << (2 - col)) != 0 {
+                    let px = x + col
+                    let py = y + row
+                    if (0..<16).contains(px), (0..<16).contains(py) {
+                        colors[py * 16 + px] = color
+                    }
+                }
+            }
+        }
+    }
+
+    let frameCount = max(1, totalMinutes + 1)
+    var frames: [Divoom16AnimationFrame] = []
+
+    for frameIndex in 0..<frameCount {
+        let remainingMinutes = totalMinutes - frameIndex
+        var colors = Array(repeating: background, count: 16 * 16)
+
+        let filledPositions = Int(round(Double(remainingMinutes) / Double(totalMinutes) * Double(ringPositions.count)))
+        for (index, position) in ringPositions.enumerated() {
+            let color = index < filledPositions ? ringFull : ringDim
+            let (px, py) = position
+            if (0..<16).contains(px), (0..<16).contains(py) {
+                colors[py * 16 + px] = color
+            }
+        }
+
+        if remainingMinutes >= 10 {
+            let tens = remainingMinutes / 10
+            let ones = remainingMinutes % 10
+            drawDigit(tens, x: 4, y: 6, colors: &colors, color: digitColor)
+            drawDigit(ones, x: 9, y: 6, colors: &colors, color: digitColor)
+        } else if remainingMinutes > 0 {
+            drawDigit(remainingMinutes, x: 7, y: 6, colors: &colors, color: digitColor)
+        } else {
+            for y in 5...10 {
+                for x in 5...10 {
+                    colors[y * 16 + x] = accentColor
+                }
+            }
+        }
+
+        frames.append(Divoom16AnimationFrame(colors: colors, duration: 2.0))
+    }
+
+    return frames
 }
 
 private func currentNetworkCounters() -> (download: UInt64, upload: UInt64)? {
@@ -1666,6 +1986,44 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         }
     }
 
+    func runNativeBLEAnimatedSystemMonitor(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEFrameStream(
+            frames: buildAnimatedSystemMonitorFrames(),
+            label: "animated-system-monitor",
+            sourceDescription: "generated:animated-system-monitor",
+            loopCount: 4,
+            completion: completion
+        )
+    }
+
+    func runNativeBLEClockFace(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEStaticImage(
+            colors: buildClockFaceImage(),
+            label: "clock-face",
+            completion: completion
+        )
+    }
+
+    func runNativeBLEAnimatedClockFace(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEFrameStream(
+            frames: buildAnimatedClockFaceFrames(),
+            label: "animated-clock-face",
+            sourceDescription: "generated:animated-clock-face",
+            loopCount: 1,
+            completion: completion
+        )
+    }
+
+    func runNativeBLEPomodoroTimer(minutes: Int = 25, completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEFrameStream(
+            frames: buildPomodoroTimerFrames(totalMinutes: minutes),
+            label: "pomodoro-\(minutes)m",
+            sourceDescription: "generated:pomodoro-timer-\(minutes)m",
+            loopCount: 1,
+            completion: completion
+        )
+    }
+
     private func runNativeBLEStaticImage(
         colors: [RGBColor],
         label: String,
@@ -2012,15 +2370,12 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         characteristic: CBCharacteristic,
         writeType: CBCharacteristicWriteType
     ) -> Int {
-        let _ = peripheral
-        let _ = writeType
-        if characteristic.uuid == ditooLightLEWriteCharacteristicUUID
-            || characteristic.uuid == ditooLightLegacyWriteCharacteristicUUID
-            || characteristic.uuid == ditooLightAca3CharacteristicUUID
-        {
-            // The vendor app uses 20-byte ATT chunks on the Ditoo light transport.
-            return 20
-        }
+        // Use the negotiated ATT MTU reported by CoreBluetooth.  Earlier code
+        // hard-coded 20 bytes based on the assumption the vendor app does the
+        // same, but the negotiated MTU is typically 185+ bytes on macOS and
+        // many BLE stacks use the full value.  Larger writes reduce the number
+        // of ATT transactions needed for animation upload packets (~273 bytes
+        // each) and make multi-packet protocols like 0x8B much more reliable.
         return max(20, peripheral.maximumWriteValueLength(for: writeType))
     }
 
@@ -2528,6 +2883,11 @@ private func buildAnimationUploadPacketSequence(
 ) -> [Data] {
     var packets: [Data] = []
     let totalSize = UInt32(animation.count)
+
+    // The vendor Android app marks DitooPro as NewAniSendMode2020 and sends
+    // 0xBD [0x31] before starting an animation upload.  Without this preamble
+    // the device accepts the 0x8B traffic but never starts playback.
+    packets.append(packetBuilder(0xBD, Data([0x31])))
 
     var startPayload = Data([0x00])
     startPayload.append(contentsOf: withUnsafeBytes(of: totalSize.littleEndian, Array.init))

@@ -27,11 +27,27 @@ def build_parser() -> argparse.ArgumentParser:
             "battery-status",
             "system-status",
             "network-status",
+            "animation-upload",
+            "send-gif",
+            "animated-monitor",
+            "clock-face",
+            "animated-clock",
+            "pomodoro-timer",
         ],
     )
     parser.add_argument(
         "--color",
         help="Hex color such as #247cff for scene-color or purity-color.",
+    )
+    parser.add_argument(
+        "--path",
+        help="File path for animation-upload (a .divoom16 or pre-serialized animation file).",
+    )
+    parser.add_argument(
+        "--minutes",
+        type=int,
+        default=25,
+        help="Timer duration for pomodoro-timer (default: 25).",
     )
     return parser
 
@@ -45,6 +61,10 @@ def main() -> int:
     ]
     if args.color:
         command.extend(["--color", args.color])
+    if args.path:
+        command.extend(["--path", args.path])
+    if args.action == "pomodoro-timer":
+        command.extend(["--minutes", str(args.minutes)])
     completed = subprocess.run(command, cwd=ROOT)
     return completed.returncode
 

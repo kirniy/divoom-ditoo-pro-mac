@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE_NAME="divoom-ralph-sudo"
+ASKPASS_DIR="$ROOT/.cache/ralph-sudo"
+ASKPASS_PATH="$ASKPASS_DIR/askpass.sh"
+WRAPPER_DIR="$ROOT/.cache/ralph-bin"
+WRAPPER_PATH="$WRAPPER_DIR/sudo"
+
+if ! security find-generic-password -w -a "$(whoami)" -s "$SERVICE_NAME" >/dev/null 2>&1; then
+    exit 0
+fi
+
+mkdir -p "$ASKPASS_DIR" "$WRAPPER_DIR"
+
+cat > "$ASKPASS_PATH" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec security find-generic-password -w -a "\$(whoami)" -s "$SERVICE_NAME"
+EOF
+chmod 700 "$ASKPASS_PATH"
+
+cat > "$WRAPPER_PATH" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export SUDO_ASKPASS="$ASKPASS_PATH"
+exec /usr/bin/sudo -A "\$@"
+EOF
+chmod 700 "$WRAPPER_PATH"

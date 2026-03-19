@@ -2,10 +2,13 @@
 
 set -euo pipefail
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SESSION_NAME="${1:-divoom-ralph}"
+POLISH_ROOT="$ROOT/.cache/ralph-polish-worktree"
+SESSION_NAME="${1:-divoom-ralph-polish}"
 TMUX_BIN="${TMUX_BIN:-$(command -v tmux || echo /opt/homebrew/bin/tmux)}"
-TMUX_SOCKET="${TMUX_SOCKET:-$ROOT/.cache/tmux/divoom-ralph.sock}"
+TMUX_SOCKET="${TMUX_SOCKET:-$ROOT/.cache/tmux/divoom-ralph-polish.sock}"
 
 echo "Session: $SESSION_NAME"
 if "$TMUX_BIN" -S "$TMUX_SOCKET" has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -18,17 +21,8 @@ fi
 
 echo
 echo "Status file:"
-if [[ -f "$ROOT/.ralph/status.json" ]]; then
-    cat "$ROOT/.ralph/status.json"
+if [[ -f "$POLISH_ROOT/.ralph/status.json" ]]; then
+    cat "$POLISH_ROOT/.ralph/status.json"
 else
     echo "missing"
-fi
-
-RESTARTS_LOG="$ROOT/.ralph/logs/watchdog-restarts.jsonl"
-if [[ -f "$RESTARTS_LOG" ]]; then
-    RESTART_COUNT=$(wc -l < "$RESTARTS_LOG" | tr -d ' ')
-    LAST_RESTART=$(tail -1 "$RESTARTS_LOG")
-    echo
-    echo "Watchdog restarts: $RESTART_COUNT total"
-    echo "Last: $LAST_RESTART"
 fi

@@ -241,6 +241,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         menu.addItem(makeItem("Native Show System", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
         menu.addItem(makeItem("Native Show Network", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
         menu.addItem(makeItem("Native Send Signal Animation", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
+        menu.addItem(makeItem("Native Upload Witch Anim", action: #selector(runNativeUploadWitch), symbolName: "wand.and.stars"))
+        menu.addItem(makeItem("Native Upload Bunny Anim", action: #selector(runNativeUploadBunny), symbolName: "hare"))
+        menu.addItem(makeItem("Native Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
+        menu.addItem(makeItem("Native Clock Face", action: #selector(runNativeClockFace), symbolName: "clock"))
+        menu.addItem(makeItem("Native Animated Clock", action: #selector(runNativeAnimatedClock), symbolName: "clock.arrow.2.circlepath"))
+        menu.addItem(makeItem("Native Pomodoro Timer", action: #selector(runNativePomodoroTimer), symbolName: "timer"))
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Push Codex Status", action: #selector(pushCodexStatus), symbolName: "brain"))
@@ -511,6 +517,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             bluetoothDiagnostics.runNativeBLEObviousAnimationSample(completion: completion)
         case .nativeSample:
             bluetoothDiagnostics.runNativeBLEAnimationSample(completion: completion)
+        case .nativeAnimationUpload:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                completion(
+                    NativeActionResult(
+                        success: false,
+                        summary: "IPC animation upload failed",
+                        details: "Expected a file path parameter for animation upload."
+                    )
+                )
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEDivoom16Animation(
+                path: parameter,
+                label: "ipc-animation-upload",
+                completion: completion
+            )
+        case .nativeAnimatedMonitor:
+            bluetoothDiagnostics.runNativeBLEAnimatedSystemMonitor(completion: completion)
+        case .nativeClockFace:
+            bluetoothDiagnostics.runNativeBLEClockFace(completion: completion)
+        case .nativeAnimatedClock:
+            bluetoothDiagnostics.runNativeBLEAnimatedClockFace(completion: completion)
+        case .nativePomodoroTimer:
+            let minutes = Int(invocation.parameter ?? "25") ?? 25
+            bluetoothDiagnostics.runNativeBLEPomodoroTimer(minutes: minutes, completion: completion)
         }
     }
 
@@ -639,6 +670,60 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
     }
 
+    @objc private func runNativeUploadWitch() {
+        bluetoothDiagnostics.runNativeBLEDivoom16Animation(
+            path: "/Users/kirniy/dev/divoom/andreas-js/images/witch.divoom16",
+            label: "witch-upload"
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeUploadBunny() {
+        bluetoothDiagnostics.runNativeBLEDivoom16Animation(
+            path: "/Users/kirniy/dev/divoom/andreas-js/images/bunny.divoom16",
+            label: "bunny-upload"
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeAnimatedMonitor() {
+        bluetoothDiagnostics.runNativeBLEAnimatedSystemMonitor { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeClockFace() {
+        bluetoothDiagnostics.runNativeBLEClockFace { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativeAnimatedClock() {
+        bluetoothDiagnostics.runNativeBLEAnimatedClockFace { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
+    @objc private func runNativePomodoroTimer() {
+        bluetoothDiagnostics.runNativeBLEPomodoroTimer { [weak self] result in
+            DispatchQueue.main.async {
+                self?.updateStatus(summary: result.summary, success: result.success, details: result.details)
+            }
+        }
+    }
+
     @objc private func toggleAutoCodex() {
         setAutoRefreshMode(autoRefreshMode == .codex ? .off : .codex)
     }
@@ -670,6 +755,11 @@ private enum HeadlessMode: String {
     case nativeNetworkStatus = "--headless-native-network-status"
     case nativeAnimationSample = "--headless-native-animation-sample"
     case nativeSample = "--headless-native-sample"
+    case nativeAnimationUpload = "--headless-native-animation-upload"
+    case nativeAnimatedMonitor = "--headless-native-animated-monitor"
+    case nativeClockFace = "--headless-native-clock-face"
+    case nativeAnimatedClock = "--headless-native-animated-clock"
+    case nativePomodoroTimer = "--headless-native-pomodoro-timer"
 }
 
 private struct HeadlessInvocation {
@@ -847,6 +937,34 @@ private final class HeadlessRunner {
             }
         case .nativeSample:
             bluetoothDiagnostics.runNativeBLEAnimationSample { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeAnimationUpload:
+            guard let parameter = invocation.parameter, !parameter.isEmpty else {
+                finish(code: 2, message: "Expected a file path after --headless-native-animation-upload")
+                return
+            }
+            bluetoothDiagnostics.runNativeBLEDivoom16Animation(
+                path: parameter,
+                label: "headless-animation-upload"
+            ) { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeAnimatedMonitor:
+            bluetoothDiagnostics.runNativeBLEAnimatedSystemMonitor { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeClockFace:
+            bluetoothDiagnostics.runNativeBLEClockFace { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeAnimatedClock:
+            bluetoothDiagnostics.runNativeBLEAnimatedClockFace { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativePomodoroTimer:
+            let minutes = Int(invocation.parameter ?? "25") ?? 25
+            bluetoothDiagnostics.runNativeBLEPomodoroTimer(minutes: minutes) { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         }
