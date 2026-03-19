@@ -413,13 +413,189 @@ private func providerTileTintColor(_ provider: String) -> NSColor {
     }
 }
 
+private final class SummaryPillView: NSVisualEffectView {
+    private let iconView = NSImageView()
+    private let textLabel = NSTextField(labelWithString: "")
+
+    init(text: String, symbolName: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        material = .menu
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 999
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.contentTintColor = .secondaryLabelColor
+        iconView.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: text
+        )?.withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+
+        textLabel.translatesAutoresizingMaskIntoConstraints = false
+        textLabel.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        textLabel.textColor = .secondaryLabelColor
+        textLabel.stringValue = text
+
+        let stack = NSStackView(views: [iconView, textLabel])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: 10),
+            iconView.heightAnchor.constraint(equalToConstant: 10),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(text: String, symbolName: String, accentColor: NSColor? = nil) {
+        textLabel.stringValue = text
+        textLabel.textColor = accentColor ?? .secondaryLabelColor
+        iconView.contentTintColor = accentColor ?? .secondaryLabelColor
+        iconView.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: text
+        )?.withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        layer?.borderColor = (accentColor ?? NSColor.separatorColor).withAlphaComponent(0.18).cgColor
+    }
+}
+
+private final class PixelShaderBackdropView: NSView {
+    enum Palette {
+        case idle
+        case ok
+        case error
+        case library
+    }
+
+    var palette: Palette = .idle {
+        didSet { needsDisplay = true }
+    }
+
+    var activityBoost: CGFloat = 0.72 {
+        didSet { needsDisplay = true }
+    }
+
+    private var phase: CGFloat = 0
+    private var timer: Timer?
+
+    override var isOpaque: Bool {
+        false
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.16, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.phase += 0.22
+            self.needsDisplay = true
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let colors = paletteColors()
+        let columns = max(10, Int(bounds.width / 26))
+        let rows = max(4, Int(bounds.height / 24))
+        let cellWidth = bounds.width / CGFloat(columns)
+        let cellHeight = bounds.height / CGFloat(rows)
+
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let wave = (sin(CGFloat(column) * 0.58 + CGFloat(row) * 0.94 + phase) + 1) / 2
+                let fade = 0.22 + pow(CGFloat(column) / CGFloat(max(columns - 1, 1)), 1.45) * 0.78
+                let glow = colors.0.blended(withFraction: wave * 0.72, of: colors.1) ?? colors.1
+                let alpha = (0.02 + wave * 0.12) * fade * activityBoost
+                let rect = NSRect(
+                    x: CGFloat(column) * cellWidth + cellWidth * 0.18,
+                    y: CGFloat(row) * cellHeight + cellHeight * 0.2,
+                    width: cellWidth * 0.58,
+                    height: cellHeight * 0.54
+                )
+                let pixel = NSBezierPath(roundedRect: rect, xRadius: 3.8, yRadius: 3.8)
+                glow.withAlphaComponent(alpha).setFill()
+                pixel.fill()
+            }
+        }
+
+        let beamX = ((phase.truncatingRemainder(dividingBy: .pi * 2)) / (.pi * 2)) * (bounds.width + 80) - 40
+        let beamRect = NSRect(x: beamX, y: 0, width: 46, height: bounds.height)
+        let beamPath = NSBezierPath(roundedRect: beamRect, xRadius: 18, yRadius: 18)
+        (colors.2 ?? colors.1).withAlphaComponent(0.08 * activityBoost).setFill()
+        beamPath.fill()
+    }
+
+    private func paletteColors() -> (NSColor, NSColor, NSColor?) {
+        switch palette {
+        case .idle:
+            return (
+                NSColor(calibratedRed: 0.42, green: 0.52, blue: 0.64, alpha: 1),
+                NSColor(calibratedRed: 0.68, green: 0.78, blue: 0.92, alpha: 1),
+                NSColor(calibratedRed: 0.92, green: 0.96, blue: 1.0, alpha: 1)
+            )
+        case .ok:
+            return (
+                NSColor(calibratedRed: 0.12, green: 0.74, blue: 0.72, alpha: 1),
+                NSColor(calibratedRed: 0.33, green: 0.93, blue: 0.88, alpha: 1),
+                NSColor(calibratedRed: 0.14, green: 0.58, blue: 1.0, alpha: 1)
+            )
+        case .error:
+            return (
+                NSColor(calibratedRed: 0.94, green: 0.45, blue: 0.21, alpha: 1),
+                NSColor(calibratedRed: 1.0, green: 0.68, blue: 0.4, alpha: 1),
+                NSColor(calibratedRed: 0.99, green: 0.32, blue: 0.38, alpha: 1)
+            )
+        case .library:
+            return (
+                NSColor(calibratedRed: 0.26, green: 0.63, blue: 1.0, alpha: 1),
+                NSColor(calibratedRed: 0.92, green: 0.46, blue: 0.2, alpha: 1),
+                NSColor(calibratedRed: 0.76, green: 0.58, blue: 1.0, alpha: 1)
+            )
+        }
+    }
+}
+
 private final class MenuSummaryView: NSView {
     private let glassView = NSVisualEffectView()
+    private let backdropView = PixelShaderBackdropView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Ditoo Pro 16x16 RGB")
     private let connectionLabel = NSTextField(labelWithString: "Connection: scanning...")
     private let actionLabel = NSTextField(labelWithString: "Last action: idle")
-    private let refreshLabel = NSTextField(labelWithString: "Automation: Off")
+    private let connectionPill = SummaryPillView(text: "Scanning", symbolName: "dot.radiowaves.left.and.right")
+    private let automationPill = SummaryPillView(text: "Automation Off", symbolName: "pause.circle")
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: rootMenuSurfaceWidth, height: summaryCardHeight)
@@ -439,7 +615,24 @@ private final class MenuSummaryView: NSView {
         iconView.image = makeStatusItemIcon(state: state)
         connectionLabel.stringValue = connection
         actionLabel.stringValue = action
-        refreshLabel.stringValue = refresh
+        backdropView.palette = {
+            switch state {
+            case .idle: return .idle
+            case .ok: return .ok
+            case .error: return .error
+            }
+        }()
+        backdropView.activityBoost = refresh == "Automation: Off" ? 0.62 : 1.0
+        connectionPill.update(
+            text: summaryConnectionChipText(connection),
+            symbolName: "dot.radiowaves.left.and.right",
+            accentColor: state == .error ? .systemOrange : nil
+        )
+        automationPill.update(
+            text: refresh.replacingOccurrences(of: "Automation: ", with: ""),
+            symbolName: refresh == "Automation: Off" ? "pause.circle" : "arrow.triangle.2.circlepath",
+            accentColor: refresh == "Automation: Off" ? nil : .systemBlue
+        )
     }
 
     private func setup() {
@@ -461,6 +654,10 @@ private final class MenuSummaryView: NSView {
         glassView.layer?.borderWidth = 1
         glassView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
 
+        backdropView.translatesAutoresizingMaskIntoConstraints = false
+        backdropView.palette = .idle
+        backdropView.activityBoost = 0.62
+
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.image = makeStatusItemIcon(state: .idle)
         iconView.imageScaling = .scaleNone
@@ -480,11 +677,6 @@ private final class MenuSummaryView: NSView {
         actionLabel.textColor = .labelColor
         actionLabel.lineBreakMode = .byTruncatingTail
 
-        refreshLabel.translatesAutoresizingMaskIntoConstraints = false
-        refreshLabel.font = .systemFont(ofSize: 11, weight: .regular)
-        refreshLabel.textColor = .secondaryLabelColor
-        refreshLabel.lineBreakMode = .byTruncatingTail
-
         let headerStack = NSStackView(views: [titleLabel, connectionLabel])
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
@@ -497,13 +689,20 @@ private final class MenuSummaryView: NSView {
         topRow.spacing = 10
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let contentStack = NSStackView(views: [topRow, actionLabel, refreshLabel])
+        let pillRow = NSStackView(views: [connectionPill, automationPill])
+        pillRow.orientation = .horizontal
+        pillRow.alignment = .centerY
+        pillRow.spacing = 8
+        pillRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentStack = NSStackView(views: [topRow, actionLabel, pillRow])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 8
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(glassView)
+        addSubview(backdropView)
         addSubview(contentStack)
 
         NSLayoutConstraint.activate([
@@ -514,11 +713,35 @@ private final class MenuSummaryView: NSView {
             glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
             glassView.topAnchor.constraint(equalTo: topAnchor),
             glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            backdropView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backdropView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            backdropView.topAnchor.constraint(equalTo: topAnchor),
+            backdropView.bottomAnchor.constraint(equalTo: bottomAnchor),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
         ])
+    }
+
+    private func summaryConnectionChipText(_ connection: String) -> String {
+        let lower = connection.lowercased()
+        if lower.contains("write characteristic ready") || lower.contains("scan finished") {
+            return "BLE Ready"
+        }
+        if lower.contains("requested bluetooth access") {
+            return "Requesting Access"
+        }
+        if lower.contains("not granted") || lower.contains("unauthorized") {
+            return "Bluetooth Needed"
+        }
+        if lower.contains("scan progress") || lower.contains("scanning") {
+            return "Scanning"
+        }
+        if lower.contains("connecting") {
+            return "Connecting"
+        }
+        return connection.replacingOccurrences(of: "BLE ", with: "")
     }
 }
 
@@ -1772,15 +1995,16 @@ private final class HoverActionPreviewView: NSView {
         previewView.translatesAutoresizingMaskIntoConstraints = false
 
         overlayView.translatesAutoresizingMaskIntoConstraints = false
-        overlayView.material = .hudWindow
+        overlayView.material = .popover
         overlayView.blendingMode = .withinWindow
         overlayView.state = .active
         overlayView.wantsLayer = true
         overlayView.layer?.cornerCurve = .continuous
         overlayView.layer?.borderWidth = 1
-        overlayView.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-        overlayView.layer?.shadowOpacity = 0.18
-        overlayView.layer?.shadowRadius = 16
+        overlayView.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(style == .hero ? 0.14 : 0.10).cgColor
+        overlayView.layer?.borderColor = NSColor.systemBlue.withAlphaComponent(style == .hero ? 0.26 : 0.18).cgColor
+        overlayView.layer?.shadowOpacity = 0.10
+        overlayView.layer?.shadowRadius = 12
         overlayView.layer?.shadowOffset = NSSize(width: 0, height: -2)
         overlayView.alphaValue = 0
 
@@ -1814,8 +2038,8 @@ private final class HoverActionPreviewView: NSView {
             accessibilityDescription: "Beam to Ditoo"
         )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: iconPointSize, weight: symbolWeight))
 
-        let overlaySide: CGFloat = style == .hero ? 102 : 58
-        overlayView.layer?.cornerRadius = style == .hero ? 28 : 20
+        let overlaySide: CGFloat = style == .hero ? 92 : 50
+        overlayView.layer?.cornerRadius = style == .hero ? 24 : 17
 
         NSLayoutConstraint.activate([
             previewView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -1826,7 +2050,7 @@ private final class HoverActionPreviewView: NSView {
             overlayView.centerXAnchor.constraint(equalTo: centerXAnchor),
             overlayView.centerYAnchor.constraint(equalTo: centerYAnchor),
             overlayView.widthAnchor.constraint(equalToConstant: overlaySide),
-            overlayView.heightAnchor.constraint(equalToConstant: style == .hero ? 84 : overlaySide),
+            overlayView.heightAnchor.constraint(equalToConstant: style == .hero ? 74 : overlaySide),
 
             overlayStack.centerXAnchor.constraint(equalTo: overlayView.centerXAnchor),
             overlayStack.centerYAnchor.constraint(equalTo: overlayView.centerYAnchor),
@@ -1842,7 +2066,7 @@ private final class HoverActionPreviewView: NSView {
     }
 
     private func updateOverlay(animated: Bool) {
-        let targetAlpha: CGFloat = hasContent && isHovering ? 1.0 : 0.0
+        let targetAlpha: CGFloat = hasContent && isHovering ? (style == .hero ? 0.82 : 0.70) : 0.0
         let updates = { self.overlayView.animator().alphaValue = targetAlpha }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
@@ -1914,6 +2138,32 @@ private final class HeaderStatChipView: NSVisualEffectView {
 private enum AnimationLibraryDisplayMode: Int {
     case grid = 0
     case list = 1
+}
+
+private enum AnimationLibrarySortMode: Int, CaseIterable {
+    case spotlight = 0
+    case title
+    case category
+    case collection
+    case favoritesFirst
+    case duplicates
+
+    var title: String {
+        switch self {
+        case .spotlight:
+            return "Spotlight"
+        case .title:
+            return "Title"
+        case .category:
+            return "Category"
+        case .collection:
+            return "Collection"
+        case .favoritesFirst:
+            return "Favorites First"
+        case .duplicates:
+            return "Most Duplicated"
+        }
+    }
 }
 
 private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
@@ -2124,6 +2374,8 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private let resultsLabel = NSTextField(labelWithString: "0 visible")
     private let searchField = NSSearchField()
     private let categoryPopUp = NSPopUpButton()
+    private let collectionPopUp = NSPopUpButton()
+    private let sortPopUp = NSPopUpButton()
     private let displayModeControl = NSSegmentedControl(labels: ["Grid", "List"], trackingMode: .selectOne, target: nil, action: nil)
     private let favoritesOnlyButton = NSButton(title: "Favorites", target: nil, action: nil)
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
@@ -2142,13 +2394,16 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private let sendButton = NSButton(title: "Beam to Ditoo", target: nil, action: nil)
     private let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
     private let favoriteButton = NSButton(title: "Favorite", target: nil, action: nil)
+    private let backdropView = PixelShaderBackdropView()
 
     private var allItems: [AnimationLibraryItem] = []
     private var filteredItems: [AnimationLibraryItem] = []
     private var favorites = AnimationLibraryCatalog.loadFavorites()
     private var selectedCategory = "all"
+    private var selectedCollection = "all"
     private var selectedItemID: String?
     private var displayMode: AnimationLibraryDisplayMode = .grid
+    private var sortMode: AnimationLibrarySortMode = .spotlight
 
     init(onSend: @escaping (AnimationLibraryItem) -> Void, onReveal: @escaping (AnimationLibraryItem) -> Void) {
         self.onSend = onSend
@@ -2232,12 +2487,41 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             return
         }
 
+        func configureCard(_ view: NSVisualEffectView, material: NSVisualEffectView.Material = .menu, radius: CGFloat = 28) {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.material = material
+            view.blendingMode = .withinWindow
+            view.state = .active
+            view.wantsLayer = true
+            view.layer?.cornerRadius = radius
+            view.layer?.cornerCurve = .continuous
+            view.layer?.borderWidth = 1
+            view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
+            view.layer?.shadowColor = NSColor.black.withAlphaComponent(0.05).cgColor
+            view.layer?.shadowOpacity = 1
+            view.layer?.shadowRadius = 18
+            view.layer?.shadowOffset = NSSize(width: 0, height: -3)
+            view.layer?.masksToBounds = true
+        }
+
         let rootView = NSVisualEffectView()
         rootView.translatesAutoresizingMaskIntoConstraints = false
         rootView.material = .underWindowBackground
         rootView.blendingMode = .behindWindow
         rootView.state = .active
+        rootView.wantsLayer = true
         contentView.addSubview(rootView)
+
+        backdropView.palette = .library
+        backdropView.activityBoost = 0.42
+        rootView.addSubview(backdropView)
+
+        let headerCard = NSVisualEffectView()
+        configureCard(headerCard, material: .underWindowBackground, radius: 30)
+        let headerBackdrop = PixelShaderBackdropView()
+        headerBackdrop.palette = .library
+        headerBackdrop.activityBoost = 0.34
+        headerCard.addSubview(headerBackdrop)
 
         headerIconView.translatesAutoresizingMaskIntoConstraints = false
         let headerSymbolConfig = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
@@ -2245,18 +2529,19 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         headerIconView.contentTintColor = .systemOrange
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 24, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 30, weight: .bold)
 
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        summaryLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        summaryLabel.font = .systemFont(ofSize: 13, weight: .medium)
         summaryLabel.textColor = .secondaryLabelColor
 
         resultsLabel.translatesAutoresizingMaskIntoConstraints = false
         resultsLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         resultsLabel.textColor = .secondaryLabelColor
+        resultsLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholderString = "Search nyan, bunny, weather, retro, cute…"
+        searchField.placeholderString = "Search moods, themes, categories, collections…"
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.sendsSearchStringImmediately = true
@@ -2264,6 +2549,20 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         categoryPopUp.translatesAutoresizingMaskIntoConstraints = false
         categoryPopUp.target = self
         categoryPopUp.action = #selector(categoryChanged)
+
+        collectionPopUp.translatesAutoresizingMaskIntoConstraints = false
+        collectionPopUp.target = self
+        collectionPopUp.action = #selector(collectionChanged)
+
+        sortPopUp.translatesAutoresizingMaskIntoConstraints = false
+        sortPopUp.target = self
+        sortPopUp.action = #selector(sortChanged)
+        sortPopUp.removeAllItems()
+        AnimationLibrarySortMode.allCases.forEach { mode in
+            sortPopUp.addItem(withTitle: mode.title)
+            sortPopUp.lastItem?.representedObject = mode.rawValue
+        }
+        sortPopUp.selectItem(at: sortMode.rawValue)
 
         displayModeControl.translatesAutoresizingMaskIntoConstraints = false
         displayModeControl.selectedSegment = AnimationLibraryDisplayMode.grid.rawValue
@@ -2273,6 +2572,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         favoritesOnlyButton.translatesAutoresizingMaskIntoConstraints = false
         favoritesOnlyButton.setButtonType(.toggle)
         favoritesOnlyButton.bezelStyle = .rounded
+        favoritesOnlyButton.title = "Favorites Only"
         favoritesOnlyButton.image = makeMenuSymbol("star", description: "Favorites")
         favoritesOnlyButton.imagePosition = .imageLeading
         favoritesOnlyButton.target = self
@@ -2280,6 +2580,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         refreshButton.translatesAutoresizingMaskIntoConstraints = false
         refreshButton.bezelStyle = .rounded
+        refreshButton.title = "Reload"
         refreshButton.image = makeMenuSymbol("arrow.clockwise", description: "Refresh")
         refreshButton.imagePosition = .imageLeading
         refreshButton.target = self
@@ -2303,25 +2604,43 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         headerStack.spacing = 8
         headerStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let toolbarStack = NSStackView(views: [searchField, categoryPopUp, displayModeControl, favoritesOnlyButton, refreshButton, resultsLabel])
-        toolbarStack.orientation = .horizontal
-        toolbarStack.alignment = .centerY
+        headerCard.addSubview(headerStack)
+
+        let toolbarCard = NSVisualEffectView()
+        configureCard(toolbarCard, material: .underWindowBackground, radius: 26)
+
+        let searchRow = NSStackView(views: [searchField, resultsLabel])
+        searchRow.orientation = .horizontal
+        searchRow.alignment = .centerY
+        searchRow.spacing = 12
+        searchRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let filterRow = NSStackView(views: [categoryPopUp, collectionPopUp, sortPopUp, displayModeControl, favoritesOnlyButton, refreshButton])
+        filterRow.orientation = .horizontal
+        filterRow.alignment = .centerY
+        filterRow.spacing = 10
+        filterRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let toolbarStack = NSStackView(views: [searchRow, filterRow])
+        toolbarStack.orientation = .vertical
+        toolbarStack.alignment = .leading
         toolbarStack.spacing = 10
         toolbarStack.translatesAutoresizingMaskIntoConstraints = false
+        toolbarCard.addSubview(toolbarStack)
 
         let splitView = NSSplitView()
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.isVertical = true
         splitView.dividerStyle = .thin
 
-        let browserPane = NSView()
-        browserPane.translatesAutoresizingMaskIntoConstraints = false
+        let browserPane = NSVisualEffectView()
+        configureCard(browserPane, material: .menu, radius: 28)
 
         collectionScrollView.translatesAutoresizingMaskIntoConstraints = false
         collectionScrollView.hasVerticalScroller = true
         collectionScrollView.drawsBackground = false
 
-        flowLayout.sectionInset = NSEdgeInsets(top: 6, left: 4, bottom: 24, right: 4)
+        flowLayout.sectionInset = NSEdgeInsets(top: 10, left: 10, bottom: 28, right: 10)
         flowLayout.minimumInteritemSpacing = 14
         flowLayout.minimumLineSpacing = 14
 
@@ -2342,15 +2661,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         browserPane.addSubview(collectionScrollView)
         browserPane.addSubview(emptyLabel)
 
-        inspectorView.translatesAutoresizingMaskIntoConstraints = false
-        inspectorView.material = .menu
-        inspectorView.blendingMode = .withinWindow
-        inspectorView.state = .active
-        inspectorView.wantsLayer = true
-        inspectorView.layer?.cornerRadius = 24
-        inspectorView.layer?.cornerCurve = .continuous
-        inspectorView.layer?.borderWidth = 1
-        inspectorView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.25).cgColor
+        configureCard(inspectorView, material: .menu, radius: 28)
 
         detailPreviewView.translatesAutoresizingMaskIntoConstraints = false
         detailPreviewView.onPrimaryAction = { [weak self] in
@@ -2427,8 +2738,8 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         splitView.addArrangedSubview(browserPane)
         splitView.addArrangedSubview(inspectorView)
 
-        rootView.addSubview(headerStack)
-        rootView.addSubview(toolbarStack)
+        rootView.addSubview(headerCard)
+        rootView.addSubview(toolbarCard)
         rootView.addSubview(splitView)
 
         let safeGuide = rootView.safeAreaLayoutGuide
@@ -2439,32 +2750,54 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             rootView.topAnchor.constraint(equalTo: contentView.topAnchor),
             rootView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-            headerStack.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
-            headerStack.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
-            headerStack.topAnchor.constraint(equalTo: safeGuide.topAnchor, constant: 18),
+            backdropView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+            backdropView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
+            backdropView.topAnchor.constraint(equalTo: rootView.topAnchor),
+            backdropView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
 
-            toolbarStack.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
-            toolbarStack.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
-            toolbarStack.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 12),
+            headerCard.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
+            headerCard.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
+            headerCard.topAnchor.constraint(equalTo: safeGuide.topAnchor, constant: 18),
 
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
+            headerBackdrop.leadingAnchor.constraint(equalTo: headerCard.leadingAnchor),
+            headerBackdrop.trailingAnchor.constraint(equalTo: headerCard.trailingAnchor),
+            headerBackdrop.topAnchor.constraint(equalTo: headerCard.topAnchor),
+            headerBackdrop.bottomAnchor.constraint(equalTo: headerCard.bottomAnchor),
+
+            headerStack.leadingAnchor.constraint(equalTo: headerCard.leadingAnchor, constant: 20),
+            headerStack.trailingAnchor.constraint(equalTo: headerCard.trailingAnchor, constant: -20),
+            headerStack.topAnchor.constraint(equalTo: headerCard.topAnchor, constant: 18),
+            headerStack.bottomAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: -18),
+
+            toolbarCard.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
+            toolbarCard.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
+            toolbarCard.topAnchor.constraint(equalTo: headerCard.bottomAnchor, constant: 12),
+
+            toolbarStack.leadingAnchor.constraint(equalTo: toolbarCard.leadingAnchor, constant: 16),
+            toolbarStack.trailingAnchor.constraint(equalTo: toolbarCard.trailingAnchor, constant: -16),
+            toolbarStack.topAnchor.constraint(equalTo: toolbarCard.topAnchor, constant: 14),
+            toolbarStack.bottomAnchor.constraint(equalTo: toolbarCard.bottomAnchor, constant: -14),
+
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
             categoryPopUp.widthAnchor.constraint(equalToConstant: 170),
+            collectionPopUp.widthAnchor.constraint(equalToConstant: 180),
+            sortPopUp.widthAnchor.constraint(equalToConstant: 176),
             displayModeControl.widthAnchor.constraint(equalToConstant: 120),
 
             splitView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
             splitView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
-            splitView.topAnchor.constraint(equalTo: toolbarStack.bottomAnchor, constant: 16),
+            splitView.topAnchor.constraint(equalTo: toolbarCard.bottomAnchor, constant: 16),
             splitView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -22),
 
-            collectionScrollView.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor),
-            collectionScrollView.trailingAnchor.constraint(equalTo: browserPane.trailingAnchor),
-            collectionScrollView.topAnchor.constraint(equalTo: browserPane.topAnchor),
-            collectionScrollView.bottomAnchor.constraint(equalTo: browserPane.bottomAnchor),
+            collectionScrollView.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor, constant: 10),
+            collectionScrollView.trailingAnchor.constraint(equalTo: browserPane.trailingAnchor, constant: -10),
+            collectionScrollView.topAnchor.constraint(equalTo: browserPane.topAnchor, constant: 10),
+            collectionScrollView.bottomAnchor.constraint(equalTo: browserPane.bottomAnchor, constant: -10),
 
             emptyLabel.centerXAnchor.constraint(equalTo: browserPane.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: browserPane.centerYAnchor),
 
-            inspectorView.widthAnchor.constraint(equalToConstant: 320),
+            inspectorView.widthAnchor.constraint(equalToConstant: 352),
 
             detailPreviewView.topAnchor.constraint(equalTo: inspectorView.topAnchor, constant: 18),
             detailPreviewView.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
@@ -2489,6 +2822,18 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     @objc private func categoryChanged() {
         selectedCategory = (categoryPopUp.selectedItem?.representedObject as? String) ?? "all"
+        rebuildCollectionMenu()
+        applyFilters()
+    }
+
+    @objc private func collectionChanged() {
+        selectedCollection = (collectionPopUp.selectedItem?.representedObject as? String) ?? "all"
+        applyFilters()
+    }
+
+    @objc private func sortChanged() {
+        let rawValue = (sortPopUp.selectedItem?.representedObject as? Int) ?? AnimationLibrarySortMode.spotlight.rawValue
+        sortMode = AnimationLibrarySortMode(rawValue: rawValue) ?? .spotlight
         applyFilters()
     }
 
@@ -2545,6 +2890,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
                 guard let self else { return }
                 self.allItems = items
                 self.rebuildCategoryMenu()
+                self.rebuildCollectionMenu()
                 self.applyFilters()
             }
         }
@@ -2572,13 +2918,46 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         }
     }
 
+    private func rebuildCollectionMenu() {
+        let previousCollection = selectedCollection
+        let collections = Array(
+            Set(
+                allItems
+                    .filter { selectedCategory == "all" || $0.category == selectedCategory }
+                    .map(\.collection)
+            )
+        ).sorted()
+
+        collectionPopUp.removeAllItems()
+        collectionPopUp.addItem(withTitle: "All Collections")
+        collectionPopUp.lastItem?.representedObject = "all"
+        collectionPopUp.lastItem?.image = makeMenuSymbol("shippingbox", description: "All Collections")
+        for collection in collections {
+            let title = collection == "root" ? "Root" : AnimationLibraryCatalog.displayTitle(for: collection)
+            collectionPopUp.addItem(withTitle: title)
+            collectionPopUp.lastItem?.representedObject = collection
+            collectionPopUp.lastItem?.image = makeMenuSymbol(collection == "root" ? "shippingbox" : "folder", description: title)
+        }
+
+        let targetCollection = previousCollection != "all" && collections.contains(previousCollection) ? previousCollection : "all"
+        selectedCollection = targetCollection
+        if let item = collectionPopUp.itemArray.first(where: { ($0.representedObject as? String) == targetCollection }) {
+            collectionPopUp.select(item)
+        } else {
+            collectionPopUp.selectItem(at: 0)
+        }
+    }
+
     private func applyFilters() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let favoritesOnly = favoritesOnlyButton.state == .on
         let preservedSelectionID = selectedItemID
 
-        filteredItems = allItems.filter { item in
+        let matches = allItems.filter { item in
             if selectedCategory != "all" && item.category != selectedCategory {
+                return false
+            }
+            if selectedCollection != "all" && item.collection != selectedCollection {
                 return false
             }
             if favoritesOnly && !favorites.contains(item.id) {
@@ -2590,9 +2969,12 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             return true
         }
 
+        filteredItems = sortItems(matches)
+
         collectionView.reloadData()
         emptyLabel.isHidden = !filteredItems.isEmpty
-        summaryLabel.stringValue = "Native Swift picker with crisp previews and direct Ditoo beam."
+        let collectionCount = Set(allItems.map(\.collection)).count
+        summaryLabel.stringValue = "Curated native picker with \(collectionCount) collections, crisp previews, and direct Ditoo beam."
         updateHeaderChips()
         resultsLabel.stringValue = "\(filteredItems.count) visible"
 
@@ -2605,6 +2987,63 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             selectedItemID = nil
             updateDetailPanel()
         }
+    }
+
+    private func sortItems(_ items: [AnimationLibraryItem]) -> [AnimationLibraryItem] {
+        items.sorted { lhs, rhs in
+            switch sortMode {
+            case .spotlight:
+                let leftScore = spotlightScore(for: lhs)
+                let rightScore = spotlightScore(for: rhs)
+                if leftScore == rightScore {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return leftScore > rightScore
+            case .title:
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            case .category:
+                if lhs.category == rhs.category {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.category.localizedCaseInsensitiveCompare(rhs.category) == .orderedAscending
+            case .collection:
+                if lhs.collection == rhs.collection {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.collection.localizedCaseInsensitiveCompare(rhs.collection) == .orderedAscending
+            case .favoritesFirst:
+                let leftFavorite = favorites.contains(lhs.id)
+                let rightFavorite = favorites.contains(rhs.id)
+                if leftFavorite == rightFavorite {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return leftFavorite && !rightFavorite
+            case .duplicates:
+                if lhs.duplicateCount == rhs.duplicateCount {
+                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+                return lhs.duplicateCount > rhs.duplicateCount
+            }
+        }
+    }
+
+    private func spotlightScore(for item: AnimationLibraryItem) -> Int {
+        var score = 0
+        if favorites.contains(item.id) {
+            score += 1000
+        }
+        score += item.duplicateCount * 12
+        if item.collection == "root" {
+            score += 18
+        }
+        if item.category == "pixel-displays" || item.category == "divoom" {
+            score += 10
+        }
+        if !item.relativePath.contains("/textfiles/") {
+            score += 6
+        }
+        score -= item.relativePath.count / 6
+        return score
     }
 
     private func selectItem(at index: Int) {
@@ -2699,7 +3138,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     private func updateHeaderChips() {
         assetChip.update(text: "\(allItems.count) curated")
-        categoryChip.update(text: "\(Set(allItems.map(\.category)).count) categories")
+        categoryChip.update(text: "\(Set(allItems.map(\.category)).count) categories · \(Set(allItems.map(\.collection)).count) collections")
         favoriteChip.update(text: "\(favorites.count) favorites")
     }
 }
