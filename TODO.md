@@ -13,7 +13,7 @@
 - Keep tightening the menu bar information architecture so only working actions are visible in the primary menu.
 - Expand the native animation library with better favorites management, playlists, scheduling, and channel editing.
 - Add a proper Divoom cloud source browser with source-aware filters, popularity sorting, album collections, and native sync controls.
-- Add native controls for Divoom cloud auto-update cadence and retention so the library can keep downloading fresh material in the background.
+- Add retention controls and richer source browsing for Divoom cloud so the library can keep downloading fresh material without bloating forever.
 - Continue polishing the quick-tile surface, the solid/color motion studio, and the library inspector interactions.
 - Add more high-quality built-in animation sets and curate stronger defaults for menu actions and live feeds.
 - Improve install/distribution polish further with a package path and release assets that mirror the smoothness of CodexBar.

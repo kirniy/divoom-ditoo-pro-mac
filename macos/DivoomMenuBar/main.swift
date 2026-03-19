@@ -36,6 +36,10 @@ private let studioMenuSurfaceWidth: CGFloat = 396
 private let summaryCardHeight: CGFloat = 118
 private let quickHubHeight: CGFloat = 214
 private let colorStudioHeight: CGFloat = 246
+private let cloudLibraryEnabledDefaultsKey = "dev.kirniy.divoom.cloud-library-enabled"
+private let cloudSyncOnLaunchDefaultsKey = "dev.kirniy.divoom.cloud-sync-on-launch"
+private let cloudAutoSyncEnabledDefaultsKey = "dev.kirniy.divoom.cloud-auto-sync-enabled"
+private let cloudManifestURL = divoomRepoURL(".cache/divoom-cloud/manifest.json")
 
 private enum FavoritesPlaybackOption: Int, CaseIterable {
     case once = 1
@@ -1669,19 +1673,25 @@ private struct AnimationLibraryItem: Hashable {
 }
 
 private enum AnimationLibraryCatalog {
-    static let roots: [(source: String, url: URL)] = [
-        ("curated", divoomRepoURL("assets/16x16/curated", isDirectory: true)),
-        ("divoom-cloud", divoomRepoURL("assets/16x16/divoom-cloud", isDirectory: true)),
-    ]
     static let favoritesDefaultsKey = "dev.kirniy.divoom.animation-library-favorites"
-    private static let cloudManifestURL = divoomRepoURL(".cache/divoom-cloud/manifest.json")
+
+    static func roots() -> [(source: String, url: URL)] {
+        var values: [(source: String, url: URL)] = [
+            ("curated", divoomRepoURL("assets/16x16/curated", isDirectory: true)),
+        ]
+        let cloudEnabled = UserDefaults.standard.object(forKey: cloudLibraryEnabledDefaultsKey) as? Bool ?? true
+        if cloudEnabled {
+            values.append(("divoom-cloud", divoomRepoURL("assets/16x16/divoom-cloud", isDirectory: true)))
+        }
+        return values
+    }
 
     static func loadItems() -> [AnimationLibraryItem] {
         var groupedItems: [String: [AnimationLibraryItem]] = [:]
         let keys: Set<URLResourceKey> = [.isRegularFileKey]
         let cloudManifestLookup = loadCloudManifestLookup()
 
-        for root in roots {
+        for root in roots() {
             guard FileManager.default.fileExists(atPath: root.url.path) else {
                 continue
             }
@@ -3327,7 +3337,8 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 private enum AppSettingsTab: Int {
     case general = 0
     case live = 1
-    case about = 2
+    case library = 2
+    case about = 3
 }
 
 private struct AppSettingsSnapshot {
@@ -3336,6 +3347,10 @@ private struct AppSettingsSnapshot {
     let showUsed: Bool
     let codexMetric: CodexBarMetricPreference
     let claudeMetric: CodexBarMetricPreference
+    let cloudLibraryEnabled: Bool
+    let cloudSyncOnLaunchEnabled: Bool
+    let cloudAutoSyncEnabled: Bool
+    let cloudManifestSummary: String
     let version: String
     let build: String
     let gitCommit: String
@@ -3349,6 +3364,12 @@ private final class AppSettingsWindowController: NSWindowController {
     private let onSetShowUsed: (Bool) -> Void
     private let onSetCodexMetric: (CodexBarMetricPreference) -> Void
     private let onSetClaudeMetric: (CodexBarMetricPreference) -> Void
+    private let onSetCloudLibraryEnabled: (Bool) -> Void
+    private let onSetCloudSyncOnLaunchEnabled: (Bool) -> Void
+    private let onSetCloudAutoSyncEnabled: (Bool) -> Void
+    private let onSyncCloudNow: () -> Void
+    private let onRevealCloudFolder: () -> Void
+    private let onOpenCloudGuide: () -> Void
     private let onOpenGitHub: () -> Void
     private let onOpenReleases: () -> Void
     private let onOpenLogs: () -> Void
@@ -3359,6 +3380,10 @@ private final class AppSettingsWindowController: NSWindowController {
     private let usageModePopUp = NSPopUpButton()
     private let codexMetricPopUp = NSPopUpButton()
     private let claudeMetricPopUp = NSPopUpButton()
+    private let cloudLibraryButton = NSButton(checkboxWithTitle: "Include Divoom Cloud source in the native library", target: nil, action: nil)
+    private let cloudSyncOnLaunchButton = NSButton(checkboxWithTitle: "Sync Divoom Cloud on app launch", target: nil, action: nil)
+    private let cloudAutoSyncButton = NSButton(checkboxWithTitle: "Auto-sync Divoom Cloud every 6 hours", target: nil, action: nil)
+    private let cloudSummaryLabel = NSTextField(labelWithString: "")
     private let versionLabel = NSTextField(labelWithString: "")
     private let buildLabel = NSTextField(labelWithString: "")
     private let commitLabel = NSTextField(labelWithString: "")
@@ -3370,6 +3395,12 @@ private final class AppSettingsWindowController: NSWindowController {
         onSetShowUsed: @escaping (Bool) -> Void,
         onSetCodexMetric: @escaping (CodexBarMetricPreference) -> Void,
         onSetClaudeMetric: @escaping (CodexBarMetricPreference) -> Void,
+        onSetCloudLibraryEnabled: @escaping (Bool) -> Void,
+        onSetCloudSyncOnLaunchEnabled: @escaping (Bool) -> Void,
+        onSetCloudAutoSyncEnabled: @escaping (Bool) -> Void,
+        onSyncCloudNow: @escaping () -> Void,
+        onRevealCloudFolder: @escaping () -> Void,
+        onOpenCloudGuide: @escaping () -> Void,
         onOpenGitHub: @escaping () -> Void,
         onOpenReleases: @escaping () -> Void,
         onOpenLogs: @escaping () -> Void
@@ -3380,6 +3411,12 @@ private final class AppSettingsWindowController: NSWindowController {
         self.onSetShowUsed = onSetShowUsed
         self.onSetCodexMetric = onSetCodexMetric
         self.onSetClaudeMetric = onSetClaudeMetric
+        self.onSetCloudLibraryEnabled = onSetCloudLibraryEnabled
+        self.onSetCloudSyncOnLaunchEnabled = onSetCloudSyncOnLaunchEnabled
+        self.onSetCloudAutoSyncEnabled = onSetCloudAutoSyncEnabled
+        self.onSyncCloudNow = onSyncCloudNow
+        self.onRevealCloudFolder = onRevealCloudFolder
+        self.onOpenCloudGuide = onOpenCloudGuide
         self.onOpenGitHub = onOpenGitHub
         self.onOpenReleases = onOpenReleases
         self.onOpenLogs = onOpenLogs
@@ -3434,6 +3471,11 @@ private final class AppSettingsWindowController: NSWindowController {
         CodexBarMetricPreference.allCases.forEach { claudeMetricPopUp.addItem(withTitle: $0.title) }
         claudeMetricPopUp.selectItem(at: CodexBarMetricPreference.allCases.firstIndex(of: snapshot.claudeMetric) ?? 0)
 
+        cloudLibraryButton.state = snapshot.cloudLibraryEnabled ? .on : .off
+        cloudSyncOnLaunchButton.state = snapshot.cloudSyncOnLaunchEnabled ? .on : .off
+        cloudAutoSyncButton.state = snapshot.cloudAutoSyncEnabled ? .on : .off
+        cloudSummaryLabel.stringValue = snapshot.cloudManifestSummary
+
         versionLabel.stringValue = "Version \(snapshot.version)"
         buildLabel.stringValue = "Build \(snapshot.build)"
         commitLabel.stringValue = snapshot.gitCommit.isEmpty ? "Git commit unknown" : "Git commit \(snapshot.gitCommit)"
@@ -3462,6 +3504,11 @@ private final class AppSettingsWindowController: NSWindowController {
         liveItem.label = "Live"
         liveItem.view = buildLivePane()
         tabView.addTabViewItem(liveItem)
+
+        let libraryItem = NSTabViewItem(identifier: AppSettingsTab.library.rawValue)
+        libraryItem.label = "Library"
+        libraryItem.view = buildLibraryPane()
+        tabView.addTabViewItem(libraryItem)
 
         let aboutItem = NSTabViewItem(identifier: AppSettingsTab.about.rawValue)
         aboutItem.label = "About"
@@ -3552,6 +3599,54 @@ private final class AppSettingsWindowController: NSWindowController {
         ])
 
         return wrapPane(cards: [syncCard])
+    }
+
+    private func buildLibraryPane() -> NSView {
+        cloudLibraryButton.target = self
+        cloudLibraryButton.action = #selector(toggleCloudLibrary)
+
+        cloudSyncOnLaunchButton.target = self
+        cloudSyncOnLaunchButton.action = #selector(toggleCloudSyncOnLaunch)
+
+        cloudAutoSyncButton.target = self
+        cloudAutoSyncButton.action = #selector(toggleCloudAutoSync)
+
+        cloudSummaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        cloudSummaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        cloudSummaryLabel.textColor = .secondaryLabelColor
+        cloudSummaryLabel.maximumNumberOfLines = 0
+        cloudSummaryLabel.lineBreakMode = .byWordWrapping
+
+        let syncButtons = NSStackView(views: [
+            makeActionButton(title: "Sync Now", symbolName: "arrow.triangle.2.circlepath", action: #selector(syncCloudNow)),
+            makeActionButton(title: "Reveal Folder", symbolName: "folder", action: #selector(revealCloudFolder)),
+            makeActionButton(title: "Guide", symbolName: "book", action: #selector(openCloudGuide)),
+        ])
+        syncButtons.orientation = .horizontal
+        syncButtons.alignment = .centerY
+        syncButtons.spacing = 10
+        syncButtons.distribution = .fillEqually
+
+        let card = makeSectionCard(
+            title: "Divoom Cloud Library",
+            subtitle: "Control the native cloud-backed source, sync cadence, and library visibility from the app."
+        )
+
+        let stack = NSStackView(views: [cloudLibraryButton, cloudSyncOnLaunchButton, cloudAutoSyncButton, cloudSummaryLabel, syncButtons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 52),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
+        ])
+
+        return wrapPane(cards: [card])
     }
 
     private func buildAboutPane() -> NSView {
@@ -3738,6 +3833,21 @@ private final class AppSettingsWindowController: NSWindowController {
         refresh()
     }
 
+    @objc private func toggleCloudLibrary() {
+        onSetCloudLibraryEnabled(cloudLibraryButton.state == .on)
+        refresh()
+    }
+
+    @objc private func toggleCloudSyncOnLaunch() {
+        onSetCloudSyncOnLaunchEnabled(cloudSyncOnLaunchButton.state == .on)
+        refresh()
+    }
+
+    @objc private func toggleCloudAutoSync() {
+        onSetCloudAutoSyncEnabled(cloudAutoSyncButton.state == .on)
+        refresh()
+    }
+
     @objc private func openGitHub() {
         onOpenGitHub()
     }
@@ -3748,6 +3858,18 @@ private final class AppSettingsWindowController: NSWindowController {
 
     @objc private func openLogs() {
         onOpenLogs()
+    }
+
+    @objc private func syncCloudNow() {
+        onSyncCloudNow()
+    }
+
+    @objc private func revealCloudFolder() {
+        onRevealCloudFolder()
+    }
+
+    @objc private func openCloudGuide() {
+        onOpenCloudGuide()
     }
 }
 
@@ -3827,6 +3949,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var codexMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
     private var claudeMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
     private var timer: Timer?
+    private var cloudSyncTimer: Timer?
     private var favoritesRotationTimer: Timer?
     private var ipcTimer: Timer?
     private var ipcBusy = false
@@ -3853,12 +3976,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         configureMenu()
         configureStatusItem()
         configureIPC()
+        configureCloudSyncBehavior()
         AppLog.write("applicationDidFinishLaunching")
         bluetoothDiagnostics.requestAccessAndScan()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        cloudSyncTimer?.invalidate()
         ipcTimer?.invalidate()
     }
 
@@ -4118,10 +4243,43 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             showUsed: codexBarPreferences().showUsed,
             codexMetric: currentMetricPreference(for: "codex"),
             claudeMetric: currentMetricPreference(for: "claude"),
+            cloudLibraryEnabled: isCloudLibraryEnabled(),
+            cloudSyncOnLaunchEnabled: isCloudSyncOnLaunchEnabled(),
+            cloudAutoSyncEnabled: isCloudAutoSyncEnabled(),
+            cloudManifestSummary: currentCloudManifestSummary(),
             version: appVersionString(),
             build: appBuildString(),
             gitCommit: appGitCommit()
         )
+    }
+
+    private func isCloudLibraryEnabled() -> Bool {
+        UserDefaults.standard.object(forKey: cloudLibraryEnabledDefaultsKey) as? Bool ?? true
+    }
+
+    private func isCloudSyncOnLaunchEnabled() -> Bool {
+        UserDefaults.standard.object(forKey: cloudSyncOnLaunchDefaultsKey) as? Bool ?? false
+    }
+
+    private func isCloudAutoSyncEnabled() -> Bool {
+        UserDefaults.standard.object(forKey: cloudAutoSyncEnabledDefaultsKey) as? Bool ?? false
+    }
+
+    private func currentCloudManifestSummary() -> String {
+        guard let data = try? Data(contentsOf: cloudManifestURL),
+              let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data)
+        else {
+            return "No synced Divoom cloud manifest yet. Use Sync Now after setting Divoom credentials in your environment."
+        }
+
+        let generatedAt = ISO8601DateFormatter().date(from: manifest.generatedAt)
+        let syncText: String
+        if let generatedAt {
+            syncText = "Last sync \(timestampFormatter.string(from: generatedAt))"
+        } else {
+            syncText = "Last sync unknown"
+        }
+        return "\(manifest.itemCount) cloud animations cached · \(manifest.categories.count) categories · \(syncText)."
     }
 
     private func isLaunchAtLoginEnabled() -> Bool {
@@ -4165,6 +4323,66 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
     }
 
+    private func setCloudLibraryEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: cloudLibraryEnabledDefaultsKey)
+        animationLibraryController?.reloadFromExternalSync()
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: enabled ? "Cloud library source enabled" : "Cloud library source disabled",
+            success: true,
+            details: enabled
+                ? "Divoom cloud items will appear in the native library when synced."
+                : "The native library will show local curated assets only."
+        )
+    }
+
+    private func setCloudSyncOnLaunchEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: cloudSyncOnLaunchDefaultsKey)
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: enabled ? "Cloud sync on launch enabled" : "Cloud sync on launch disabled",
+            success: true,
+            details: enabled
+                ? "The app will attempt one Divoom cloud sync at launch."
+                : "Launch will no longer trigger a cloud sync."
+        )
+    }
+
+    private func setCloudAutoSyncEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: cloudAutoSyncEnabledDefaultsKey)
+        configureCloudSyncBehavior()
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: enabled ? "Cloud auto-sync enabled" : "Cloud auto-sync disabled",
+            success: true,
+            details: enabled
+                ? "The app will try to sync Divoom cloud assets every 6 hours."
+                : "Automatic Divoom cloud syncing is off."
+        )
+    }
+
+    private func configureCloudSyncBehavior() {
+        cloudSyncTimer?.invalidate()
+        cloudSyncTimer = nil
+
+        if isCloudAutoSyncEnabled() {
+            let timer = Timer.scheduledTimer(withTimeInterval: 21600, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.runDivoomCloudSync(silent: true)
+                }
+            }
+            timer.tolerance = 300
+            RunLoop.main.add(timer, forMode: .common)
+            cloudSyncTimer = timer
+        }
+
+        if isCloudSyncOnLaunchEnabled() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.runDivoomCloudSync(silent: true)
+            }
+        }
+    }
+
     private func ensureSettingsController() -> AppSettingsWindowController {
         if let settingsController {
             return settingsController
@@ -4178,6 +4396,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     showUsed: true,
                     codexMetric: .primary,
                     claudeMetric: .primary,
+                    cloudLibraryEnabled: true,
+                    cloudSyncOnLaunchEnabled: false,
+                    cloudAutoSyncEnabled: false,
+                    cloudManifestSummary: "No synced Divoom cloud manifest yet.",
                     version: "0.0.0",
                     build: "0",
                     gitCommit: "unknown"
@@ -4197,6 +4419,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             },
             onSetClaudeMetric: { [weak self] metric in
                 self?.setMetricPreference(provider: "claude", metric: metric)
+            },
+            onSetCloudLibraryEnabled: { [weak self] enabled in
+                self?.setCloudLibraryEnabled(enabled)
+            },
+            onSetCloudSyncOnLaunchEnabled: { [weak self] enabled in
+                self?.setCloudSyncOnLaunchEnabled(enabled)
+            },
+            onSetCloudAutoSyncEnabled: { [weak self] enabled in
+                self?.setCloudAutoSyncEnabled(enabled)
+            },
+            onSyncCloudNow: { [weak self] in
+                self?.syncDivoomCloudLibrary()
+            },
+            onRevealCloudFolder: { [weak self] in
+                self?.revealDivoomCloudFolder()
+            },
+            onOpenCloudGuide: { [weak self] in
+                self?.openDivoomCloudGuide()
             },
             onOpenGitHub: { [weak self] in
                 self?.openGitHubRepo()
@@ -5414,16 +5654,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     @objc private func syncDivoomCloudLibrary() {
+        runDivoomCloudSync(silent: false)
+    }
+
+    private func runDivoomCloudSync(silent: Bool) {
         let pythonURL = divoomRepoURL(".venv/bin/python")
         let executableURL = FileManager.default.isExecutableFile(atPath: pythonURL.path)
             ? pythonURL
             : URL(fileURLWithPath: "/usr/bin/env")
 
-        updateActionStatus(
-            summary: "Syncing Divoom cloud library",
-            success: true,
-            details: "Fetching 16x16 cloud animations into the native library."
-        )
+        if !silent {
+            updateActionStatus(
+                summary: "Syncing Divoom cloud library",
+                success: true,
+                details: "Fetching 16x16 cloud animations into the native library."
+            )
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let process = Process()
@@ -5446,17 +5692,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     let success = process.terminationStatus == 0
-                    self.updateActionStatus(
-                        summary: success ? "Divoom cloud library synced" : "Divoom cloud sync failed",
-                        success: success,
-                        details: details
-                    )
+                    self.settingsController?.refresh()
+                    if !silent || !success {
+                        self.updateActionStatus(
+                            summary: success ? "Divoom cloud library synced" : "Divoom cloud sync failed",
+                            success: success,
+                            details: details
+                        )
+                    }
                     if success {
                         self.animationLibraryController?.reloadFromExternalSync()
                     }
                 }
             } catch {
                 Task { @MainActor [weak self] in
+                    self?.settingsController?.refresh()
                     self?.updateActionStatus(
                         summary: "Divoom cloud sync failed",
                         success: false,

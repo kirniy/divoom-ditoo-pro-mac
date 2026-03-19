@@ -44,10 +44,17 @@ This sync path currently covers:
 - Divoom cloud albums
 - 16x16 animation download and GIF export
 - native library ingestion from the synced output folder
+- native app settings for:
+  - enabling or disabling the cloud source in the library
+  - syncing on launch
+  - background sync every 6 hours
+- native app controls for:
+  - Sync Now
+  - Reveal Divoom Cloud Folder
+  - Open Divoom Cloud Guide
 
 Still pending for full parity:
 
-- live auto-update scheduling from native settings
 - popularity/collection sorting that exactly matches the iOS app
 - device-side custom channels and autonomous gallery playback
 - deeper IPA parity for channel timing and playback activation
