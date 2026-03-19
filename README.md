@@ -21,7 +21,7 @@ This project gives the Ditoo Pro `16x16` RGB pixel screen a real Mac-native cont
 - a native Divoom cloud source with login, sync, search, and store metadata
 - exact-pixel static image rendering
 - native BLE animation upload
-- local status and automation surfaces
+- useful live state, source telemetry, and direct feed surfaces
 
 No phone bridge is required for the core display path.
 
@@ -36,6 +36,7 @@ No phone bridge is required for the core display path.
 
 - Native macOS menu bar app for the Ditoo Pro `16x16` RGB display
 - Native CLI that talks to the already-running menu bar app over IPC
+- Rotating summary card with useful product state, live feed status, and source telemetry
 - Native animation library with favorites, recents, large previews, source filters, and direct beam actions
 - Native Divoom cloud library sync with visible cloud-login entry points in Settings and in the library window
 - Native Divoom cloud feed filters for sources, feeds, categories, collections, and cloud-aware sorting
@@ -63,6 +64,8 @@ The app can ingest live Divoom cloud assets into the native library:
   - `Animation Library -> Cloud Login`
   - `Animation Library -> Sync Cloud`
   - `Animation Library -> Cloud Search`
+
+Cloud credentials are stored in the app Keychain. If you already have a synced Passwords entry for `divoom-gz.com`, the app can import it once from the native Settings window instead of asking you to paste it repeatedly.
 
 Cloud sync uses the vendored [`redphx/apixoo`](./vendor/apixoo) client for:
 
@@ -101,6 +104,8 @@ curl -fsSL https://raw.githubusercontent.com/kirniy/divoom-ditoo-pro-mac/main/in
 
 That builds the current app from source, installs it into `/Applications`, links `divoom-display`, and launches the menu bar app.
 
+If you prefer a packaged installer, use the release artifacts below and install the `.pkg` or `.zip` bundle directly.
+
 Local build/install:
 
 ```bash
@@ -122,6 +127,10 @@ Current release channel:
 - semantic versioning
 - current train: `0.2.0-beta.1`
 - still early beta
+
+## Roadmap
+
+- Product and parity backlog: [docs/AI_ROADMAP.md](/Users/kirniy/dev/divoom/docs/AI_ROADMAP.md)
 
 ## Quick Start
 
@@ -265,6 +274,7 @@ The menu bar app owns Bluetooth. The CLI does not spin up a second controller; i
 - `tools/divoom_mac.py`: CLI entrypoint
 - `tools/convert_to_divoom16.py`: image and GIF conversion tool for the `16x16` display
 - `docs/assets`: product visuals used by this README
+- `docs/AI_ROADMAP.md`: AI feature backlog and model integration notes
 - `openclaw-divoom-plugin`: OpenClaw integration surface
 - `hooks`: local Codex / Claude notification hooks
 - `reverse/ios_ipa/REVERSE.md`: reverse-engineering notes for the official iPhone app

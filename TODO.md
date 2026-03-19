@@ -21,6 +21,16 @@
 - Add a richer native settings surface for onboarding, Bluetooth, credits, logs, releases, updates, and install-state diagnostics.
 - Improve the summary card with genuinely useful live state, motion, and source telemetry instead of Bluetooth implementation details.
 
+## AI Roadmap
+
+- Add a provider abstraction for Gemini 2, Gemini 3.1 Pro, Gemini Flash, and future Gemini variants.
+- Route AI tasks by intent instead of one generic model: status-card copy, library tagging, cloud search help, log summarization, release-note drafts, and animation curation.
+- Use AI to generate rotating top-card headlines and context-aware summaries when the Ditoo is idle, connected, or active.
+- Use AI to classify, tag, sort, and dedupe animation assets and cloud downloads.
+- Use AI to summarize logs and failed beams from the native app, with explicit opt-in and local caching.
+- Keep the AI layer practical: clear fallbacks, user-controlled model selection, and no hidden prompt magic.
+- Track implementation details and provider notes in `docs/AI_ROADMAP.md`.
+
 ## Verification
 
 - Add stronger end-to-end checks for live feed rendering, animation playback behavior, favorites rotation, and menu action health.

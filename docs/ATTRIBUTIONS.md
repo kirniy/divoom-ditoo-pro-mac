@@ -19,4 +19,4 @@ This repo vendors `apixoo` for the Divoom cloud sync path:
 - Divoom PixelBean decoding
 - GIF export for the native animation library
 
-The vendored code remains attributed to its upstream author and license.
+The vendored code remains attributed to its upstream author and license. Any future changes to this surface should keep the upstream credit intact.

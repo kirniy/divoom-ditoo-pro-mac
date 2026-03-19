@@ -37,6 +37,12 @@ python3 tools/divoom_cloud_sync.py --like-gallery-id 83312 --like-classify 4 --l
 python3 tools/divoom_cloud_sync.py --redownload
 ```
 
+The native app and the sync tool share the same Divoom account model, but they do not ask for credentials in the same way:
+
+- the macOS app stores cloud login in the app Keychain
+- the macOS app can import a synced Passwords entry for `divoom-gz.com` once, then reuse the local Keychain copy
+- the CLI sync tool still uses `DIVOOM_EMAIL` plus `DIVOOM_PASSWORD` or `DIVOOM_MD5_PASSWORD`
+
 Outputs:
 
 - downloaded GIFs: `assets/16x16/divoom-cloud/`
@@ -71,6 +77,7 @@ This sync path currently covers:
   - a visible `Cloud Login` entry point in the native library window
   - source / feed / category / collection filters for the cloud-backed library
   - cloud like / unlike from the native inspector for synced cloud items
+  - cloud-aware sorting and source browsing in the native library
 
 The vendored `apixoo` implementation surface is now covered end to end:
 
@@ -95,6 +102,5 @@ Still pending for full Divoom iOS parity:
 - popularity/collection sorting that exactly matches the iOS app
 - device-side custom channels and autonomous gallery playback
 - deeper IPA parity for channel timing and playback activation
-- cloud operations still intentionally not implemented in this repo:
-  - comments
-  - upload
+
+The native library is intentionally focused on read, sort, browse, and like flows. Write-back flows such as upload and comments remain out of scope here.
