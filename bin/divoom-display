@@ -1,2 +1,7 @@
 #!/bin/zsh
-exec /Users/kirniy/dev/divoom/.venv/bin/python /Users/kirniy/dev/divoom/tools/divoom_mac.py "$@"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON_BIN="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
+exec "$PYTHON_BIN" "$ROOT/tools/divoom_mac.py" "$@"

@@ -5,6 +5,7 @@ import Darwin
 import Foundation
 import ImageIO
 import QuartzCore
+import ServiceManagement
 
 enum AppLog {
     private static let logURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
@@ -30,9 +31,10 @@ enum AppLog {
     }
 }
 
-private let menuSurfaceWidth: CGFloat = 560
+private let rootMenuSurfaceWidth: CGFloat = 436
+private let studioMenuSurfaceWidth: CGFloat = 416
 private let summaryCardHeight: CGFloat = 110
-private let quickHubHeight: CGFloat = 190
+private let quickHubHeight: CGFloat = 198
 private let colorStudioHeight: CGFloat = 246
 
 private enum FavoritesPlaybackOption: Int, CaseIterable {
@@ -361,7 +363,7 @@ private func providerIconResourceURL(named baseName: String) -> URL? {
         return bundled
     }
 
-    let repoResource = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/macos/DivoomMenuBar/Resources/\(baseName).svg")
+    let repoResource = divoomRepoRootURL().appendingPathComponent("macos/DivoomMenuBar/Resources/\(baseName).svg")
     if FileManager.default.fileExists(atPath: repoResource.path) {
         return repoResource
     }
@@ -374,6 +376,20 @@ private func providerIconResourceURL(named baseName: String) -> URL? {
     return nil
 }
 
+private func divoomRepoRootURL() -> URL {
+    if
+        let configuredRoot = Bundle.main.object(forInfoDictionaryKey: "DivoomRepoRoot") as? String,
+        !configuredRoot.isEmpty
+    {
+        return URL(fileURLWithPath: configuredRoot, isDirectory: true)
+    }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+}
+
+private func divoomRepoURL(_ relativePath: String, isDirectory: Bool = false) -> URL {
+    divoomRepoRootURL().appendingPathComponent(relativePath, isDirectory: isDirectory)
+}
+
 private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSImage? {
     let baseName = "ProviderIcon-\(provider)"
     guard let url = providerIconResourceURL(named: baseName),
@@ -383,7 +399,6 @@ private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSIm
     }
 
     image.size = NSSize(width: size, height: size)
-    image.isTemplate = true
     return image
 }
 
@@ -399,6 +414,7 @@ private func providerTileTintColor(_ provider: String) -> NSColor {
 }
 
 private final class MenuSummaryView: NSView {
+    private let glassView = NSVisualEffectView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Ditoo Pro 16x16 RGB")
     private let connectionLabel = NSTextField(labelWithString: "Connection: scanning...")
@@ -406,7 +422,7 @@ private final class MenuSummaryView: NSView {
     private let refreshLabel = NSTextField(labelWithString: "Automation: Off")
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: menuSurfaceWidth, height: summaryCardHeight)
+        NSSize(width: rootMenuSurfaceWidth, height: summaryCardHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -428,11 +444,22 @@ private final class MenuSummaryView: NSView {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 14
+        layer?.cornerRadius = 18
         layer?.cornerCurve = .continuous
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.55).cgColor
-        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.96).cgColor
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.14).cgColor
+        layer?.shadowOpacity = 1
+        layer?.shadowRadius = 18
+        layer?.shadowOffset = NSSize(width: 0, height: -4)
+
+        glassView.translatesAutoresizingMaskIntoConstraints = false
+        glassView.material = .menu
+        glassView.blendingMode = .withinWindow
+        glassView.state = .active
+        glassView.wantsLayer = true
+        glassView.layer?.cornerRadius = 18
+        glassView.layer?.cornerCurve = .continuous
+        glassView.layer?.borderWidth = 1
+        glassView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.image = makeStatusItemIcon(state: .idle)
@@ -476,14 +503,19 @@ private final class MenuSummaryView: NSView {
         contentStack.spacing = 8
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(glassView)
         addSubview(contentStack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: menuSurfaceWidth),
+            widthAnchor.constraint(equalToConstant: rootMenuSurfaceWidth),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
-            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            glassView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            glassView.topAnchor.constraint(equalTo: topAnchor),
+            glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
         ])
@@ -503,6 +535,7 @@ private final class ColorStudioView: NSView {
     private let slotPicker = NSPopUpButton()
     private let savedComboPopUp = NSPopUpButton()
     private let saveComboButton = NSButton(title: "Save Combo", target: nil, action: nil)
+    private let glassView = NSVisualEffectView()
     private let colorWell = NSColorWell()
     private let hexField = NSTextField(string: "#FF0000")
     private let sendButton = NSButton(title: "Beam Motion", target: nil, action: nil)
@@ -527,7 +560,7 @@ private final class ColorStudioView: NSView {
     private let visibleModes: [ColorMotionMode] = [.gradientSweep, .ribbonWave, .diamondBloom, .paletteSteps, .checkerShift, .pulse, .aurora]
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: menuSurfaceWidth, height: colorStudioHeight)
+        NSSize(width: studioMenuSurfaceWidth, height: colorStudioHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -553,11 +586,22 @@ private final class ColorStudioView: NSView {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 16
+        layer?.cornerRadius = 18
         layer?.cornerCurve = .continuous
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.12).cgColor
+        layer?.shadowOpacity = 1
+        layer?.shadowRadius = 16
+        layer?.shadowOffset = NSSize(width: 0, height: -4)
+
+        glassView.translatesAutoresizingMaskIntoConstraints = false
+        glassView.material = .menu
+        glassView.blendingMode = .withinWindow
+        glassView.state = .active
+        glassView.wantsLayer = true
+        glassView.layer?.cornerRadius = 18
+        glassView.layer?.cornerCurve = .continuous
+        glassView.layer?.borderWidth = 1
+        glassView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -694,20 +738,25 @@ private final class ColorStudioView: NSView {
         contentStack.spacing = 8
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(glassView)
         addSubview(contentStack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: menuSurfaceWidth),
+            widthAnchor.constraint(equalToConstant: studioMenuSurfaceWidth),
+            glassView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            glassView.topAnchor.constraint(equalTo: topAnchor),
+            glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
             colorWell.widthAnchor.constraint(equalToConstant: 40),
             colorWell.heightAnchor.constraint(equalToConstant: 24),
             modePopUp.widthAnchor.constraint(equalToConstant: 148),
             slotPicker.widthAnchor.constraint(equalToConstant: 84),
-            savedComboPopUp.widthAnchor.constraint(equalToConstant: 248),
+            savedComboPopUp.widthAnchor.constraint(equalToConstant: 230),
             hexField.widthAnchor.constraint(equalToConstant: 106),
-            sendButton.widthAnchor.constraint(equalToConstant: 108),
-            pickButton.widthAnchor.constraint(equalToConstant: 104),
-            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            sendButton.widthAnchor.constraint(equalToConstant: 102),
+            pickButton.widthAnchor.constraint(equalToConstant: 96),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
         ])
@@ -958,6 +1007,16 @@ private final class QuickActionTileView: NSControl {
             updateAppearance()
         }
     }
+    var badgeFillColor: NSColor = NSColor.controlBackgroundColor.withAlphaComponent(0.58) {
+        didSet {
+            updateAppearance()
+        }
+    }
+    var usesOriginalIconColors = false {
+        didSet {
+            updateAppearance()
+        }
+    }
     var isActive = false {
         didSet {
             updateAppearance()
@@ -969,6 +1028,8 @@ private final class QuickActionTileView: NSControl {
         }
     }
 
+    private let backgroundView = NSVisualEffectView()
+    private let badgeView = NSView()
     private let iconView = NSImageView()
     private let spinner = NSProgressIndicator()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -985,7 +1046,7 @@ private final class QuickActionTileView: NSControl {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 164, height: 78)
+        NSSize(width: 120, height: 80)
     }
 
     init(title: String, image: NSImage?, tooltip: String) {
@@ -1039,17 +1100,31 @@ private final class QuickActionTileView: NSControl {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 20
+        layer?.cornerRadius = 22
         layer?.cornerCurve = .continuous
-        layer?.borderWidth = 1
         layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
         layer?.shadowOpacity = 1
-        layer?.shadowRadius = 10
-        layer?.shadowOffset = NSSize(width: 0, height: -2)
+        layer?.shadowRadius = 12
+        layer?.shadowOffset = NSSize(width: 0, height: -3)
+
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundView.material = .menu
+        backgroundView.blendingMode = .withinWindow
+        backgroundView.state = .active
+        backgroundView.wantsLayer = true
+        backgroundView.layer?.cornerRadius = 22
+        backgroundView.layer?.cornerCurve = .continuous
+        backgroundView.layer?.borderWidth = 1
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyDown
         iconView.contentTintColor = iconTintColor
+
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
+        badgeView.wantsLayer = true
+        badgeView.layer?.cornerRadius = 15
+        badgeView.layer?.cornerCurve = .continuous
+        badgeView.layer?.borderWidth = 1
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.style = .spinning
@@ -1060,52 +1135,53 @@ private final class QuickActionTileView: NSControl {
         titleLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.maximumNumberOfLines = 1
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.maximumNumberOfLines = 2
+        titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        let iconSlot = NSView()
-        iconSlot.translatesAutoresizingMaskIntoConstraints = false
-        iconSlot.addSubview(iconView)
-        iconSlot.addSubview(spinner)
-
-        NSLayoutConstraint.activate([
-            iconSlot.widthAnchor.constraint(equalToConstant: 20),
-            iconSlot.heightAnchor.constraint(equalToConstant: 20),
-            iconView.centerXAnchor.constraint(equalTo: iconSlot.centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: iconSlot.centerYAnchor),
-            spinner.centerXAnchor.constraint(equalTo: iconSlot.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: iconSlot.centerYAnchor),
-        ])
-
-        let stack = NSStackView(views: [iconSlot, titleLabel])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(stack)
+        addSubview(backgroundView)
+        addSubview(badgeView)
+        badgeView.addSubview(iconView)
+        badgeView.addSubview(spinner)
+        addSubview(titleLabel)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            backgroundView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            backgroundView.topAnchor.constraint(equalTo: topAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            badgeView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            badgeView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            badgeView.widthAnchor.constraint(equalToConstant: 30),
+            badgeView.heightAnchor.constraint(equalToConstant: 30),
+            iconView.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
+            iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 15),
+            iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 15),
+            spinner.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            titleLabel.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 10),
+            titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -10),
+            titleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
         ])
 
         updateAppearance()
     }
 
     private func updateAppearance() {
-        let baseBackground = NSColor.white.withAlphaComponent(isHovering ? 0.28 : 0.20)
-        let activeBackground = NSColor.controlAccentColor.withAlphaComponent(isHovering ? 0.25 : 0.19)
-        layer?.backgroundColor = (isActive ? activeBackground : baseBackground).cgColor
-        layer?.borderColor = (isActive
+        backgroundView.layer?.borderColor = (isActive
             ? NSColor.controlAccentColor.withAlphaComponent(0.58)
             : NSColor.separatorColor.withAlphaComponent(0.22)).cgColor
-        iconView.contentTintColor = iconTintColor
+        backgroundView.alphaValue = isHovering ? 0.96 : 0.9
+        badgeView.layer?.backgroundColor = (isActive
+            ? badgeFillColor.blended(withFraction: 0.18, of: .white) ?? badgeFillColor
+            : badgeFillColor).cgColor
+        badgeView.layer?.borderColor = (usesOriginalIconColors
+            ? badgeFillColor.withAlphaComponent(0.55)
+            : NSColor.separatorColor.withAlphaComponent(isHovering ? 0.34 : 0.22)).cgColor
+        iconView.contentTintColor = usesOriginalIconColors ? nil : iconTintColor
         alphaValue = isPressing ? 0.88 : 1.0
         iconView.isHidden = isLoading
         if isLoading {
@@ -1137,9 +1213,10 @@ private final class QuickActionHubView: NSView {
     }
 
     private var tiles: [QuickActionKind: QuickActionTileView] = [:]
+    private let glassView = NSVisualEffectView()
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: menuSurfaceWidth, height: quickHubHeight)
+        NSSize(width: rootMenuSurfaceWidth, height: quickHubHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -1154,15 +1231,22 @@ private final class QuickActionHubView: NSView {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 20
+        layer?.cornerRadius = 22
         layer?.cornerCurve = .continuous
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.82).cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.24).cgColor
         layer?.shadowColor = NSColor.black.withAlphaComponent(0.14).cgColor
         layer?.shadowOpacity = 1
-        layer?.shadowRadius = 14
+        layer?.shadowRadius = 18
         layer?.shadowOffset = NSSize(width: 0, height: -4)
+
+        glassView.translatesAutoresizingMaskIntoConstraints = false
+        glassView.material = .menu
+        glassView.blendingMode = .withinWindow
+        glassView.state = .active
+        glassView.wantsLayer = true
+        glassView.layer?.cornerRadius = 22
+        glassView.layer?.cornerCurve = .continuous
+        glassView.layer?.borderWidth = 1
+        glassView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
 
         let topRow = NSStackView(views: [
             makeTile(title: "Codex Live", actionID: .codex),
@@ -1186,17 +1270,22 @@ private final class QuickActionHubView: NSView {
 
         let stack = NSStackView(views: [topRow, bottomRow])
         stack.orientation = .vertical
-        stack.spacing = 12
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(glassView)
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: menuSurfaceWidth),
+            widthAnchor.constraint(equalToConstant: rootMenuSurfaceWidth),
+            glassView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            glassView.topAnchor.constraint(equalTo: topAnchor),
+            glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
         ])
 
         updateTileAppearance()
@@ -1206,6 +1295,8 @@ private final class QuickActionHubView: NSView {
         let tile = QuickActionTileView(title: title, image: image(for: actionID), tooltip: tooltip(for: actionID))
         tile.translatesAutoresizingMaskIntoConstraints = false
         tile.iconTintColor = iconTint(for: actionID)
+        tile.usesOriginalIconColors = actionID == .codex || actionID == .claude
+        tile.badgeFillColor = badgeFill(for: actionID)
         tile.onActivate = { [weak self] in
             self?.handleAction(actionID)
         }
@@ -1240,6 +1331,25 @@ private final class QuickActionHubView: NSView {
             return providerTileTintColor("claude")
         default:
             return .secondaryLabelColor
+        }
+    }
+
+    private func badgeFill(for actionID: QuickActionKind) -> NSColor {
+        switch actionID {
+        case .codex:
+            return providerTileTintColor("codex")
+        case .claude:
+            return providerTileTintColor("claude")
+        case .pair:
+            return NSColor.controlAccentColor.withAlphaComponent(0.18)
+        case .ipFlag:
+            return NSColor.systemIndigo.withAlphaComponent(0.16)
+        case .library:
+            return NSColor.systemTeal.withAlphaComponent(0.16)
+        case .favorites:
+            return NSColor.systemPink.withAlphaComponent(0.16)
+        case .screenPick:
+            return NSColor.systemOrange.withAlphaComponent(0.16)
         }
     }
 
@@ -1301,7 +1411,7 @@ private struct AnimationLibraryItem: Hashable {
 }
 
 private enum AnimationLibraryCatalog {
-    static let rootURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
+    static let rootURL = divoomRepoURL("assets/16x16/curated", isDirectory: true)
     static let favoritesDefaultsKey = "dev.kirniy.divoom.animation-library-favorites"
 
     static func loadItems() -> [AnimationLibraryItem] {
@@ -1575,9 +1685,9 @@ private final class PixelArtAnimationView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 22
         layer?.cornerCurve = .continuous
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.20).cgColor
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.24).cgColor
 
         imageLayer.contentsGravity = .resizeAspect
         imageLayer.magnificationFilter = .nearest
@@ -1996,7 +2106,7 @@ private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
     private func updateSelectionAppearance() {
         let accentColor = isSelected ? NSColor.systemBlue.withAlphaComponent(0.42) : NSColor.separatorColor.withAlphaComponent(0.22)
         glassView.layer?.borderColor = accentColor.cgColor
-        glassView.layer?.backgroundColor = (isSelected ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18) : NSColor.white.withAlphaComponent(0.16)).cgColor
+        glassView.layer?.backgroundColor = (isSelected ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18) : NSColor.controlBackgroundColor.withAlphaComponent(0.18)).cgColor
     }
 }
 
@@ -2594,13 +2704,440 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 }
 
+private enum AppSettingsTab: Int {
+    case general = 0
+    case live = 1
+    case about = 2
+}
+
+private struct AppSettingsSnapshot {
+    let launchAtLoginEnabled: Bool
+    let favoritesPlayback: FavoritesPlaybackOption
+    let showUsed: Bool
+    let codexMetric: CodexBarMetricPreference
+    let claudeMetric: CodexBarMetricPreference
+    let version: String
+    let build: String
+    let gitCommit: String
+}
+
+@MainActor
+private final class AppSettingsWindowController: NSWindowController {
+    private let snapshotProvider: () -> AppSettingsSnapshot
+    private let onToggleLaunchAtLogin: (Bool) -> Void
+    private let onSetFavoritesPlayback: (FavoritesPlaybackOption) -> Void
+    private let onSetShowUsed: (Bool) -> Void
+    private let onSetCodexMetric: (CodexBarMetricPreference) -> Void
+    private let onSetClaudeMetric: (CodexBarMetricPreference) -> Void
+    private let onOpenGitHub: () -> Void
+    private let onOpenReleases: () -> Void
+    private let onOpenLogs: () -> Void
+
+    private let tabView = NSTabView()
+    private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
+    private let favoritesPlaybackPopUp = NSPopUpButton()
+    private let usageModePopUp = NSPopUpButton()
+    private let codexMetricPopUp = NSPopUpButton()
+    private let claudeMetricPopUp = NSPopUpButton()
+    private let versionLabel = NSTextField(labelWithString: "")
+    private let buildLabel = NSTextField(labelWithString: "")
+    private let commitLabel = NSTextField(labelWithString: "")
+
+    init(
+        snapshotProvider: @escaping () -> AppSettingsSnapshot,
+        onToggleLaunchAtLogin: @escaping (Bool) -> Void,
+        onSetFavoritesPlayback: @escaping (FavoritesPlaybackOption) -> Void,
+        onSetShowUsed: @escaping (Bool) -> Void,
+        onSetCodexMetric: @escaping (CodexBarMetricPreference) -> Void,
+        onSetClaudeMetric: @escaping (CodexBarMetricPreference) -> Void,
+        onOpenGitHub: @escaping () -> Void,
+        onOpenReleases: @escaping () -> Void,
+        onOpenLogs: @escaping () -> Void
+    ) {
+        self.snapshotProvider = snapshotProvider
+        self.onToggleLaunchAtLogin = onToggleLaunchAtLogin
+        self.onSetFavoritesPlayback = onSetFavoritesPlayback
+        self.onSetShowUsed = onSetShowUsed
+        self.onSetCodexMetric = onSetCodexMetric
+        self.onSetClaudeMetric = onSetClaudeMetric
+        self.onOpenGitHub = onOpenGitHub
+        self.onOpenReleases = onOpenReleases
+        self.onOpenLogs = onOpenLogs
+
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 628, height: 492),
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Settings"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isFloatingPanel = false
+        window.hidesOnDeactivate = false
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.minSize = NSSize(width: 628, height: 492)
+
+        super.init(window: window)
+        buildUI(in: window)
+        refresh()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func showSettings(tab: AppSettingsTab = .general) {
+        tabView.selectTabViewItem(at: tab.rawValue)
+        refresh()
+        window?.center()
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func refresh() {
+        let snapshot = snapshotProvider()
+        launchAtLoginButton.state = snapshot.launchAtLoginEnabled ? .on : .off
+
+        usageModePopUp.selectItem(at: snapshot.showUsed ? 0 : 1)
+
+        favoritesPlaybackPopUp.removeAllItems()
+        FavoritesPlaybackOption.allCases.forEach { favoritesPlaybackPopUp.addItem(withTitle: $0.title) }
+        favoritesPlaybackPopUp.selectItem(at: FavoritesPlaybackOption.allCases.firstIndex(of: snapshot.favoritesPlayback) ?? 0)
+
+        codexMetricPopUp.removeAllItems()
+        CodexBarMetricPreference.allCases.forEach { codexMetricPopUp.addItem(withTitle: $0.title) }
+        codexMetricPopUp.selectItem(at: CodexBarMetricPreference.allCases.firstIndex(of: snapshot.codexMetric) ?? 0)
+
+        claudeMetricPopUp.removeAllItems()
+        CodexBarMetricPreference.allCases.forEach { claudeMetricPopUp.addItem(withTitle: $0.title) }
+        claudeMetricPopUp.selectItem(at: CodexBarMetricPreference.allCases.firstIndex(of: snapshot.claudeMetric) ?? 0)
+
+        versionLabel.stringValue = "Version \(snapshot.version)"
+        buildLabel.stringValue = "Build \(snapshot.build)"
+        commitLabel.stringValue = snapshot.gitCommit.isEmpty ? "Git commit unknown" : "Git commit \(snapshot.gitCommit)"
+    }
+
+    private func buildUI(in window: NSWindow) {
+        guard let contentView = window.contentView else { return }
+
+        let rootView = NSVisualEffectView()
+        rootView.translatesAutoresizingMaskIntoConstraints = false
+        rootView.material = .underWindowBackground
+        rootView.blendingMode = .behindWindow
+        rootView.state = .active
+        contentView.addSubview(rootView)
+
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+        tabView.tabViewType = .topTabsBezelBorder
+        rootView.addSubview(tabView)
+
+        let generalItem = NSTabViewItem(identifier: AppSettingsTab.general.rawValue)
+        generalItem.label = "General"
+        generalItem.view = buildGeneralPane()
+        tabView.addTabViewItem(generalItem)
+
+        let liveItem = NSTabViewItem(identifier: AppSettingsTab.live.rawValue)
+        liveItem.label = "Live"
+        liveItem.view = buildLivePane()
+        tabView.addTabViewItem(liveItem)
+
+        let aboutItem = NSTabViewItem(identifier: AppSettingsTab.about.rawValue)
+        aboutItem.label = "About"
+        aboutItem.view = buildAboutPane()
+        tabView.addTabViewItem(aboutItem)
+
+        NSLayoutConstraint.activate([
+            rootView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            rootView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            rootView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            rootView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+
+            tabView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 18),
+            tabView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -18),
+            tabView.topAnchor.constraint(equalTo: rootView.safeAreaLayoutGuide.topAnchor, constant: 14),
+            tabView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -18),
+        ])
+    }
+
+    private func buildGeneralPane() -> NSView {
+        launchAtLoginButton.target = self
+        launchAtLoginButton.action = #selector(toggleLaunchAtLogin)
+
+        let card = makeSectionCard(
+            title: "App Behavior",
+            subtitle: "Normal desktop-app settings, not buried in the menu."
+        )
+
+        let launchHint = makeBodyLabel("Start the Ditoo menu bar app automatically when you log in. This works best once the app is installed in Applications.")
+
+        let buttonRow = NSStackView(views: [
+            makeActionButton(title: "GitHub", symbolName: "chevron.left.forwardslash.chevron.right", action: #selector(openGitHub)),
+            makeActionButton(title: "Releases", symbolName: "arrow.down.circle", action: #selector(openReleases)),
+            makeActionButton(title: "Logs", symbolName: "doc.text.magnifyingglass", action: #selector(openLogs)),
+        ])
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 10
+        buttonRow.distribution = .fillEqually
+
+        let stack = NSStackView(views: [launchAtLoginButton, launchHint, buttonRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 52),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
+        ])
+
+        return wrapPane(cards: [card])
+    }
+
+    private func buildLivePane() -> NSView {
+        usageModePopUp.target = self
+        usageModePopUp.action = #selector(changeUsageMode)
+        usageModePopUp.addItems(withTitles: ["Show Used", "Show Remaining"])
+
+        favoritesPlaybackPopUp.target = self
+        favoritesPlaybackPopUp.action = #selector(changeFavoritesPlayback)
+
+        codexMetricPopUp.target = self
+        codexMetricPopUp.action = #selector(changeCodexMetric)
+
+        claudeMetricPopUp.target = self
+        claudeMetricPopUp.action = #selector(changeClaudeMetric)
+
+        let syncCard = makeSectionCard(
+            title: "CodexBar Sync",
+            subtitle: "The Ditoo feed follows the same metric and mode settings as CodexBar."
+        )
+        let syncGrid = makeSettingsGrid(rows: [
+            ("Usage Mode", usageModePopUp),
+            ("Codex Metric", codexMetricPopUp),
+            ("Claude Metric", claudeMetricPopUp),
+            ("Favorites Playback", favoritesPlaybackPopUp),
+        ])
+        syncCard.addSubview(syncGrid)
+        NSLayoutConstraint.activate([
+            syncGrid.leadingAnchor.constraint(equalTo: syncCard.leadingAnchor, constant: 18),
+            syncGrid.trailingAnchor.constraint(equalTo: syncCard.trailingAnchor, constant: -18),
+            syncGrid.topAnchor.constraint(equalTo: syncCard.topAnchor, constant: 52),
+            syncGrid.bottomAnchor.constraint(equalTo: syncCard.bottomAnchor, constant: -18),
+        ])
+
+        return wrapPane(cards: [syncCard])
+    }
+
+    private func buildAboutPane() -> NSView {
+        let card = makeSectionCard(
+            title: "Divoom Ditoo Pro Mac",
+            subtitle: "Native menu bar control for the Ditoo Pro 16x16 RGB display."
+        )
+
+        let iconView = NSImageView()
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = NSApplication.shared.applicationIconImage
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        versionLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+
+        buildLabel.translatesAutoresizingMaskIntoConstraints = false
+        buildLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        buildLabel.textColor = .secondaryLabelColor
+
+        commitLabel.translatesAutoresizingMaskIntoConstraints = false
+        commitLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        commitLabel.textColor = .secondaryLabelColor
+
+        let creditLabel = makeBodyLabel("Built by Kirniy. Reverse engineering notes, native BLE control, CLI, menu bar app, and animation tooling all live in the public repo.")
+
+        let linkRow = NSStackView(views: [
+            makeActionButton(title: "GitHub Repo", symbolName: "chevron.left.forwardslash.chevron.right", action: #selector(openGitHub)),
+            makeActionButton(title: "Releases", symbolName: "shippingbox", action: #selector(openReleases)),
+            makeActionButton(title: "Open Logs", symbolName: "doc.plaintext", action: #selector(openLogs)),
+        ])
+        linkRow.orientation = .horizontal
+        linkRow.alignment = .centerY
+        linkRow.spacing = 10
+        linkRow.distribution = .fillEqually
+
+        let stack = NSStackView(views: [iconView, versionLabel, buildLabel, commitLabel, creditLabel, linkRow])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: 88),
+            iconView.heightAnchor.constraint(equalToConstant: 88),
+
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 52),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
+        ])
+
+        return wrapPane(cards: [card])
+    }
+
+    private func wrapPane(cards: [NSView]) -> NSView {
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: cards)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+        ])
+
+        return container
+    }
+
+    private func makeSectionCard(title: String, subtitle: String) -> NSVisualEffectView {
+        let card = NSVisualEffectView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.material = .menu
+        card.blendingMode = .withinWindow
+        card.state = .active
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 22
+        card.layer?.cornerCurve = .continuous
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.24).cgColor
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+
+        let subtitleLabel = NSTextField(labelWithString: subtitle)
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        subtitleLabel.textColor = .secondaryLabelColor
+
+        card.addSubview(titleLabel)
+        card.addSubview(subtitleLabel)
+
+        NSLayoutConstraint.activate([
+            card.widthAnchor.constraint(greaterThanOrEqualToConstant: 560),
+
+            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            titleLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -18),
+            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 16),
+
+            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
+        ])
+
+        return card
+    }
+
+    private func makeSettingsGrid(rows: [(String, NSView)]) -> NSGridView {
+        let gridRows = rows.map { row -> [NSView] in
+            let label = NSTextField(labelWithString: row.0)
+            label.font = .systemFont(ofSize: 13, weight: .semibold)
+            return [label, row.1]
+        }
+        let grid = NSGridView(views: gridRows)
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 12
+        grid.columnSpacing = 18
+        grid.xPlacement = .fill
+        grid.column(at: 0).xPlacement = .leading
+        grid.column(at: 1).xPlacement = .fill
+        return grid
+    }
+
+    private func makeActionButton(title: String, symbolName: String, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.bezelStyle = .rounded
+        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+        button.imagePosition = .imageLeading
+        return button
+    }
+
+    private func makeBodyLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        onToggleLaunchAtLogin(launchAtLoginButton.state == .on)
+        refresh()
+    }
+
+    @objc private func changeUsageMode() {
+        onSetShowUsed(usageModePopUp.indexOfSelectedItem == 0)
+        refresh()
+    }
+
+    @objc private func changeFavoritesPlayback() {
+        let options = FavoritesPlaybackOption.allCases
+        guard favoritesPlaybackPopUp.indexOfSelectedItem >= 0, favoritesPlaybackPopUp.indexOfSelectedItem < options.count else {
+            return
+        }
+        onSetFavoritesPlayback(options[favoritesPlaybackPopUp.indexOfSelectedItem])
+        refresh()
+    }
+
+    @objc private func changeCodexMetric() {
+        let options = CodexBarMetricPreference.allCases
+        guard codexMetricPopUp.indexOfSelectedItem >= 0, codexMetricPopUp.indexOfSelectedItem < options.count else {
+            return
+        }
+        onSetCodexMetric(options[codexMetricPopUp.indexOfSelectedItem])
+        refresh()
+    }
+
+    @objc private func changeClaudeMetric() {
+        let options = CodexBarMetricPreference.allCases
+        guard claudeMetricPopUp.indexOfSelectedItem >= 0, claudeMetricPopUp.indexOfSelectedItem < options.count else {
+            return
+        }
+        onSetClaudeMetric(options[claudeMetricPopUp.indexOfSelectedItem])
+        refresh()
+    }
+
+    @objc private func openGitHub() {
+        onOpenGitHub()
+    }
+
+    @objc private func openReleases() {
+        onOpenReleases()
+    }
+
+    @objc private func openLogs() {
+        onOpenLogs()
+    }
+}
+
 @MainActor
 private protocol CommandRunnerDelegate: AnyObject {
     func commandDidFinish(spec: CommandSpec, success: Bool, output: String)
 }
 
 private final class CommandRunner {
-    private let executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
+    private let executableURL = divoomRepoURL("bin/divoom-display")
     weak var delegate: CommandRunnerDelegate?
 
     func run(_ spec: CommandSpec, completion: (@MainActor (Bool, String) -> Void)? = nil) {
@@ -2643,15 +3180,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private let bluetoothDiagnostics = BluetoothDiagnostics()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
-    private let curatedAnimationsURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
+    private let curatedAnimationsURL = divoomRepoURL("assets/16x16/curated", isDirectory: true)
     private let recentAnimationDefaultsKey = "dev.kirniy.divoom.recent-library-animations"
     private let favoriteRotationIndexDefaultsKey = "dev.kirniy.divoom.favorite-rotation-index"
     private let favoritePlaybackLoopsDefaultsKey = "dev.kirniy.divoom.favorite-playback-loops"
-    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: summaryCardHeight))
+    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: rootMenuSurfaceWidth, height: summaryCardHeight))
     private let summaryCardItem = NSMenuItem()
-    private let quickActionHub = QuickActionHubView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: quickHubHeight))
+    private let quickActionHub = QuickActionHubView(frame: NSRect(x: 0, y: 0, width: rootMenuSurfaceWidth, height: quickHubHeight))
     private let quickActionHubItem = NSMenuItem()
-    private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: colorStudioHeight))
+    private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: studioMenuSurfaceWidth, height: colorStudioHeight))
     private let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -2684,6 +3221,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var lastActionSuccess = true
     private var lastActionDate: Date?
     private var animationLibraryController: AnimationLibraryWindowController?
+    private var settingsController: AppSettingsWindowController?
     private var recentAnimationRelativePaths = UserDefaults.standard.stringArray(forKey: "dev.kirniy.divoom.recent-library-animations") ?? []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -2787,24 +3325,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         liveMenu.addItem(autoIPFlagItem)
         liveMenu.addItem(autoFavoritesItem)
         liveMenu.addItem(.separator())
-        liveMenu.addItem(makeFavoritesPlaybackMenu())
-        liveMenu.addItem(.separator())
-        liveMenu.addItem(makeSectionHeader("CodexBar Sync"))
-        let usageModeMenu = NSMenu(title: "Usage Mode")
-        let showUsed = codexBarPreferences().showUsed
-        codexBarShowUsedItem = makeItem("Show Used", action: #selector(setCodexBarShowUsed), symbolName: "chart.bar.fill")
-        codexBarShowRemainingItem = makeItem("Show Remaining", action: #selector(setCodexBarShowRemaining), symbolName: "arrow.uturn.backward.circle")
-        codexBarShowUsedItem.state = showUsed ? .on : .off
-        codexBarShowRemainingItem.state = showUsed ? .off : .on
-        usageModeMenu.addItem(codexBarShowUsedItem)
-        usageModeMenu.addItem(codexBarShowRemainingItem)
-        liveMenu.addItem(makeSubmenuItem("Usage Mode", symbolName: "dial.medium", submenu: usageModeMenu))
-        liveMenu.addItem(makeCodexBarMetricMenu(title: "Codex Metric", symbolName: "brain", provider: "codex", action: #selector(setCodexMetricPreference(_:))))
-        liveMenu.addItem(makeCodexBarMetricMenu(title: "Claude Metric", symbolName: "message", provider: "claude", action: #selector(setClaudeMetricPreference(_:))))
-        liveMenu.addItem(.separator())
-        liveMenu.addItem(makeSectionHeader("Extras"))
-        liveMenu.addItem(makeItem("OpenClaw Crab", action: #selector(pushOpenClawCrab), symbolName: "ladybug"))
-        liveMenu.addItem(makeItem("Codex Pixel Art", action: #selector(pushOrbitArt), symbolName: "sparkles.square.filled.on.square"))
+        liveMenu.addItem(makeItem("Live Settings…", action: #selector(openLiveSettings), symbolName: "slider.horizontal.3"))
 
         let deviceMenu = NSMenu(title: "Device")
         deviceMenu.addItem(makeSectionHeader("Bluetooth"))
@@ -2825,19 +3346,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         deviceMenu.addItem(makeItem("Attention Chime", action: #selector(playAttentionSound), symbolName: "bell.badge"))
         deviceMenu.addItem(makeItem("Completion Chime", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
 
-        let toolsMenu = NSMenu(title: "Tools")
-        toolsMenu.addItem(makeSectionHeader("Workspace"))
-        toolsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
-        toolsMenu.addItem(makeItem("Open OpenClaw Notes", action: #selector(openOpenClawNotes), symbolName: "doc.richtext"))
-        toolsMenu.addItem(.separator())
-        toolsMenu.addItem(makeSectionHeader("App"))
-        toolsMenu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
+        let settingsMenu = NSMenu(title: "Settings")
+        settingsMenu.addItem(makeSectionHeader("App"))
+        settingsMenu.addItem(makeItem("Settings…", action: #selector(openSettings), keyEquivalent: ",", symbolName: "gearshape"))
+        settingsMenu.addItem(makeItem("About Divoom Ditoo Pro Mac", action: #selector(showAboutPanel), symbolName: "info.circle"))
+        settingsMenu.addItem(makeItem("GitHub Repo", action: #selector(openGitHubRepo), symbolName: "chevron.left.forwardslash.chevron.right"))
+        settingsMenu.addItem(makeItem("Releases", action: #selector(openReleasesPage), symbolName: "shippingbox"))
+        settingsMenu.addItem(makeItem("Open Logs", action: #selector(openLogFile), symbolName: "doc.text.magnifyingglass"))
+        settingsMenu.addItem(.separator())
+        settingsMenu.addItem(makeSectionHeader("Workspace"))
+        settingsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
+        settingsMenu.addItem(makeItem("Open OpenClaw Notes", action: #selector(openOpenClawNotes), symbolName: "doc.richtext"))
+        settingsMenu.addItem(.separator())
+        settingsMenu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
 
         menu.addItem(makeSubmenuItem("Studio", symbolName: "wand.and.stars", submenu: studioMenu))
         menu.addItem(makeSubmenuItem("Live", symbolName: "brain", submenu: liveMenu))
         menu.addItem(makeSubmenuItem("Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
         menu.addItem(.separator())
-        menu.addItem(makeSubmenuItem("Tools", symbolName: "slider.horizontal.3", submenu: toolsMenu))
+        menu.addItem(makeSubmenuItem("Settings", symbolName: "gearshape", submenu: settingsMenu))
         updateAutoRefreshUI()
         refreshSummaryCard()
     }
@@ -2894,11 +3421,165 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         mutate(&domain)
         UserDefaults.standard.setPersistentDomain(domain, forName: "com.steipete.codexbar")
         configureMenu()
+        settingsController?.refresh()
     }
 
     private func currentFavoritesPlaybackOption() -> FavoritesPlaybackOption {
         let storedValue = UserDefaults.standard.object(forKey: favoritePlaybackLoopsDefaultsKey) as? Int ?? FavoritesPlaybackOption.twice.rawValue
         return FavoritesPlaybackOption(rawValue: storedValue) ?? .twice
+    }
+
+    private func setFavoritesPlaybackOption(_ option: FavoritesPlaybackOption) {
+        UserDefaults.standard.set(option.rawValue, forKey: favoritePlaybackLoopsDefaultsKey)
+        configureMenu()
+        settingsController?.refresh()
+        updateActionStatus(
+            summary: "Favorites playback set to \(option.title.lowercased())",
+            success: true,
+            details: "Rotate Favorites will now play each animation \(option.title.lowercased()) before moving on."
+        )
+    }
+
+    private func currentMetricPreference(for provider: String) -> CodexBarMetricPreference {
+        let rawValue = codexBarPreferences().metrics[provider] ?? "primary"
+        return CodexBarMetricPreference(rawValue: rawValue) ?? .primary
+    }
+
+    private func setMetricPreference(provider: String, metric: CodexBarMetricPreference) {
+        mutateCodexBarPreferences { domain in
+            var metrics = (domain["menuBarMetricPreferences"] as? [String: String]) ?? [:]
+            metrics[provider] = metric.rawValue
+            domain["menuBarMetricPreferences"] = metrics
+        }
+        updateActionStatus(
+            summary: "\(provider.capitalized) metric set to \(metric.rawValue)",
+            success: true,
+            details: "Ditoo feeds now follow CodexBar's \(provider) metric = \(metric.rawValue)."
+        )
+    }
+
+    private func setCodexBarUsageMode(showUsed: Bool) {
+        mutateCodexBarPreferences { domain in
+            domain["usageBarsShowUsed"] = showUsed
+        }
+        updateActionStatus(
+            summary: "CodexBar sync set to \(showUsed ? "used" : "remaining")",
+            success: true,
+            details: "Ditoo feeds will now follow CodexBar's \(showUsed ? "used" : "remaining") percentages."
+        )
+    }
+
+    private func appVersionString() -> String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    private func appBuildString() -> String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+    }
+
+    private func appGitCommit() -> String {
+        Bundle.main.object(forInfoDictionaryKey: "DivoomGitCommit") as? String ?? "unknown"
+    }
+
+    private func currentSettingsSnapshot() -> AppSettingsSnapshot {
+        AppSettingsSnapshot(
+            launchAtLoginEnabled: isLaunchAtLoginEnabled(),
+            favoritesPlayback: currentFavoritesPlaybackOption(),
+            showUsed: codexBarPreferences().showUsed,
+            codexMetric: currentMetricPreference(for: "codex"),
+            claudeMetric: currentMetricPreference(for: "claude"),
+            version: appVersionString(),
+            build: appBuildString(),
+            gitCommit: appGitCommit()
+        )
+    }
+
+    private func isLaunchAtLoginEnabled() -> Bool {
+        if #available(macOS 13.0, *) {
+            return SMAppService.mainApp.status == .enabled
+        }
+        return false
+    }
+
+    private func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        guard #available(macOS 13.0, *) else {
+            updateActionStatus(
+                summary: "Launch at login unsupported",
+                success: false,
+                details: "This requires macOS 13 or newer."
+            )
+            return
+        }
+
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            settingsController?.refresh()
+            updateActionStatus(
+                summary: enabled ? "Launch at login enabled" : "Launch at login disabled",
+                success: true,
+                details: enabled
+                    ? "The app will now start automatically after login."
+                    : "The app will no longer start automatically after login."
+            )
+        } catch {
+            settingsController?.refresh()
+            updateActionStatus(
+                summary: "Launch at login failed",
+                success: false,
+                details: error.localizedDescription
+            )
+        }
+    }
+
+    private func ensureSettingsController() -> AppSettingsWindowController {
+        if let settingsController {
+            return settingsController
+        }
+
+        let controller = AppSettingsWindowController(
+            snapshotProvider: { [weak self] in
+                self?.currentSettingsSnapshot() ?? AppSettingsSnapshot(
+                    launchAtLoginEnabled: false,
+                    favoritesPlayback: .twice,
+                    showUsed: true,
+                    codexMetric: .primary,
+                    claudeMetric: .primary,
+                    version: "0.0.0",
+                    build: "0",
+                    gitCommit: "unknown"
+                )
+            },
+            onToggleLaunchAtLogin: { [weak self] enabled in
+                self?.setLaunchAtLoginEnabled(enabled)
+            },
+            onSetFavoritesPlayback: { [weak self] option in
+                self?.setFavoritesPlaybackOption(option)
+            },
+            onSetShowUsed: { [weak self] showUsed in
+                self?.setCodexBarUsageMode(showUsed: showUsed)
+            },
+            onSetCodexMetric: { [weak self] metric in
+                self?.setMetricPreference(provider: "codex", metric: metric)
+            },
+            onSetClaudeMetric: { [weak self] metric in
+                self?.setMetricPreference(provider: "claude", metric: metric)
+            },
+            onOpenGitHub: { [weak self] in
+                self?.openGitHubRepo()
+            },
+            onOpenReleases: { [weak self] in
+                self?.openReleasesPage()
+            },
+            onOpenLogs: { [weak self] in
+                self?.openLogFile()
+            }
+        )
+        settingsController = controller
+        return controller
     }
 
     private func makeFavoritesPlaybackMenu() -> NSMenuItem {
@@ -3011,7 +3692,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             let process = Process()
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
+            process.executableURL = divoomRepoURL("bin/divoom-display")
             process.arguments = ["render-feed", "--feed", feed]
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
@@ -3086,7 +3767,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func feedbackSoundURL(for profile: FeedbackSoundProfile) -> URL {
-        URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/sounds/openpeon-cute-minimal/\(profile.fileName)")
+        divoomRepoURL("assets/sounds/openpeon-cute-minimal/\(profile.fileName)")
     }
 
     private func playFeedbackSound(_ profile: FeedbackSoundProfile) {
@@ -3227,6 +3908,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         autoIPFlagItem.state = autoRefreshMode == .ipFlag ? .on : .off
         autoFavoritesItem.state = autoRefreshMode == .favorites ? .on : .off
         quickActionHub.activeAction = autoRefreshMode.quickActionKind
+        settingsController?.refresh()
         refreshSummaryCard()
     }
 
@@ -3519,7 +4201,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 "native-headless",
                 "send-gif",
                 "--path",
-                "/Users/kirniy/dev/divoom/assets/16x16/curated/pixel-displays/soniccrabe.gif",
+                divoomRepoURL("assets/16x16/curated/pixel-displays/soniccrabe.gif").path,
             ],
             successSound: .animation
         )
@@ -3534,7 +4216,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             label: "Doom Fire sample",
             arguments: [
                 "send-divoom16",
-                "/Users/kirniy/dev/divoom/assets/16x16/generated/doom_fire.divoom16",
+                divoomRepoURL("assets/16x16/generated/doom_fire.divoom16").path,
                 "--terminate",
             ],
             successSound: .animation
@@ -3546,7 +4228,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             label: "Bunny sample",
             arguments: [
                 "send-divoom16",
-                "/Users/kirniy/dev/divoom/andreas-js/images/bunny.divoom16",
+                divoomRepoURL("andreas-js/images/bunny.divoom16").path,
                 "--terminate",
             ],
             successSound: .animation
@@ -3635,7 +4317,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func runNativeUploadDoomFire() {
         bluetoothDiagnostics.runNativeBLESendGIF(
-            path: "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_fire.divoom16",
+            path: divoomRepoURL("assets/16x16/generated/menu_fire.divoom16").path,
             loopCount: 0
         ) { [weak self] result in
             DispatchQueue.main.async {
@@ -3646,7 +4328,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func runNativeUploadNyan() {
         bluetoothDiagnostics.runNativeBLESendGIF(
-            path: "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_nyan.divoom16",
+            path: divoomRepoURL("assets/16x16/generated/menu_nyan.divoom16").path,
             loopCount: 0
         ) { [weak self] result in
             DispatchQueue.main.async {
@@ -3657,7 +4339,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func runNativeUploadBunny() {
         bluetoothDiagnostics.runNativeBLESendGIF(
-            path: "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_bunny.divoom16",
+            path: divoomRepoURL("assets/16x16/generated/menu_bunny.divoom16").path,
             loopCount: 0
         ) { [weak self] result in
             DispatchQueue.main.async {
@@ -3780,7 +4462,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             let process = Process()
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
+            process.executableURL = divoomRepoURL("bin/divoom-display")
             process.arguments = ["render-palette", "--mode", effectiveMode.rawValue]
             for hex in hexes {
                 process.arguments?.append(contentsOf: ["--color", hex])
@@ -3964,63 +4646,67 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         else {
             return
         }
-        UserDefaults.standard.set(option.rawValue, forKey: favoritePlaybackLoopsDefaultsKey)
-        configureMenu()
-        updateActionStatus(
-            summary: "Favorites playback set to \(option.title.lowercased())",
-            success: true,
-            details: "Rotate Favorites will now play each animation \(option.title.lowercased()) before moving on."
-        )
+        setFavoritesPlaybackOption(option)
     }
 
     @objc private func setCodexBarShowUsed() {
-        mutateCodexBarPreferences { domain in
-            domain["usageBarsShowUsed"] = true
-        }
-        updateActionStatus(
-            summary: "CodexBar sync set to used",
-            success: true,
-            details: "Ditoo feeds will now follow CodexBar's used percentages."
-        )
+        setCodexBarUsageMode(showUsed: true)
     }
 
     @objc private func setCodexBarShowRemaining() {
-        mutateCodexBarPreferences { domain in
-            domain["usageBarsShowUsed"] = false
-        }
-        updateActionStatus(
-            summary: "CodexBar sync set to remaining",
-            success: true,
-            details: "Ditoo feeds will now follow CodexBar's remaining percentages."
-        )
+        setCodexBarUsageMode(showUsed: false)
     }
 
     @objc private func setCodexMetricPreference(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String else { return }
-        mutateCodexBarPreferences { domain in
-            var metrics = (domain["menuBarMetricPreferences"] as? [String: String]) ?? [:]
-            metrics["codex"] = rawValue
-            domain["menuBarMetricPreferences"] = metrics
-        }
-        updateActionStatus(
-            summary: "Codex metric set to \(rawValue)",
-            success: true,
-            details: "Ditoo feeds now follow CodexBar's codex metric = \(rawValue)."
-        )
+        guard
+            let rawValue = sender.representedObject as? String,
+            let metric = CodexBarMetricPreference(rawValue: rawValue)
+        else { return }
+        setMetricPreference(provider: "codex", metric: metric)
     }
 
     @objc private func setClaudeMetricPreference(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String else { return }
-        mutateCodexBarPreferences { domain in
-            var metrics = (domain["menuBarMetricPreferences"] as? [String: String]) ?? [:]
-            metrics["claude"] = rawValue
-            domain["menuBarMetricPreferences"] = metrics
-        }
-        updateActionStatus(
-            summary: "Claude metric set to \(rawValue)",
-            success: true,
-            details: "Ditoo feeds now follow CodexBar's claude metric = \(rawValue)."
-        )
+        guard
+            let rawValue = sender.representedObject as? String,
+            let metric = CodexBarMetricPreference(rawValue: rawValue)
+        else { return }
+        setMetricPreference(provider: "claude", metric: metric)
+    }
+
+    @objc private func openSettings() {
+        ensureSettingsController().showSettings(tab: .general)
+    }
+
+    @objc private func openLiveSettings() {
+        ensureSettingsController().showSettings(tab: .live)
+    }
+
+    @objc private func showAboutPanel() {
+        let version = appVersionString()
+        let build = appBuildString()
+        let versionString = "\(version) (\(build))"
+        let separator = NSAttributedString(string: " · ", attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+        ])
+        let credits = NSMutableAttributedString(string: "Kirniy — early beta native menu bar app for the Divoom Ditoo Pro\n")
+        credits.append(NSAttributedString(string: "GitHub", attributes: [.link: URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac") as Any]))
+        credits.append(separator)
+        credits.append(NSAttributedString(string: "Releases", attributes: [.link: URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac/releases") as Any]))
+        credits.append(separator)
+        credits.append(NSAttributedString(string: "Issues", attributes: [.link: URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac/issues") as Any]))
+        credits.append(NSAttributedString(string: "\nBuild \(build) · commit \(appGitCommit())", attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Divoom Ditoo Pro Mac",
+            .applicationVersion: versionString,
+            .version: versionString,
+            .credits: credits,
+            .applicationIcon: (NSApplication.shared.applicationIconImage ?? NSImage()) as Any,
+        ])
     }
 
     @objc private func openAnimationLibrary() {
@@ -4057,7 +4743,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     @objc private func openResearch() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: "/Users/kirniy/dev/divoom/RESEARCH.md"))
+        NSWorkspace.shared.open(divoomRepoURL("RESEARCH.md"))
+    }
+
+    @objc private func openGitHubRepo() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac")!)
+    }
+
+    @objc private func openReleasesPage() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac/releases")!)
+    }
+
+    @objc private func openLogFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")])
     }
 
     @objc private func openOpenClawDashboard() {
@@ -4065,7 +4763,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     @objc private func openOpenClawNotes() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: "/Users/kirniy/dev/divoom/OPENCLAW_INTEGRATION.md"))
+        NSWorkspace.shared.open(divoomRepoURL("OPENCLAW_INTEGRATION.md"))
     }
 
     @objc private func quitApp() {

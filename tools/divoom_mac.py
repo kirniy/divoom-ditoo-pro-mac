@@ -420,23 +420,41 @@ def normalize_country_code(value: object) -> str:
     return country if len(country) == 2 else ""
 
 
+def load_cached_ip_lookup(max_age: float | None = None) -> dict[str, str] | None:
+    if not DEFAULT_IP_LOOKUP_CACHE.exists():
+        return None
+    try:
+        cached = json.loads(DEFAULT_IP_LOOKUP_CACHE.read_text())
+        cached_at = float(cached.get("cachedAt", 0))
+        if max_age is not None and time.time() - cached_at > max_age:
+            return None
+        return {
+            "ip": str(cached.get("ip") or "").strip(),
+            "country": str(cached.get("country") or "").strip().upper(),
+            "city": str(cached.get("city") or "").strip(),
+            "region": str(cached.get("region") or "").strip(),
+            "source": str(cached.get("source") or "cache"),
+        }
+    except Exception:
+        return None
+
+
 def lookup_public_ip_country() -> dict[str, str]:
-    if DEFAULT_IP_LOOKUP_CACHE.exists():
-        try:
-            cached = json.loads(DEFAULT_IP_LOOKUP_CACHE.read_text())
-            cached_at = float(cached.get("cachedAt", 0))
-            if time.time() - cached_at <= 30:
-                return {
-                    "ip": str(cached.get("ip") or "").strip(),
-                    "country": str(cached.get("country") or "").strip().upper(),
-                    "city": str(cached.get("city") or "").strip(),
-                    "region": str(cached.get("region") or "").strip(),
-                    "source": str(cached.get("source") or "cache"),
-                }
-        except Exception:
-            pass
+    cached = load_cached_ip_lookup(max_age=30)
+    if cached is not None:
+        return cached
 
     providers = [
+        (
+            "cloudflare-trace",
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            lambda payload: {
+                "ip": str(payload.get("ip") or "").strip(),
+                "country": normalize_country_code(payload.get("loc")),
+                "city": "",
+                "region": "",
+            },
+        ),
         (
             "ipinfo",
             "https://ipinfo.io/json",
@@ -472,7 +490,18 @@ def lookup_public_ip_country() -> dict[str, str]:
     errors: list[str] = []
     for name, url, parser in providers:
         try:
-            resolved = parser(read_json_url(url))
+            if name == "cloudflare-trace":
+                request = Request(url, headers={"User-Agent": "DivoomDitooProMac/1.0"})
+                with urlopen(request, timeout=1.2) as response:
+                    body = response.read().decode("utf-8")
+                payload = dict(
+                    line.split("=", 1)
+                    for line in body.splitlines()
+                    if "=" in line
+                )
+                resolved = parser(payload)
+            else:
+                resolved = parser(read_json_url(url, timeout=1.2))
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             continue
@@ -481,27 +510,10 @@ def lookup_public_ip_country() -> dict[str, str]:
             return resolved
         errors.append(f"{name}: invalid country code")
 
-    try:
-        request = Request("https://www.cloudflare.com/cdn-cgi/trace", headers={"User-Agent": "DivoomDitooProMac/1.0"})
-        with urlopen(request, timeout=2.5) as response:
-            body = response.read().decode("utf-8")
-        payload = dict(
-            line.split("=", 1)
-            for line in body.splitlines()
-            if "=" in line
-        )
-        country = normalize_country_code(payload.get("loc"))
-        if country:
-            return {
-                "ip": str(payload.get("ip") or "").strip(),
-                "country": country,
-                "city": "",
-                "region": "",
-                "source": "cloudflare-trace",
-            }
-        errors.append("cloudflare-trace: invalid country code")
-    except Exception as exc:
-        errors.append(f"cloudflare-trace: {exc}")
+    stale_cached = load_cached_ip_lookup(max_age=None)
+    if stale_cached is not None and stale_cached.get("country"):
+        stale_cached["source"] = f"{stale_cached.get('source', 'cache')} (stale)"
+        return stale_cached
 
     raise RuntimeError("Could not determine public IP country. " + "; ".join(errors))
 

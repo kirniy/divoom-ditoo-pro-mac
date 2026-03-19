@@ -10,7 +10,17 @@ private let ditooLightLEReadCharacteristicUUID = CBUUID(string: "49535343-6DAA-4
 private let ditooLightAca3CharacteristicUUID = CBUUID(string: "49535343-ACA3-481C-91EC-D85E28A60318")
 private let ditooLightLegacyWriteCharacteristicUUID = CBUUID(string: "49535343-1E4D-4BD9-BA61-23C647249616")
 private let lastDitooLightPeripheralUUIDDefaultsKey = "DivoomLastDitooLightPeripheralUUID"
-private let sampleAnimationPath = "/Users/kirniy/dev/divoom/assets/16x16/generated/menu_fire.divoom16"
+private let sampleAnimationPath = bluetoothRepoURL("assets/16x16/generated/menu_fire.divoom16").path
+
+private func bluetoothRepoURL(_ relativePath: String, isDirectory: Bool = false) -> URL {
+    if
+        let configuredRoot = Bundle.main.object(forInfoDictionaryKey: "DivoomRepoRoot") as? String,
+        !configuredRoot.isEmpty
+    {
+        return URL(fileURLWithPath: configuredRoot, isDirectory: true).appendingPathComponent(relativePath, isDirectory: isDirectory)
+    }
+    return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true).appendingPathComponent(relativePath, isDirectory: isDirectory)
+}
 
 private func normalizeBluetoothAddress(_ address: String) -> String {
     address

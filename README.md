@@ -9,6 +9,7 @@
   <img alt="Display" src="https://img.shields.io/badge/display-16x16%20RGB-0f766e">
   <img alt="Transport" src="https://img.shields.io/badge/transport-native%20BLE-1d4ed8">
   <img alt="CLI" src="https://img.shields.io/badge/CLI-available-7c3aed">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0--beta.1-f97316">
 </p>
 
 Native macOS control for the Divoom Ditoo Pro desk display.
@@ -42,6 +43,38 @@ No phone bridge is required for the core display path.
 - Pomodoro timer with countdown ring and digit display
 - Native battery, system snapshot, and network throughput telemetry screens
 - A reverse-engineered transport path grounded in the iOS app plus live device verification
+
+## Install
+
+One-line install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kirniy/divoom-ditoo-pro-mac/main/install.sh | bash
+```
+
+That builds the current app from source, installs it into `/Applications`, links `divoom-display`, and launches the menu bar app.
+
+Local build/install:
+
+```bash
+./bin/build-divoom-menubar-app
+open ./build/DivoomMenuBar.app
+```
+
+Release artifacts:
+
+```bash
+./bin/package-release-artifacts
+```
+
+That emits both:
+- `build/release/DivoomDitooProMac-<version>.zip`
+- `build/release/DivoomDitooProMac-<version>.pkg`
+
+Current release channel:
+- semantic versioning
+- current train: `0.2.0-beta.1`
+- still early beta
 
 ## Quick Start
 
@@ -189,19 +222,15 @@ The menu bar app owns Bluetooth. The CLI does not spin up a second controller; i
 - `hooks`: local Codex / Claude notification hooks
 - `reverse/ios_ipa/REVERSE.md`: reverse-engineering notes for the official iPhone app
 
-## Automation
-
-A launchd watchdog keeps the overnight Ralph worker alive across reboots:
-
-```bash
-bin/install-overnight-ralph-watchdog   # install the launchd plist
-bin/overnight-ralph-status             # check session health
-```
-
-The watchdog runs every five minutes. It detects stale sessions (no `status.json` update for 30 minutes) and restarts them, rotates its own logs, and uses a file lock to prevent overlapping runs.
-
 ## Status
 
 The Mac controls the Ditoo Pro `16x16` RGB display directly over native BLE. Static images, telemetry screens, the analog clock, the animated system monitor, and the pomodoro timer all work through the proven `8841` write characteristic.
 
 The `0x8B` animation upload now sends the `0xBD [0x31]` new-animation-mode preamble (matching the vendor Android app's `NewAniSendMode2020` family) and uses the negotiated BLE MTU instead of hard-coded 20-byte ATT chunks. Frame-by-frame streaming via `0x44` is confirmed working for software-driven animation from the Mac.
+
+## Releases
+
+- GitHub Releases: `https://github.com/kirniy/divoom-ditoo-pro-mac/releases`
+- installer script: [`install.sh`](./install.sh)
+- release packaging: [`bin/package-release-artifacts`](./bin/package-release-artifacts)
+- version source of truth: [`VERSION`](./VERSION)

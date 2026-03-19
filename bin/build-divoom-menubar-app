@@ -1,16 +1,42 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT="/Users/kirniy/dev/divoom"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/build/DivoomMenuBar.app"
 BIN_DIR="$APP/Contents/MacOS"
 RESOURCE_DIR="$APP/Contents/Resources"
 ICONSET_DIR="$ROOT/build/Icon.iconset"
+PLIST="$APP/Contents/Info.plist"
+VERSION_FILE="$ROOT/VERSION"
+
+VERSION="${VERSION_OVERRIDE:-$(cat "$VERSION_FILE")}"
+BUILD_NUMBER="${BUILD_NUMBER:-$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 0)}"
+GIT_COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+IS_PRERELEASE_BUILD=false
+if [[ "$VERSION" == *-* ]]; then
+  IS_PRERELEASE_BUILD=true
+fi
+
+set_plist_value() {
+  local key="$1"
+  local type="$2"
+  local value="$3"
+  /usr/libexec/PlistBuddy -c "Delete :$key" "$PLIST" >/dev/null 2>&1 || true
+  /usr/libexec/PlistBuddy -c "Add :$key $type $value" "$PLIST"
+}
 
 mkdir -p "$BIN_DIR"
 mkdir -p "$RESOURCE_DIR"
-cp "$ROOT/macos/DivoomMenuBar/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/macos/DivoomMenuBar/Info.plist" "$PLIST"
 cp "$ROOT"/macos/DivoomMenuBar/Resources/*.svg "$RESOURCE_DIR"/
+
+set_plist_value "CFBundleShortVersionString" string "$VERSION"
+set_plist_value "CFBundleVersion" string "$BUILD_NUMBER"
+set_plist_value "DivoomGitCommit" string "$GIT_COMMIT"
+set_plist_value "DivoomBuildTimestamp" string "$BUILD_TIMESTAMP"
+set_plist_value "DivoomRepoRoot" string "$ROOT"
+set_plist_value "IS_PRERELEASE_BUILD" bool "$IS_PRERELEASE_BUILD"
 
 python3 "$ROOT/tools/generate_app_icon.py"
 iconutil -c icns "$ICONSET_DIR" -o "$RESOURCE_DIR/Icon.icns"
@@ -22,6 +48,7 @@ iconutil -c icns "$ICONSET_DIR" -o "$RESOURCE_DIR/Icon.icns"
   -framework CoreBluetooth \
   -framework IOBluetooth \
   -framework IOKit \
+  -framework ServiceManagement \
   "$ROOT/macos/DivoomMenuBar/BluetoothSupport.swift" \
   "$ROOT/macos/DivoomMenuBar/main.swift" \
   -o "$BIN_DIR/DivoomMenuBar"

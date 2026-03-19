@@ -1,0 +1,20 @@
+#!/bin/zsh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="$(cat "$ROOT/VERSION")"
+APP_PATH="$("$ROOT/bin/build-divoom-menubar-app")"
+RELEASE_DIR="$ROOT/build/release"
+ZIP_PATH="$RELEASE_DIR/DivoomDitooProMac-$VERSION.zip"
+PKG_PATH="$RELEASE_DIR/DivoomDitooProMac-$VERSION.pkg"
+
+mkdir -p "$RELEASE_DIR"
+rm -f "$ZIP_PATH" "$PKG_PATH"
+
+ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+pkgbuild \
+  --install-location /Applications \
+  --component "$APP_PATH" \
+  "$PKG_PATH" >/dev/null
+
+printf '%s\n%s\n' "$ZIP_PATH" "$PKG_PATH"

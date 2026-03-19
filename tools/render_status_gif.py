@@ -419,8 +419,16 @@ def draw_pair_frame(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapsho
     return img
 
 
+def shift_canvas_right(img: Image.Image, pixels: int = 1) -> Image.Image:
+    if pixels <= 0:
+        return img
+    shifted = Image.new(img.mode, img.size, (0, 0, 0))
+    shifted.paste(img, (pixels, 0))
+    return shifted
+
+
 def render(snapshot: UsageSnapshot, output_path: Path) -> None:
-    frames = [draw_single_frame(snapshot, i) for i in range(FRAME_COUNT)]
+    frames = [shift_canvas_right(draw_single_frame(snapshot, i)) for i in range(FRAME_COUNT)]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         output_path,
@@ -433,7 +441,7 @@ def render(snapshot: UsageSnapshot, output_path: Path) -> None:
 
 
 def render_pair(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapshot, output_path: Path) -> None:
-    frames = [draw_pair_frame(codex_snapshot, claude_snapshot, i) for i in range(FRAME_COUNT)]
+    frames = [shift_canvas_right(draw_pair_frame(codex_snapshot, claude_snapshot, i)) for i in range(FRAME_COUNT)]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         output_path,
