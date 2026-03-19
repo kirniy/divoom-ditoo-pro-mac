@@ -8,22 +8,22 @@ import QuartzCore
 import ServiceManagement
 
 enum AppLog {
-    private static let logURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
+    static let fileURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
 
     static func write(_ message: String) {
         let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
         let data = Data(line.utf8)
 
         do {
-            let directory = logURL.deletingLastPathComponent()
+            let directory = fileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: logURL.path) {
-                let handle = try FileHandle(forWritingTo: logURL)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                let handle = try FileHandle(forWritingTo: fileURL)
                 defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
             } else {
-                try data.write(to: logURL)
+                try data.write(to: fileURL)
             }
         } catch {
             NSLog("DivoomMenuBar log write failed: \(error.localizedDescription)")
@@ -727,10 +727,10 @@ private final class MenuSummaryView: NSView {
     private func summaryConnectionChipText(_ connection: String) -> String {
         let lower = connection.lowercased()
         if lower.contains("write characteristic ready") || lower.contains("scan finished") {
-            return "BLE Ready"
+            return "Device Ready"
         }
         if lower.contains("requested bluetooth access") {
-            return "Requesting Access"
+            return "Waiting Access"
         }
         if lower.contains("not granted") || lower.contains("unauthorized") {
             return "Bluetooth Needed"
@@ -741,7 +741,7 @@ private final class MenuSummaryView: NSView {
         if lower.contains("connecting") {
             return "Connecting"
         }
-        return connection.replacingOccurrences(of: "BLE ", with: "")
+        return connection.replacingOccurrences(of: "BLE ", with: "").replacingOccurrences(of: "finished", with: "ready")
     }
 }
 
@@ -1394,17 +1394,21 @@ private final class QuickActionTileView: NSControl {
     }
 
     private func updateAppearance() {
-        backgroundView.layer?.borderColor = (isActive
-            ? NSColor.controlAccentColor.withAlphaComponent(0.58)
-            : NSColor.separatorColor.withAlphaComponent(0.22)).cgColor
-        backgroundView.alphaValue = isHovering ? 0.96 : 0.9
+        let activeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.72)
+        let inactiveBorderColor = NSColor.separatorColor.withAlphaComponent(0.22)
+        backgroundView.layer?.borderColor = (isActive ? activeBorderColor : inactiveBorderColor).cgColor
+        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.96 : 0.9)
+        backgroundView.layer?.backgroundColor = (isActive
+            ? NSColor.controlAccentColor.withAlphaComponent(0.08)
+            : NSColor.clear).cgColor
         badgeView.layer?.backgroundColor = (isActive
-            ? badgeFillColor.blended(withFraction: 0.18, of: .white) ?? badgeFillColor
+            ? badgeFillColor.blended(withFraction: 0.28, of: .white) ?? badgeFillColor
             : badgeFillColor).cgColor
         badgeView.layer?.borderColor = (usesOriginalIconColors
-            ? badgeFillColor.withAlphaComponent(0.55)
+            ? badgeFillColor.withAlphaComponent(isActive ? 0.8 : 0.55)
             : NSColor.separatorColor.withAlphaComponent(isHovering ? 0.34 : 0.22)).cgColor
         iconView.contentTintColor = usesOriginalIconColors ? nil : iconTintColor
+        titleLabel.textColor = isActive ? NSColor.labelColor : NSColor.labelColor.withAlphaComponent(0.94)
         alphaValue = isPressing ? 0.88 : 1.0
         iconView.isHidden = isLoading
         if isLoading {
@@ -3791,31 +3795,36 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         settingsMenu.addItem(makeItem("About Divoom Ditoo Pro Mac", action: #selector(showAboutPanel), symbolName: "info.circle"))
         settingsMenu.addItem(makeItem("GitHub Repo", action: #selector(openGitHubRepo), symbolName: "chevron.left.forwardslash.chevron.right"))
         settingsMenu.addItem(makeItem("Releases", action: #selector(openReleasesPage), symbolName: "shippingbox"))
-        settingsMenu.addItem(makeItem("Open Logs", action: #selector(openLogFile), symbolName: "doc.text.magnifyingglass"))
+        settingsMenu.addItem(makeItem("Read Logs", action: #selector(openLogFile), symbolName: "doc.text.magnifyingglass"))
+        settingsMenu.addItem(makeItem("Reveal Log File", action: #selector(revealLogFile), symbolName: "folder"))
+        settingsMenu.addItem(makeItem("Export Logs…", action: #selector(exportLogFile), symbolName: "square.and.arrow.up"))
         settingsMenu.addItem(.separator())
         settingsMenu.addItem(makeSectionHeader("Workspace"))
         settingsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
         settingsMenu.addItem(makeItem("Open OpenClaw Notes", action: #selector(openOpenClawNotes), symbolName: "doc.richtext"))
-        settingsMenu.addItem(.separator())
-        settingsMenu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
 
         menu.addItem(makeSubmenuItem("Studio", symbolName: "wand.and.stars", submenu: studioMenu))
         menu.addItem(makeSubmenuItem("Live", symbolName: "brain", submenu: liveMenu))
         menu.addItem(makeSubmenuItem("Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
         menu.addItem(.separator())
         menu.addItem(makeSubmenuItem("Settings", symbolName: "gearshape", submenu: settingsMenu))
+        menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
         updateAutoRefreshUI()
         refreshSummaryCard()
     }
 
     private func configureIPC() {
         ensureIPCDirectories()
-        ipcTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+        ipcTimer = Timer(timeInterval: 0.18, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.drainIPCQueue()
             }
         }
         ipcTimer?.tolerance = 0.12
+        if let ipcTimer {
+            RunLoop.main.add(ipcTimer, forMode: .default)
+            RunLoop.main.add(ipcTimer, forMode: .common)
+        }
     }
 
     private func makeItem(_ title: String, action: Selector, keyEquivalent: String = "", symbolName: String? = nil) -> NSMenuItem {
@@ -4171,9 +4180,34 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 let resolvedLabel = (payload["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                     ? (payload["label"] as? String ?? label)
                     : label
+                let serializedOutputPath = payload["serializedOutput"] as? String
 
                 Task { @MainActor [weak self] in
-                    self?.run(
+                    guard let self else { return }
+                    if let serializedOutputPath, !serializedOutputPath.isEmpty {
+                        self.bluetoothDiagnostics.runNativeBLESendGIF(path: serializedOutputPath, loopCount: 0) { [weak self] result in
+                            DispatchQueue.main.async {
+                                guard let self else { return }
+                                self.updateActionStatus(
+                                    summary: resolvedLabel,
+                                    success: result.success,
+                                    details: result.details
+                                )
+                                if result.success {
+                                    if let successSound {
+                                        self.playFeedbackSound(successSound)
+                                    }
+                                } else if playErrorSound {
+                                    self.playFeedbackSound(.error)
+                                }
+                                let completionDetails = result.details.isEmpty ? result.summary : result.details
+                                completion?(result.success, completionDetails)
+                            }
+                        }
+                        return
+                    }
+
+                    self.run(
                         label: resolvedLabel,
                         arguments: ["native-headless", "send-gif", "--path", outputPath],
                         successSound: successSound,
@@ -4279,19 +4313,50 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func refreshSummaryCard() {
-        let actionPrefix = lastActionSuccess ? "OK" : "ERR"
-        let actionText: String
-        if let lastActionDate {
-            actionText = "Last action: \(actionPrefix) \(lastActionSummary) at \(timestampFormatter.string(from: lastActionDate))"
-        } else {
-            actionText = "Last action: idle"
-        }
+        let actionText = currentSummaryActionLine()
         summaryCard.update(
             state: statusIconState,
-            connection: connectionSummary,
+            connection: currentSummaryConnectionLine(),
             action: actionText,
             refresh: "Automation: \(autoRefreshDescription())"
         )
+    }
+
+    private func currentSummaryConnectionLine() -> String {
+        let lower = connectionSummary.lowercased()
+        if lower.contains("scan finished") || lower.contains("write characteristic ready") || lower.contains("ready") {
+            return "Ready for native BLE beaming."
+        }
+        if lower.contains("requested bluetooth access") {
+            return "Waiting for Bluetooth permission."
+        }
+        if lower.contains("not granted") || lower.contains("unauthorized") {
+            return "Bluetooth permission is required."
+        }
+        if lower.contains("scan progress") || lower.contains("scanning") {
+            return "Scanning for the paired Ditoo channels."
+        }
+        if lower.contains("connecting") {
+            return "Connecting to the paired Ditoo."
+        }
+        if connectionSummary.isEmpty {
+            return "Ready to beam."
+        }
+        return connectionSummary.replacingOccurrences(of: "BLE ", with: "")
+    }
+
+    private func currentSummaryActionLine() -> String {
+        if autoRefreshMode != .off {
+            if let lastActionDate {
+                return "Live \(autoRefreshMode.title) is active · last sync \(timestampFormatter.string(from: lastActionDate))"
+            }
+            return "Live \(autoRefreshMode.title) is active."
+        }
+        if let lastActionDate {
+            let actionPrefix = lastActionSuccess ? "OK" : "ERR"
+            return "\(actionPrefix) \(lastActionSummary) · \(timestampFormatter.string(from: lastActionDate))"
+        }
+        return "Ready to beam colors, feeds, and animations."
     }
 
     private func updateStatusItemButton(summary: String, details: String?) {
@@ -5127,13 +5192,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         let separator = NSAttributedString(string: " · ", attributes: [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
         ])
-        let credits = NSMutableAttributedString(string: "Kirniy — early beta native menu bar app for the Divoom Ditoo Pro\n")
+        let credits = NSMutableAttributedString()
+        credits.append(NSAttributedString(string: "@kirniy", attributes: [.link: URL(string: "https://t.me/kirniy") as Any]))
+        credits.append(NSAttributedString(string: " - early beta native menu bar app for the Divoom Ditoo Pro\n"))
         credits.append(NSAttributedString(string: "GitHub", attributes: [.link: URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac") as Any]))
         credits.append(separator)
         credits.append(NSAttributedString(string: "Releases", attributes: [.link: URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac/releases") as Any]))
         credits.append(separator)
         credits.append(NSAttributedString(string: "Issues", attributes: [.link: URL(string: "https://github.com/kirniy/divoom-ditoo-pro-mac/issues") as Any]))
-        credits.append(NSAttributedString(string: "\nBuild \(build) · commit \(appGitCommit())", attributes: [
+        credits.append(NSAttributedString(string: "\nBuild \(build) - commit \(appGitCommit())", attributes: [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
             .foregroundColor: NSColor.secondaryLabelColor,
         ]))
@@ -5194,7 +5261,50 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     @objc private func openLogFile() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log"))
+    }
+
+    @objc private func revealLogFile() {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")])
+    }
+
+    @objc private func exportLogFile() {
+        let sourceURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            updateActionStatus(
+                summary: "Export logs failed",
+                success: false,
+                details: "The log file does not exist yet."
+            )
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "DivoomMenuBar.log"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.allowedContentTypes = [.plainText]
+        panel.begin { [weak self] response in
+            guard response == .OK, let destinationURL = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                self?.updateActionStatus(
+                    summary: "Logs exported",
+                    success: true,
+                    details: destinationURL.path
+                )
+            } catch {
+                self?.updateActionStatus(
+                    summary: "Export logs failed",
+                    success: false,
+                    details: error.localizedDescription
+                )
+            }
+        }
     }
 
     @objc private func openOpenClawDashboard() {

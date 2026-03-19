@@ -1150,7 +1150,9 @@ def cmd_render_feed(args: argparse.Namespace) -> int:
         output, info = render_ip_flag()
     else:
         output, info = render_status(args.feed)
-    print(json.dumps({"output": str(output), **info}, indent=2))
+    serialized_output = Path(tempfile.gettempdir()) / f"divoom-render-feed-{args.feed}.divoom16"
+    serialized_output.write_bytes(serialize_path(output))
+    print(json.dumps({"output": str(output), "serializedOutput": str(serialized_output), **info}, indent=2))
     return 0
 
 
