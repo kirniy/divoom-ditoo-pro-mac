@@ -35,10 +35,39 @@ private let summaryCardHeight: CGFloat = 110
 private let quickHubHeight: CGFloat = 190
 private let colorStudioHeight: CGFloat = 246
 
+private enum FavoritesPlaybackOption: Int, CaseIterable {
+    case once = 1
+    case twice = 2
+    case thrice = 3
+    case four = 4
+    case eight = 8
+    case infinite = 0
+
+    var title: String {
+        switch self {
+        case .once:
+            return "Once"
+        case .twice:
+            return "Twice"
+        case .thrice:
+            return "3 Loops"
+        case .four:
+            return "4 Loops"
+        case .eight:
+            return "8 Loops"
+        case .infinite:
+            return "Infinite"
+        }
+    }
+}
+
 private enum ColorMotionMode: String, CaseIterable, Codable {
     case solid
     case gradientSweep = "gradient-sweep"
+    case ribbonWave = "ribbon-wave"
+    case diamondBloom = "diamond-bloom"
     case paletteSteps = "palette-steps"
+    case checkerShift = "checker-shift"
     case pulse
     case aurora
 
@@ -48,8 +77,14 @@ private enum ColorMotionMode: String, CaseIterable, Codable {
             return "Solid"
         case .gradientSweep:
             return "Gradient Sweep"
+        case .ribbonWave:
+            return "Ribbon Wave"
+        case .diamondBloom:
+            return "Diamond Bloom"
         case .paletteSteps:
             return "Palette Steps"
+        case .checkerShift:
+            return "Checker Shift"
         case .pulse:
             return "Pulse"
         case .aurora:
@@ -63,8 +98,14 @@ private enum ColorMotionMode: String, CaseIterable, Codable {
             return "Solid"
         case .gradientSweep:
             return "Sweep"
+        case .ribbonWave:
+            return "Ribbon"
+        case .diamondBloom:
+            return "Bloom"
         case .paletteSteps:
             return "Steps"
+        case .checkerShift:
+            return "Checker"
         case .pulse:
             return "Pulse"
         case .aurora:
@@ -78,8 +119,14 @@ private enum ColorMotionMode: String, CaseIterable, Codable {
             return "Solid"
         case .gradientSweep:
             return "Gradient Sweep"
+        case .ribbonWave:
+            return "Ribbon Wave"
+        case .diamondBloom:
+            return "Diamond Bloom"
         case .paletteSteps:
             return "Palette Steps"
+        case .checkerShift:
+            return "Checker Shift"
         case .pulse:
             return "Pulse Motion"
         case .aurora:
@@ -309,61 +356,46 @@ private func makeStatusItemIcon(state: StatusIconState) -> NSImage {
     return image
 }
 
-private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSImage {
-    let assetPath = "/Users/kirniy/dev/divoom/assets/ui-icons/provider-\(provider).png"
-    if FileManager.default.fileExists(atPath: assetPath), let image = NSImage(contentsOfFile: assetPath) {
-        image.size = NSSize(width: size, height: size)
-        return image
+private func providerIconResourceURL(named baseName: String) -> URL? {
+    if let bundled = Bundle.main.url(forResource: baseName, withExtension: "svg") {
+        return bundled
     }
 
-    let image = NSImage(size: NSSize(width: size, height: size))
-    image.lockFocus()
+    let repoResource = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/macos/DivoomMenuBar/Resources/\(baseName).svg")
+    if FileManager.default.fileExists(atPath: repoResource.path) {
+        return repoResource
+    }
 
+    let installedCodexBar = URL(fileURLWithPath: "/Applications/CodexBar.app/Contents/Resources/\(baseName).svg")
+    if FileManager.default.fileExists(atPath: installedCodexBar.path) {
+        return installedCodexBar
+    }
+
+    return nil
+}
+
+private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSImage? {
+    let baseName = "ProviderIcon-\(provider)"
+    guard let url = providerIconResourceURL(named: baseName),
+          let image = NSImage(contentsOf: url)
+    else {
+        return nil
+    }
+
+    image.size = NSSize(width: size, height: size)
+    image.isTemplate = true
+    return image
+}
+
+private func providerTileTintColor(_ provider: String) -> NSColor {
     switch provider {
     case "codex":
-        let petalColor = NSColor.systemTeal
-        let centers = [
-            NSPoint(x: size * 0.50, y: size * 0.20),
-            NSPoint(x: size * 0.74, y: size * 0.34),
-            NSPoint(x: size * 0.74, y: size * 0.66),
-            NSPoint(x: size * 0.50, y: size * 0.80),
-            NSPoint(x: size * 0.26, y: size * 0.66),
-            NSPoint(x: size * 0.26, y: size * 0.34),
-        ]
-        for center in centers {
-            let rect = NSRect(x: center.x - size * 0.11, y: center.y - size * 0.11, width: size * 0.22, height: size * 0.22)
-            let path = NSBezierPath(roundedRect: rect, xRadius: size * 0.06, yRadius: size * 0.06)
-            petalColor.setFill()
-            path.fill()
-        }
-        NSColor.windowBackgroundColor.setFill()
-        NSBezierPath(ovalIn: NSRect(x: size * 0.38, y: size * 0.38, width: size * 0.24, height: size * 0.24)).fill()
+        return NSColor(calibratedRed: 0.02, green: 0.72, blue: 0.79, alpha: 1.0)
     case "claude":
-        let base = NSColor.systemOrange
-        let points = [
-            NSPoint(x: size * 0.50, y: size * 0.14),
-            NSPoint(x: size * 0.68, y: size * 0.32),
-            NSPoint(x: size * 0.86, y: size * 0.50),
-            NSPoint(x: size * 0.68, y: size * 0.68),
-            NSPoint(x: size * 0.50, y: size * 0.86),
-            NSPoint(x: size * 0.32, y: size * 0.68),
-            NSPoint(x: size * 0.14, y: size * 0.50),
-            NSPoint(x: size * 0.32, y: size * 0.32),
-        ]
-        for point in points {
-            let rect = NSRect(x: point.x - size * 0.08, y: point.y - size * 0.08, width: size * 0.16, height: size * 0.16)
-            base.setFill()
-            NSBezierPath(ovalIn: rect).fill()
-        }
-        NSColor.windowBackgroundColor.setFill()
-        NSBezierPath(ovalIn: NSRect(x: size * 0.40, y: size * 0.40, width: size * 0.20, height: size * 0.20)).fill()
+        return NSColor(calibratedRed: 0.96, green: 0.52, blue: 0.13, alpha: 1.0)
     default:
-        let symbol = NSImage(systemSymbolName: "sparkles", accessibilityDescription: provider)
-        symbol?.draw(in: NSRect(origin: .zero, size: NSSize(width: size, height: size)))
+        return .secondaryLabelColor
     }
-
-    image.unlockFocus()
-    return image
 }
 
 private final class MenuSummaryView: NSView {
@@ -464,7 +496,7 @@ private final class ColorStudioView: NSView {
     var onPickScreen: (() -> Void)?
 
     private let titleLabel = NSTextField(labelWithString: "Color Motion Studio")
-    private let captionLabel = NSTextField(labelWithString: "Solid fills, saved combos, gradients, and palette motion.")
+    private let captionLabel = NSTextField(labelWithString: "Build animated palette waves, blooms, ribbons, and gradients.")
     private let modePopUp = NSPopUpButton()
     private let slotCountLabel = NSTextField(labelWithString: "4 colors")
     private let slotCountStepper = NSStepper()
@@ -473,7 +505,7 @@ private final class ColorStudioView: NSView {
     private let saveComboButton = NSButton(title: "Save Combo", target: nil, action: nil)
     private let colorWell = NSColorWell()
     private let hexField = NSTextField(string: "#FF0000")
-    private let sendButton = NSButton(title: "Beam Solid", target: nil, action: nil)
+    private let sendButton = NSButton(title: "Beam Motion", target: nil, action: nil)
     private let pickButton = NSButton(title: "Pick Screen", target: nil, action: nil)
     private let swatchHexes = ["#FF3B30", "#FF9500", "#FFD60A", "#30D158", "#64D2FF", "#0A84FF", "#BF5AF2", "#FF375F"]
     private var slotButtons: [NSButton] = []
@@ -492,6 +524,7 @@ private final class ColorStudioView: NSView {
     private var visibleSlotCount = 4
     private var activeSlotIndex = 0
     private var savedCombos = SavedColorComboStore.load()
+    private let visibleModes: [ColorMotionMode] = [.gradientSweep, .ribbonWave, .diamondBloom, .paletteSteps, .checkerShift, .pulse, .aurora]
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: menuSurfaceWidth, height: colorStudioHeight)
@@ -536,11 +569,11 @@ private final class ColorStudioView: NSView {
         captionLabel.lineBreakMode = .byTruncatingTail
 
         modePopUp.translatesAutoresizingMaskIntoConstraints = false
-        ColorMotionMode.allCases.forEach { mode in
+        visibleModes.forEach { mode in
             modePopUp.addItem(withTitle: mode.title)
             modePopUp.lastItem?.representedObject = mode.rawValue
         }
-        modePopUp.selectItem(withTitle: ColorMotionMode.solid.title)
+        modePopUp.selectItem(withTitle: ColorMotionMode.gradientSweep.title)
         modePopUp.target = self
         modePopUp.action = #selector(modeChanged)
 
@@ -738,12 +771,7 @@ private final class ColorStudioView: NSView {
 
     @objc private func sendPressed() {
         let colors = Array(paletteColors.prefix(visibleSlotCount))
-        let mode = selectedMode()
-        if mode == .solid {
-            onSendColor?(colors.first ?? NSColor.systemRed)
-        } else {
-            onSendMotion?(colors, mode)
-        }
+        onSendMotion?(colors, selectedMode())
     }
 
     @objc private func pickScreenPressed() {
@@ -805,7 +833,8 @@ private final class ColorStudioView: NSView {
                 )
             }
         }
-        if let targetItem = modePopUp.itemArray.first(where: { ($0.representedObject as? String) == combo.mode.rawValue }) {
+        let targetMode = combo.mode == .solid ? ColorMotionMode.gradientSweep : combo.mode
+        if let targetItem = modePopUp.itemArray.first(where: { ($0.representedObject as? String) == targetMode.rawValue }) {
             modePopUp.select(targetItem)
         }
         activeSlotIndex = 0
@@ -860,7 +889,7 @@ private final class ColorStudioView: NSView {
             let rawValue = modePopUp.selectedItem?.representedObject as? String,
             let mode = ColorMotionMode(rawValue: rawValue)
         else {
-            return .solid
+            return .gradientSweep
         }
         return mode
     }
@@ -918,12 +947,17 @@ private final class ColorStudioView: NSView {
     }
 
     private func updateSendButtonTitle() {
-        sendButton.title = selectedMode() == .solid ? "Beam Solid" : "Beam Motion"
+        sendButton.title = "Beam Motion"
     }
 }
 
 private final class QuickActionTileView: NSControl {
     var onActivate: (() -> Void)?
+    var iconTintColor: NSColor = .secondaryLabelColor {
+        didSet {
+            updateAppearance()
+        }
+    }
     var isActive = false {
         didSet {
             updateAppearance()
@@ -1015,6 +1049,7 @@ private final class QuickActionTileView: NSControl {
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyDown
+        iconView.contentTintColor = iconTintColor
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.style = .spinning
@@ -1070,6 +1105,7 @@ private final class QuickActionTileView: NSControl {
         layer?.borderColor = (isActive
             ? NSColor.controlAccentColor.withAlphaComponent(0.58)
             : NSColor.separatorColor.withAlphaComponent(0.22)).cgColor
+        iconView.contentTintColor = iconTintColor
         alphaValue = isPressing ? 0.88 : 1.0
         iconView.isHidden = isLoading
         if isLoading {
@@ -1169,6 +1205,7 @@ private final class QuickActionHubView: NSView {
     private func makeTile(title: String, actionID: QuickActionKind) -> QuickActionTileView {
         let tile = QuickActionTileView(title: title, image: image(for: actionID), tooltip: tooltip(for: actionID))
         tile.translatesAutoresizingMaskIntoConstraints = false
+        tile.iconTintColor = iconTint(for: actionID)
         tile.onActivate = { [weak self] in
             self?.handleAction(actionID)
         }
@@ -1192,6 +1229,17 @@ private final class QuickActionHubView: NSView {
             return makeMenuSymbol("arrow.triangle.2.circlepath", description: "Rotate Favorites")
         case .screenPick:
             return makeMenuSymbol("eyedropper.halffull", description: "Pick Color")
+        }
+    }
+
+    private func iconTint(for actionID: QuickActionKind) -> NSColor {
+        switch actionID {
+        case .codex:
+            return providerTileTintColor("codex")
+        case .claude:
+            return providerTileTintColor("claude")
+        default:
+            return .secondaryLabelColor
         }
     }
 
@@ -2598,6 +2646,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private let curatedAnimationsURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
     private let recentAnimationDefaultsKey = "dev.kirniy.divoom.recent-library-animations"
     private let favoriteRotationIndexDefaultsKey = "dev.kirniy.divoom.favorite-rotation-index"
+    private let favoritePlaybackLoopsDefaultsKey = "dev.kirniy.divoom.favorite-playback-loops"
     private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: summaryCardHeight))
     private let summaryCardItem = NSMenuItem()
     private let quickActionHub = QuickActionHubView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: quickHubHeight))
@@ -2617,9 +2666,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var autoFavoritesItem = NSMenuItem()
     private var codexBarShowUsedItem = NSMenuItem()
     private var codexBarShowRemainingItem = NSMenuItem()
+    private var favoritesPlaybackItems: [FavoritesPlaybackOption: NSMenuItem] = [:]
     private var codexMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
     private var claudeMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
     private var timer: Timer?
+    private var favoritesRotationTimer: Timer?
     private var ipcTimer: Timer?
     private var ipcBusy = false
     private var autoRefreshMode: AutoRefreshMode = .off
@@ -2736,6 +2787,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         liveMenu.addItem(autoIPFlagItem)
         liveMenu.addItem(autoFavoritesItem)
         liveMenu.addItem(.separator())
+        liveMenu.addItem(makeFavoritesPlaybackMenu())
+        liveMenu.addItem(.separator())
         liveMenu.addItem(makeSectionHeader("CodexBar Sync"))
         let usageModeMenu = NSMenu(title: "Usage Mode")
         let showUsed = codexBarPreferences().showUsed
@@ -2841,6 +2894,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         mutate(&domain)
         UserDefaults.standard.setPersistentDomain(domain, forName: "com.steipete.codexbar")
         configureMenu()
+    }
+
+    private func currentFavoritesPlaybackOption() -> FavoritesPlaybackOption {
+        let storedValue = UserDefaults.standard.object(forKey: favoritePlaybackLoopsDefaultsKey) as? Int ?? FavoritesPlaybackOption.twice.rawValue
+        return FavoritesPlaybackOption(rawValue: storedValue) ?? .twice
+    }
+
+    private func makeFavoritesPlaybackMenu() -> NSMenuItem {
+        let submenu = NSMenu(title: "Favorites Playback")
+        let current = currentFavoritesPlaybackOption()
+        var items: [FavoritesPlaybackOption: NSMenuItem] = [:]
+
+        for option in FavoritesPlaybackOption.allCases {
+            let item = makeItem(option.title, action: #selector(setFavoritesPlayback(_:)), symbolName: nil)
+            item.representedObject = option.rawValue
+            item.state = option == current ? .on : .off
+            submenu.addItem(item)
+            items[option] = item
+        }
+
+        favoritesPlaybackItems = items
+        return makeSubmenuItem("Favorites Playback", symbolName: "repeat", submenu: submenu)
     }
 
     private func makeCodexBarMetricMenu(
@@ -3120,8 +3195,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         autoRefreshMode = mode
         timer?.invalidate()
         timer = nil
+        favoritesRotationTimer?.invalidate()
+        favoritesRotationTimer = nil
 
         guard mode != .off else {
+            updateAutoRefreshUI()
+            return
+        }
+
+        if mode == .favorites {
             updateAutoRefreshUI()
             return
         }
@@ -3161,7 +3243,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         case .ipFlag:
             return "IP Flag every 60s"
         case .favorites:
-            return "Rotate Favorites every 60s"
+            return "Rotate Favorites • \(currentFavoritesPlaybackOption().title)"
         }
     }
 
@@ -3369,7 +3451,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 ))
                 return
             }
-            bluetoothDiagnostics.runNativeBLESendGIF(path: parameter, completion: completion)
+            if
+                let payloadData = parameter.data(using: .utf8),
+                let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+                let path = payload["path"] as? String,
+                !path.isEmpty
+            {
+                let loopCount = payload["loopCount"] as? Int ?? 0
+                bluetoothDiagnostics.runNativeBLESendGIF(path: path, loopCount: loopCount, completion: completion)
+            } else {
+                bluetoothDiagnostics.runNativeBLESendGIF(path: parameter, completion: completion)
+            }
         case .nativeAnimationVerify:
             guard let parameter = invocation.parameter, !parameter.isEmpty else {
                 completion(NativeActionResult(
@@ -3682,17 +3774,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return
         }
 
-        if mode == .solid {
-            sendSelectedSceneColor(colors.first ?? NSColor.systemRed, source: "Color motion studio")
-            return
-        }
+        let effectiveMode: ColorMotionMode = mode == .solid ? .gradientSweep : mode
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let process = Process()
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
             process.executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
-            process.arguments = ["render-palette", "--mode", mode.rawValue]
+            process.arguments = ["render-palette", "--mode", effectiveMode.rawValue]
             for hex in hexes {
                 process.arguments?.append(contentsOf: ["--color", hex])
             }
@@ -3708,7 +3797,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 guard process.terminationStatus == 0 else {
                     Task { @MainActor [weak self] in
                         self?.updateActionStatus(
-                            summary: "\(mode.summaryPrefix) failed",
+                            summary: "\(effectiveMode.summaryPrefix) failed",
                             success: false,
                             details: stderr.isEmpty ? stdout : stderr
                         )
@@ -3723,7 +3812,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 else {
                     Task { @MainActor [weak self] in
                         self?.updateActionStatus(
-                            summary: "\(mode.summaryPrefix) failed",
+                            summary: "\(effectiveMode.summaryPrefix) failed",
                             success: false,
                             details: "Renderer did not return a usable output path."
                         )
@@ -3731,7 +3820,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     return
                 }
 
-                let renderedLabel = (payload["label"] as? String) ?? mode.summaryPrefix
+                let renderedLabel = (payload["label"] as? String) ?? effectiveMode.summaryPrefix
                 Task { @MainActor [weak self] in
                     self?.run(
                         label: renderedLabel,
@@ -3742,7 +3831,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             } catch {
                 Task { @MainActor [weak self] in
                     self?.updateActionStatus(
-                        summary: "\(mode.summaryPrefix) failed",
+                        summary: "\(effectiveMode.summaryPrefix) failed",
                         success: false,
                         details: error.localizedDescription
                     )
@@ -3754,13 +3843,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func beamAnimationFile(
         _ fileURL: URL,
         label: String,
+        loopCount: Int? = nil,
         successSound: FeedbackSoundProfile? = .animation,
         playErrorSound: Bool = true,
         completion: (@MainActor (Bool, String) -> Void)? = nil
     ) {
+        var arguments = ["native-headless", "send-gif", "--path", fileURL.path]
+        if let loopCount {
+            arguments.append(contentsOf: ["--loops", String(loopCount)])
+        }
         run(
             label: label,
-            arguments: ["native-headless", "send-gif", "--path", fileURL.path],
+            arguments: arguments,
             successSound: successSound,
             playErrorSound: playErrorSound,
             completion: completion
@@ -3775,9 +3869,41 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         return AnimationLibraryCatalog.loadItems().filter { favorites.contains($0.id) }
     }
 
+    private func favoriteRotationDelay(
+        for item: AnimationLibraryItem,
+        playbackOption: FavoritesPlaybackOption
+    ) -> TimeInterval? {
+        guard playbackOption != .infinite else {
+            return nil
+        }
+        guard let sequence = AnimationPreviewCache.sequence(for: item.fileURL) else {
+            return max(Double(playbackOption.rawValue) * 1.0, 0.5)
+        }
+        return max(sequence.duration * Double(playbackOption.rawValue), 0.5)
+    }
+
+    private func scheduleNextFavoriteRotation(after delay: TimeInterval?) {
+        favoritesRotationTimer?.invalidate()
+        favoritesRotationTimer = nil
+
+        guard autoRefreshMode == .favorites, let delay else {
+            return
+        }
+
+        favoritesRotationTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.favoritesRotationTimer?.invalidate()
+                self.favoritesRotationTimer = nil
+                guard self.autoRefreshMode == .favorites else { return }
+                self.refreshLiveFeed(.favorites)
+            }
+        }
+    }
+
     private func beamNextFavorite(
         playActivationSound: Bool,
-        completion: (@MainActor (Bool, String) -> Void)? = nil
+        completion: (@MainActor (Bool, String, TimeInterval?) -> Void)? = nil
     ) {
         let items = currentFavoriteAnimationItems()
         guard !items.isEmpty else {
@@ -3786,20 +3912,28 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 success: false,
                 details: "Favorite some animations in the library first."
             )
-            completion?(false, "Favorite some animations in the library first.")
+            completion?(false, "Favorite some animations in the library first.", nil)
             return
         }
 
         let currentIndex = UserDefaults.standard.integer(forKey: favoriteRotationIndexDefaultsKey)
         let item = items[currentIndex % items.count]
+        let playbackOption = currentFavoritesPlaybackOption()
+        let nextDelay = favoriteRotationDelay(for: item, playbackOption: playbackOption)
         UserDefaults.standard.set((currentIndex + 1) % items.count, forKey: favoriteRotationIndexDefaultsKey)
         recordRecentAnimation(relativePath: item.relativePath)
         beamAnimationFile(
             item.fileURL,
             label: "Favorites \(item.title)",
+            loopCount: playbackOption.rawValue,
             successSound: playActivationSound ? .animation : nil,
             playErrorSound: playActivationSound,
-            completion: completion
+            completion: { [weak self] success, details in
+                if success, self?.autoRefreshMode == .favorites {
+                    self?.scheduleNextFavoriteRotation(after: nextDelay)
+                }
+                completion?(success, details, nextDelay)
+            }
         )
     }
 
@@ -3821,6 +3955,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func toggleAutoFavorites() {
         toggleLiveFeed(.favorites)
+    }
+
+    @objc private func setFavoritesPlayback(_ sender: NSMenuItem) {
+        guard
+            let rawValue = sender.representedObject as? Int,
+            let option = FavoritesPlaybackOption(rawValue: rawValue)
+        else {
+            return
+        }
+        UserDefaults.standard.set(option.rawValue, forKey: favoritePlaybackLoopsDefaultsKey)
+        configureMenu()
+        updateActionStatus(
+            summary: "Favorites playback set to \(option.title.lowercased())",
+            success: true,
+            details: "Rotate Favorites will now play each animation \(option.title.lowercased()) before moving on."
+        )
     }
 
     @objc private func setCodexBarShowUsed() {
@@ -3937,11 +4087,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         if mode == .favorites {
             setAutoRefreshMode(.off)
             quickActionHub.loadingAction = mode.quickActionKind
-            beamNextFavorite(playActivationSound: true) { [weak self] success, _ in
+            beamNextFavorite(playActivationSound: true) { [weak self] success, _, nextDelay in
                 guard let self else { return }
                 self.quickActionHub.loadingAction = nil
                 guard success else { return }
                 self.setAutoRefreshMode(.favorites)
+                self.scheduleNextFavoriteRotation(after: nextDelay)
             }
             return
         }

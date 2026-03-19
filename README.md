@@ -1,7 +1,7 @@
-# Divoom D2 Pro Mac
+# Divoom Ditoo Pro Mac
 
 <p align="center">
-  <img src="docs/assets/app-icon.png" alt="Divoom D2 Pro Mac app icon" width="160" height="160">
+  <img src="docs/assets/app-icon.png" alt="Divoom Ditoo Pro Mac app icon" width="160" height="160">
 </p>
 
 <p align="center">

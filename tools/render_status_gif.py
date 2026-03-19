@@ -212,7 +212,13 @@ def draw_pixel_block(draw: ImageDraw.ImageDraw, x: int, y: int, color: tuple[int
 def normalized_percent(value: int | None) -> int:
     if value is None:
         return 0
-    return max(0, min(99, int(value)))
+    return max(0, min(100, int(value)))
+
+
+def text_width(text: str, scale: int = 1) -> int:
+    if not text:
+        return 0
+    return len(text) * 3 * scale + (len(text) - 1) * scale
 
 
 def draw_background(draw: ImageDraw.ImageDraw, theme: dict[str, tuple[int, int, int]], frame_index: int) -> None:
@@ -232,43 +238,6 @@ def draw_background(draw: ImageDraw.ImageDraw, theme: dict[str, tuple[int, int, 
     sweep_x = (frame_index * 2) % 18 - 2
     for x in range(max(2, sweep_x), min(14, sweep_x + 4)):
         draw.point((x, 2), fill=mix(theme["accent"], theme["glow"], 0.2))
-
-
-def draw_provider_badge(
-    draw: ImageDraw.ImageDraw,
-    provider: str,
-    theme: dict[str, tuple[int, int, int]],
-    x: int,
-    y: int,
-    frame_index: int,
-) -> None:
-    lit = mix(theme["accent"], theme["glow"], 0.35)
-    dim = mix(theme["ring"], theme["base"], 0.25)
-    if provider == "codex":
-        pixels = [
-            (1, 0), (2, 0),
-            (0, 1),         (3, 1),
-            (0, 2),         (3, 2),
-            (1, 3), (2, 3),
-        ]
-        focus = frame_index % len(pixels)
-        for index, (px, py) in enumerate(pixels):
-            draw.point((x + px, y + py), fill=lit if index == focus else dim)
-        draw.point((x + 1, y + 1), fill=theme["bg"])
-        draw.point((x + 2, y + 2), fill=theme["bg"])
-    else:
-        pixels = [
-            (1, 0),
-            (0, 1), (1, 1), (2, 1),
-            (1, 2),
-        ]
-        for px, py in pixels:
-            draw.point((x + px, y + py), fill=dim)
-        halo = [(1, -1), (-1, 1), (3, 1), (1, 3)]
-        focus = frame_index % len(halo)
-        for index, (px, py) in enumerate(halo):
-            if 0 <= x + px < SIZE and 0 <= y + py < SIZE:
-                draw.point((x + px, y + py), fill=lit if index == focus else theme["base"])
 
 
 def draw_text(
@@ -372,25 +341,25 @@ def draw_single_frame(snapshot: UsageSnapshot, frame_index: int) -> Image.Image:
     draw_background(draw, theme, frame_index)
 
     percent = display_percent(snapshot)
-    label = f"{percent:02d}"
-    text_width = len(label) * 6 + (len(label) - 1) * 1
-    text_x = 4
+    label = str(percent)
+    scale = 1
+    text_x = (SIZE - text_width(label, scale=scale)) // 2
+    text_y = (SIZE - 5 * scale) // 2
 
     draw_perimeter_meter(draw, theme, percent, x=1, y=1, width=14, height=14)
-    draw_provider_badge(draw, snapshot.provider, theme, x=2, y=3, frame_index=frame_index)
     draw_text(
         draw,
         label,
         x=text_x,
-        y=5,
+        y=text_y,
         color=theme["accent"],
-        scale=2,
-        shadow=theme["shadow"],
+        scale=scale,
+        shadow=None,
     )
     return img
 
 
-def draw_split_card(
+def draw_vertical_meter(
     draw: ImageDraw.ImageDraw,
     snapshot: UsageSnapshot,
     x: int,
@@ -400,28 +369,53 @@ def draw_split_card(
 ) -> None:
     theme = THEMES[snapshot.provider]
     percent = display_percent(snapshot)
-    panel = mix(theme["panel"], theme["bg"], 0.08)
+    fill_rows = max(0, min(height, round(height * percent / 100)))
     for row in range(height):
         for col in range(width):
-            draw.point((x + col, y + row), fill=panel)
-    draw_perimeter_meter(draw, theme, percent, x=x, y=y, width=width, height=height)
-    draw_provider_badge(draw, snapshot.provider, theme, x=x + 1, y=y + 1, frame_index=0)
-    draw_text(
-        draw,
-        f"{percent:02d}",
-        x=x + 5,
-        y=y + 1,
-        color=theme["accent"],
-        scale=1,
-        shadow=None,
-    )
+            row_from_bottom = height - row
+            if row_from_bottom <= fill_rows:
+                ratio = row / max(1, height - 1)
+                color = mix(theme["ring"], theme["accent"], ratio)
+            else:
+                color = mix(theme["base"], theme["panel"], 0.3)
+            draw.point((x + col, y + row), fill=color)
 
 
 def draw_pair_frame(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapshot, frame_index: int) -> Image.Image:
     img = Image.new("RGB", (SIZE, SIZE), (10, 12, 18))
     draw = ImageDraw.Draw(img)
-    draw_split_card(draw, codex_snapshot, x=1, y=1, width=14, height=6)
-    draw_split_card(draw, claude_snapshot, x=1, y=9, width=14, height=6)
+
+    for y in range(SIZE):
+        row = mix((10, 12, 18), (18, 20, 28), y / max(1, SIZE - 1))
+        for x in range(SIZE):
+            draw.point((x, y), fill=row)
+
+    draw_vertical_meter(draw, claude_snapshot, x=1, y=1, width=3, height=14)
+    draw_vertical_meter(draw, codex_snapshot, x=12, y=1, width=3, height=14)
+
+    codex_label = str(display_percent(codex_snapshot))
+    claude_label = str(display_percent(claude_snapshot))
+    codex_x = (SIZE - text_width(codex_label, scale=1)) // 2
+    claude_x = (SIZE - text_width(claude_label, scale=1)) // 2
+
+    draw_text(
+        draw,
+        codex_label,
+        x=codex_x,
+        y=3,
+        color=THEMES["codex"]["accent"],
+        scale=1,
+        shadow=None,
+    )
+    draw_text(
+        draw,
+        claude_label,
+        x=claude_x,
+        y=9,
+        color=THEMES["claude"]["accent"],
+        scale=1,
+        shadow=None,
+    )
     return img
 
 

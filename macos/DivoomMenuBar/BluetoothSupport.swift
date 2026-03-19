@@ -318,15 +318,12 @@ private func totalAnimationDuration(_ frames: [Divoom16AnimationFrame]) -> TimeI
 
 private func effectiveAnimationLoopCount(
     requestedLoopCount: Int,
-    frames: [Divoom16AnimationFrame],
-    minimumPlaybackDuration: TimeInterval = 12.0
+    frames _: [Divoom16AnimationFrame]
 ) -> Int {
     if requestedLoopCount <= 0 {
         return 0
     }
-    let totalDuration = max(0.001, totalAnimationDuration(frames))
-    let minimumLoops = max(1, Int(ceil(minimumPlaybackDuration / totalDuration)))
-    return max(1, max(requestedLoopCount, minimumLoops))
+    return max(1, requestedLoopCount)
 }
 
 private func buildPublicStaticImageCommandBody(colors: [RGBColor], frameDelay: UInt16 = 0) -> Data {

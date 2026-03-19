@@ -10,6 +10,7 @@ ICONSET_DIR="$ROOT/build/Icon.iconset"
 mkdir -p "$BIN_DIR"
 mkdir -p "$RESOURCE_DIR"
 cp "$ROOT/macos/DivoomMenuBar/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT"/macos/DivoomMenuBar/Resources/*.svg "$RESOURCE_DIR"/
 
 python3 "$ROOT/tools/generate_app_icon.py"
 iconutil -c icns "$ICONSET_DIR" -o "$RESOURCE_DIR/Icon.icns"

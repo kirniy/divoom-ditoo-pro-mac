@@ -637,6 +637,26 @@ def render_palette_animation(mode: str, colors: list[tuple[int, int, int]]) -> t
                     t = ((x / 15.0) + offset + (y / 15.0) * 0.18) % 1.0
                     image.putpixel((x, y), sample_palette(colors, t))
             durations.append(70)
+        elif mode == "ribbon-wave":
+            offset = frame_index / frame_count * math.tau
+            for y in range(16):
+                band = (math.sin(offset + y * 0.46) + 1.0) / 2.0
+                band_color = sample_palette(colors, band)
+                for x in range(16):
+                    shimmer = (math.sin(offset * 1.4 + x * 0.72 + y * 0.2) + 1.0) / 2.0
+                    image.putpixel((x, y), brighten(band_color, round(shimmer * 26)))
+            durations.append(72)
+        elif mode == "diamond-bloom":
+            center = 7.5
+            phase = (math.sin(frame_index / frame_count * math.tau) + 1.0) / 2.0
+            for y in range(16):
+                for x in range(16):
+                    distance = (abs(x - center) + abs(y - center)) / 15.0
+                    t = (phase + distance * 0.82) % 1.0
+                    color = sample_palette(colors, t)
+                    boost = max(0, 24 - round(distance * 18))
+                    image.putpixel((x, y), brighten(color, boost))
+            durations.append(76)
         elif mode == "pulse":
             base_t = frame_index / frame_count
             base_color = sample_palette(colors, base_t)
@@ -665,6 +685,15 @@ def render_palette_animation(mode: str, colors: list[tuple[int, int, int]]) -> t
                     color = sample_palette(colors, t)
                     image.putpixel((x, y), brighten(color, 10 if y < 5 else 0))
             durations.append(75)
+        elif mode == "checker-shift":
+            offset = frame_index / frame_count
+            for y in range(16):
+                for x in range(16):
+                    cell = (x + y + frame_index) % 2
+                    diagonal = ((x + y) / 30.0 + offset) % 1.0
+                    base = sample_palette(colors, diagonal if cell == 0 else (diagonal + 0.33) % 1.0)
+                    image.putpixel((x, y), brighten(base, 18 if cell == 0 else 0))
+            durations.append(82)
         elif mode == "palette-steps":
             palette_index = (frame_index // 4) % len(colors)
             color = colors[palette_index]
@@ -1383,7 +1412,10 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
             "animation-upload-oldmode": "--headless-native-animation-upload-oldmode",
         }
         mode = headless_flags[args.action]
-        parameter = str(divoom16_path)
+        if args.action == "send-gif":
+            parameter = json.dumps({"path": str(divoom16_path), "loopCount": args.loops})
+        else:
+            parameter = str(divoom16_path)
     elif args.action == "pomodoro-timer":
         mode = mode_map[args.action]
         parameter = str(args.minutes)
@@ -1467,7 +1499,7 @@ def build_parser() -> argparse.ArgumentParser:
     render_feed.set_defaults(func=cmd_render_feed)
 
     render_palette = sub.add_parser("render-palette", help="Render a palette-based 16x16 animation to a local GIF file")
-    render_palette.add_argument("--mode", choices=["gradient-sweep", "palette-steps", "pulse", "aurora"], required=True)
+    render_palette.add_argument("--mode", choices=["gradient-sweep", "ribbon-wave", "diamond-bloom", "palette-steps", "checker-shift", "pulse", "aurora"], required=True)
     render_palette.add_argument("--color", action="append", required=True, help="Hex color triplet like #FF3B30; repeat 3-10 times")
     render_palette.set_defaults(func=cmd_render_palette)
 
@@ -1522,6 +1554,12 @@ def build_parser() -> argparse.ArgumentParser:
     native_headless.add_argument(
         "--path",
         help="File path for action=animation-upload (a .divoom16 or pre-serialized animation file)",
+    )
+    native_headless.add_argument(
+        "--loops",
+        type=int,
+        default=0,
+        help="Loop count for action=send-gif. Use 0 for infinite.",
     )
     native_headless.add_argument(
         "--minutes",
