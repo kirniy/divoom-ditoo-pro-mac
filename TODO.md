@@ -34,5 +34,7 @@
 ## Verification
 
 - Add stronger end-to-end checks for live feed rendering, animation playback behavior, favorites rotation, and menu action health.
+- Add a transport-health checklist and UI gate so the app only claims readiness when `DitooPro-Light` is actually connected and `8841` is writable.
+- Add a documented recovery procedure for the hidden BLE light endpoint so future work does not confuse `DitooPro-Audio` with the real display path.
 - Keep documenting real reverse-engineering findings in `reverse/ios_ipa/REVERSE.md` before changing protocol behavior.
 - Add verification around Divoom cloud sync, manifest freshness, duplicate collapse, and source-aware library indexing.

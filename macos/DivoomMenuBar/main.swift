@@ -33,14 +33,15 @@ enum AppLog {
     }
 }
 
-private let rootMenuSurfaceWidth: CGFloat = 432
+private let rootMenuSurfaceWidth: CGFloat = 416
 private let studioMenuSurfaceWidth: CGFloat = 396
-private let summaryCardHeight: CGFloat = 148
-private let quickHubHeight: CGFloat = 272
+private let summaryCardHeight: CGFloat = 132
+private let quickHubHeight: CGFloat = 236
 private let colorStudioHeight: CGFloat = 246
 private let cloudLibraryEnabledDefaultsKey = "dev.kirniy.divoom.cloud-library-enabled"
 private let cloudSyncOnLaunchDefaultsKey = "dev.kirniy.divoom.cloud-sync-on-launch"
 private let cloudAutoSyncEnabledDefaultsKey = "dev.kirniy.divoom.cloud-auto-sync-enabled"
+private let cloudEmailHintDefaultsKey = "dev.kirniy.divoom.cloud-email-hint"
 private let cloudManifestURL = divoomRepoURL(".cache/divoom-cloud/manifest.json")
 private let divoomCloudKeychainService = "dev.kirniy.divoom.ditoo-pro-mac.cloud"
 private let divoomCloudEmailAccount = "email"
@@ -122,27 +123,70 @@ private struct DivoomCloudCredentialHint {
 }
 
 private enum DivoomCloudCredentialResolver {
+    private static var localCredentialsCache: DivoomCloudCredentials?
+    private static var localCredentialsResolved = false
     private static var passiveSyncedCredentialsCache: DivoomCloudCredentials?
     private static var passiveSyncedCredentialsResolved = false
     private static var passiveSyncedHintCache: DivoomCloudCredentialHint?
     private static var passiveSyncedHintResolved = false
 
-    static func appKeychainCredentials() -> DivoomCloudCredentials? {
-        guard let email = DivoomCloudKeychain.read(account: divoomCloudEmailAccount)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !email.isEmpty,
-              let password = DivoomCloudKeychain.read(account: divoomCloudPasswordAccount),
-              !password.isEmpty
-        else {
+    static func passiveLocalCredentialHint() -> String? {
+        let email = UserDefaults.standard.string(forKey: cloudEmailHintDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let email, !email.isEmpty else {
             return nil
         }
-        return DivoomCloudCredentials(email: email, password: password, source: .appKeychain)
+        return email
+    }
+
+    static func setPassiveLocalCredentialHint(_ email: String?) {
+        let trimmed = email?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: cloudEmailHintDefaultsKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: cloudEmailHintDefaultsKey)
+        }
+    }
+
+    static func appKeychainCredentials(forceRefresh: Bool = false) -> DivoomCloudCredentials? {
+        if !forceRefresh && localCredentialsResolved {
+            return localCredentialsCache
+        }
+
+        let email = resolveLocalCredentialEmail()
+        let password = DivoomCloudKeychain.read(account: divoomCloudPasswordAccount)
+        guard let email, !email.isEmpty, let password, !password.isEmpty else {
+            return nil
+        }
+
+        let credentials = DivoomCloudCredentials(email: email, password: password, source: .appKeychain)
+        localCredentialsCache = credentials
+        localCredentialsResolved = true
+        setPassiveLocalCredentialHint(email)
+        return credentials
     }
 
     static func resetPassiveCaches() {
+        localCredentialsCache = nil
+        localCredentialsResolved = false
         passiveSyncedCredentialsCache = nil
         passiveSyncedCredentialsResolved = false
         passiveSyncedHintCache = nil
         passiveSyncedHintResolved = false
+    }
+
+    private static func resolveLocalCredentialEmail() -> String? {
+        if let email = passiveLocalCredentialHint() {
+            return email
+        }
+        guard let email = DivoomCloudKeychain.read(account: divoomCloudEmailAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !email.isEmpty
+        else {
+            return nil
+        }
+        setPassiveLocalCredentialHint(email)
+        return email
     }
 
     static func syncedInternetPasswordHint() -> DivoomCloudCredentialHint? {
@@ -515,6 +559,23 @@ private struct SummaryChipSpec {
     }
 }
 
+private struct ConnectionFacts {
+    var authorizationPending = false
+    var authorizationDenied = false
+    var lightReady = false
+    var lightConnected = false
+    var lightConnecting = false
+    var lightVisible = false
+    var lightIdle = false
+    var scanInProgress = false
+    var scanFinished = false
+    var classicAudioVisible = false
+
+    var audioOnly: Bool {
+        classicAudioVisible && !lightVisible && !lightConnecting && !lightReady
+    }
+}
+
 private enum CodexBarMetricPreference: String, CaseIterable {
     case primary
     case secondary
@@ -689,6 +750,7 @@ private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSIm
     }
 
     image.size = NSSize(width: size, height: size)
+    image.isTemplate = true
     return image
 }
 
@@ -817,8 +879,8 @@ private final class PixelShaderBackdropView: NSView {
         super.draw(dirtyRect)
 
         let colors = paletteColors()
-        let columns = max(11, Int(bounds.width / 24))
-        let rows = max(4, Int(bounds.height / 22))
+        let columns = max(10, Int(bounds.width / 32))
+        let rows = max(4, Int(bounds.height / 24))
         let cellWidth = bounds.width / CGFloat(columns)
         let cellHeight = bounds.height / CGFloat(rows)
 
@@ -827,12 +889,12 @@ private final class PixelShaderBackdropView: NSView {
                 let wave = (sin(CGFloat(column) * 0.58 + CGFloat(row) * 0.94 + phase) + 1) / 2
                 let fade = 0.22 + pow(CGFloat(column) / CGFloat(max(columns - 1, 1)), 1.35) * 0.78
                 let glow = colors.0.blended(withFraction: wave * 0.72, of: colors.1) ?? colors.1
-                let alpha = (0.028 + wave * 0.14) * fade * activityBoost
+                let alpha = (0.016 + wave * 0.075) * fade * activityBoost
                 let rect = NSRect(
-                    x: CGFloat(column) * cellWidth + cellWidth * 0.18,
-                    y: CGFloat(row) * cellHeight + cellHeight * 0.2,
-                    width: cellWidth * 0.56,
-                    height: cellHeight * 0.52
+                    x: CGFloat(column) * cellWidth + cellWidth * 0.24,
+                    y: CGFloat(row) * cellHeight + cellHeight * 0.26,
+                    width: cellWidth * 0.44,
+                    height: cellHeight * 0.40
                 )
                 let pixel = NSBezierPath(roundedRect: rect, xRadius: 3.8, yRadius: 3.8)
                 glow.withAlphaComponent(alpha).setFill()
@@ -840,10 +902,10 @@ private final class PixelShaderBackdropView: NSView {
             }
         }
 
-        let beamX = ((phase.truncatingRemainder(dividingBy: .pi * 2)) / (.pi * 2)) * (bounds.width + 96) - 48
-        let beamRect = NSRect(x: beamX, y: 0, width: 44, height: bounds.height)
-        let beamPath = NSBezierPath(roundedRect: beamRect, xRadius: 18, yRadius: 18)
-        (colors.2 ?? colors.1).withAlphaComponent(0.10 * activityBoost).setFill()
+        let beamX = ((phase.truncatingRemainder(dividingBy: .pi * 2)) / (.pi * 2)) * (bounds.width + 72) - 36
+        let beamRect = NSRect(x: beamX, y: 4, width: 26, height: max(0, bounds.height - 8))
+        let beamPath = NSBezierPath(roundedRect: beamRect, xRadius: 13, yRadius: 13)
+        (colors.2 ?? colors.1).withAlphaComponent(0.045 * activityBoost).setFill()
         beamPath.fill()
     }
 
@@ -882,17 +944,15 @@ private final class MenuSummaryView: NSView {
     private let backdropView = PixelShaderBackdropView()
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Divoom Ditoo Pro Mac")
-    private let subtitleLabel = NSTextField(labelWithString: "Native control deck for the 16x16 display.")
-    private let headlineLabel = NSTextField(labelWithString: "Beam colors, live feeds, and library picks.")
+    private let subtitleLabel = NSTextField(labelWithString: "Desk display online.")
+    private let headlineLabel = NSTextField(labelWithString: "Ready for colors, feeds, and animations.")
     private let rotatingLabel = NSTextField(labelWithString: "Open Library for curated, favorite, and cloud picks.")
     private let chipViews: [SummaryPillView] = [
         SummaryPillView(text: "Device Ready", symbolName: "dot.radiowaves.left.and.right"),
         SummaryPillView(text: "Manual", symbolName: "hand.tap"),
-        SummaryPillView(text: "0 Favorites", symbolName: "star.fill"),
-        SummaryPillView(text: "Cloud Idle", symbolName: "icloud"),
+        SummaryPillView(text: "Library Ready", symbolName: "photo.stack"),
     ]
-    private let chipRowOne = NSStackView()
-    private let chipRowTwo = NSStackView()
+    private let chipRow = NSStackView()
     private var rotatingLines: [String] = ["Open Library for curated and cloud picks."]
     private var rotatingLineIndex = 0
     private var rotatingLineTimer: Timer?
@@ -925,6 +985,7 @@ private final class MenuSummaryView: NSView {
         iconView.image = makeStatusItemIcon(state: state)
         subtitleLabel.stringValue = subtitle
         headlineLabel.stringValue = headline
+        headlineLabel.textColor = state == .error ? .systemOrange : .labelColor
         backdropView.palette = {
             switch state {
             case .idle: return .idle
@@ -932,7 +993,7 @@ private final class MenuSummaryView: NSView {
             case .error: return .error
             }
         }()
-        backdropView.activityBoost = chips.contains(where: { $0.accentColor != nil }) ? 1.02 : 0.82
+        backdropView.activityBoost = chips.contains(where: { $0.accentColor != nil }) ? 0.74 : 0.50
         updateRotatingLines(rotatingLines)
         updateChips(chips)
     }
@@ -958,7 +1019,7 @@ private final class MenuSummaryView: NSView {
 
         backdropView.translatesAutoresizingMaskIntoConstraints = false
         backdropView.palette = .idle
-        backdropView.activityBoost = 0.62
+        backdropView.activityBoost = 0.46
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.image = makeStatusItemIcon(state: .idle)
@@ -975,14 +1036,16 @@ private final class MenuSummaryView: NSView {
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
         headlineLabel.translatesAutoresizingMaskIntoConstraints = false
-        headlineLabel.font = .systemFont(ofSize: 17, weight: .bold)
+        headlineLabel.font = .systemFont(ofSize: 15.5, weight: .bold)
         headlineLabel.textColor = .labelColor
-        headlineLabel.lineBreakMode = .byTruncatingTail
+        headlineLabel.lineBreakMode = .byWordWrapping
+        headlineLabel.maximumNumberOfLines = 2
 
         rotatingLabel.translatesAutoresizingMaskIntoConstraints = false
-        rotatingLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
+        rotatingLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         rotatingLabel.textColor = .secondaryLabelColor
-        rotatingLabel.lineBreakMode = .byTruncatingTail
+        rotatingLabel.lineBreakMode = .byWordWrapping
+        rotatingLabel.maximumNumberOfLines = 2
 
         let headerStack = NSStackView(views: [titleLabel, subtitleLabel])
         headerStack.orientation = .vertical
@@ -996,23 +1059,16 @@ private final class MenuSummaryView: NSView {
         topRow.spacing = 10
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
-        chipRowOne.orientation = .horizontal
-        chipRowOne.alignment = .centerY
-        chipRowOne.spacing = 8
-        chipRowOne.translatesAutoresizingMaskIntoConstraints = false
+        chipRow.orientation = .horizontal
+        chipRow.alignment = .centerY
+        chipRow.spacing = 8
+        chipRow.translatesAutoresizingMaskIntoConstraints = false
+        chipViews.forEach { chipRow.addArrangedSubview($0) }
 
-        chipRowTwo.orientation = .horizontal
-        chipRowTwo.alignment = .centerY
-        chipRowTwo.spacing = 8
-        chipRowTwo.translatesAutoresizingMaskIntoConstraints = false
-
-        chipViews.prefix(2).forEach { chipRowOne.addArrangedSubview($0) }
-        chipViews.suffix(2).forEach { chipRowTwo.addArrangedSubview($0) }
-
-        let contentStack = NSStackView(views: [topRow, headlineLabel, rotatingLabel, chipRowOne, chipRowTwo])
+        let contentStack = NSStackView(views: [topRow, headlineLabel, rotatingLabel, chipRow])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 6
+        contentStack.spacing = 8
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(glassView)
@@ -1033,8 +1089,8 @@ private final class MenuSummaryView: NSView {
             backdropView.bottomAnchor.constraint(equalTo: bottomAnchor),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 13),
-            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -13),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
         ])
     }
 
@@ -1607,7 +1663,7 @@ private final class QuickActionTileView: NSControl {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 120, height: 98)
+        NSSize(width: 122, height: 96)
     }
 
     init(title: String, subtitle: String, image: NSImage?, tooltip: String) {
@@ -1694,9 +1750,9 @@ private final class QuickActionTileView: NSControl {
         spinner.isDisplayedWhenStopped = false
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 13, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 12.5, weight: .bold)
         titleLabel.textColor = .labelColor
-        titleLabel.alignment = .left
+        titleLabel.alignment = .center
         titleLabel.lineBreakMode = .byWordWrapping
         titleLabel.maximumNumberOfLines = 2
         titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
@@ -1704,39 +1760,41 @@ private final class QuickActionTileView: NSControl {
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         subtitleLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
         subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.alignment = .left
+        subtitleLabel.alignment = .center
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.maximumNumberOfLines = 1
+        subtitleLabel.isHidden = true
 
         addSubview(backgroundView)
         addSubview(badgeView)
         badgeView.addSubview(iconView)
         badgeView.addSubview(spinner)
-        addSubview(titleLabel)
-        addSubview(subtitleLabel)
+        let labelStack = NSStackView(views: [titleLabel, subtitleLabel])
+        labelStack.orientation = .vertical
+        labelStack.alignment = .centerX
+        labelStack.spacing = 2
+        labelStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(labelStack)
 
         NSLayoutConstraint.activate([
             backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
             backgroundView.trailingAnchor.constraint(equalTo: trailingAnchor),
             backgroundView.topAnchor.constraint(equalTo: topAnchor),
             backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            badgeView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            badgeView.centerXAnchor.constraint(equalTo: centerXAnchor),
             badgeView.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            badgeView.widthAnchor.constraint(equalToConstant: 38),
-            badgeView.heightAnchor.constraint(equalToConstant: 38),
+            badgeView.widthAnchor.constraint(equalToConstant: 40),
+            badgeView.heightAnchor.constraint(equalToConstant: 40),
             iconView.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
             iconView.widthAnchor.constraint(lessThanOrEqualToConstant: 18),
             iconView.heightAnchor.constraint(lessThanOrEqualToConstant: 18),
             spinner.centerXAnchor.constraint(equalTo: badgeView.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            titleLabel.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 14),
-            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            subtitleLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
-            subtitleLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
+            labelStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            labelStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            labelStack.topAnchor.constraint(equalTo: badgeView.bottomAnchor, constant: 12),
+            labelStack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -14),
         ])
 
         updateAppearance()
@@ -1746,21 +1804,24 @@ private final class QuickActionTileView: NSControl {
         let activeBorderColor = NSColor.controlAccentColor.withAlphaComponent(0.72)
         let inactiveBorderColor = NSColor.separatorColor.withAlphaComponent(0.18)
         backgroundView.layer?.borderColor = (isActive ? activeBorderColor : inactiveBorderColor).cgColor
-        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.975 : 0.94)
+        backgroundView.alphaValue = isActive ? 1.0 : (isHovering ? 0.985 : 0.95)
         backgroundView.layer?.backgroundColor = (isActive
-            ? NSColor.controlAccentColor.withAlphaComponent(0.13)
-            : NSColor.white.withAlphaComponent(0.02)).cgColor
+            ? NSColor.controlAccentColor.withAlphaComponent(0.15)
+            : NSColor.white.withAlphaComponent(isHovering ? 0.045 : 0.02)).cgColor
         badgeView.layer?.backgroundColor = (isActive
             ? badgeFillColor.blended(withFraction: 0.16, of: .white) ?? badgeFillColor
             : badgeFillColor).cgColor
         badgeView.layer?.borderColor = (usesOriginalIconColors
             ? badgeFillColor.withAlphaComponent(isActive ? 0.96 : 0.78)
-            : NSColor.separatorColor.withAlphaComponent(isHovering ? 0.34 : 0.22)).cgColor
+            : (isActive
+                ? NSColor.controlAccentColor.withAlphaComponent(0.42)
+                : NSColor.separatorColor.withAlphaComponent(isHovering ? 0.34 : 0.22))).cgColor
         iconView.contentTintColor = usesOriginalIconColors ? nil : iconTintColor
         titleLabel.textColor = isActive ? NSColor.labelColor : NSColor.labelColor.withAlphaComponent(0.94)
         subtitleLabel.textColor = isActive
             ? NSColor.secondaryLabelColor.withAlphaComponent(0.94)
             : NSColor.secondaryLabelColor.withAlphaComponent(isHovering ? 0.92 : 0.84)
+        subtitleLabel.isHidden = true
         alphaValue = isPressing ? 0.9 : 1.0
         iconView.isHidden = isLoading
         if isLoading {
@@ -1793,8 +1854,6 @@ private final class QuickActionHubView: NSView {
 
     private var tiles: [QuickActionKind: QuickActionTileView] = [:]
     private let glassView = NSVisualEffectView()
-    private let eyebrowLabel = NSTextField(labelWithString: "Launch Pad")
-    private let summaryLabel = NSTextField(labelWithString: "Jump into live feeds, browse the library, or hand off to favorites mode.")
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: rootMenuSurfaceWidth, height: quickHubHeight)
@@ -1829,19 +1888,10 @@ private final class QuickActionHubView: NSView {
         glassView.layer?.borderWidth = 1
         glassView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.18).cgColor
 
-        eyebrowLabel.translatesAutoresizingMaskIntoConstraints = false
-        eyebrowLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        eyebrowLabel.textColor = .secondaryLabelColor
-
-        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        summaryLabel.textColor = .secondaryLabelColor
-        summaryLabel.lineBreakMode = .byTruncatingTail
-
         let topRow = NSStackView(views: [
+            makeTile(title: "Library", actionID: .library),
             makeTile(title: "Codex Live", actionID: .codex),
             makeTile(title: "Claude Live", actionID: .claude),
-            makeTile(title: "Split Live", actionID: .pair),
         ])
         topRow.orientation = .horizontal
         topRow.spacing = 12
@@ -1849,8 +1899,8 @@ private final class QuickActionHubView: NSView {
         topRow.translatesAutoresizingMaskIntoConstraints = false
 
         let bottomRow = NSStackView(views: [
+            makeTile(title: "Split Live", actionID: .pair),
             makeTile(title: "IP Flag", actionID: .ipFlag),
-            makeTile(title: "Library", actionID: .library),
             makeTile(title: "Rotate Favorites", actionID: .favorites),
         ])
         bottomRow.orientation = .horizontal
@@ -1858,13 +1908,7 @@ private final class QuickActionHubView: NSView {
         bottomRow.distribution = .fillEqually
         bottomRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerStack = NSStackView(views: [eyebrowLabel, summaryLabel])
-        headerStack.orientation = .vertical
-        headerStack.alignment = .leading
-        headerStack.spacing = 2
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [headerStack, topRow, bottomRow])
+        let stack = NSStackView(views: [topRow, bottomRow])
         stack.orientation = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -1895,8 +1939,8 @@ private final class QuickActionHubView: NSView {
             tooltip: tooltip(for: actionID)
         )
         tile.translatesAutoresizingMaskIntoConstraints = false
-        tile.iconTintColor = iconTint(for: actionID)
-        tile.usesOriginalIconColors = actionID == .codex || actionID == .claude
+        tile.iconTintColor = actionID == .codex || actionID == .claude ? .white : iconTint(for: actionID)
+        tile.usesOriginalIconColors = false
         tile.badgeFillColor = badgeFill(for: actionID)
         tile.onActivate = { [weak self] in
             self?.handleAction(actionID)
@@ -1906,22 +1950,7 @@ private final class QuickActionHubView: NSView {
     }
 
     private func subtitle(for actionID: QuickActionKind) -> String {
-        switch actionID {
-        case .codex:
-            return "OpenAI usage feed"
-        case .claude:
-            return "Anthropic usage feed"
-        case .pair:
-            return "Dual live meter"
-        case .ipFlag:
-            return "Live geolocation"
-        case .library:
-            return "Browse and beam"
-        case .favorites:
-            return "Playlist mode"
-        case .screenPick:
-            return "Sample any pixel"
-        }
+        ""
     }
 
     private func image(for actionID: QuickActionKind) -> NSImage? {
@@ -2976,6 +3005,8 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private let categoryPopUp = NSPopUpButton()
     private let collectionPopUp = NSPopUpButton()
     private let sortPopUp = NSPopUpButton()
+    private let filterDisclosureButton = NSButton(title: "Filters", target: nil, action: nil)
+    private let advancedFilterRow = NSStackView()
     private let displayModeControl = NSSegmentedControl(labels: ["Grid", "List"], trackingMode: .selectOne, target: nil, action: nil)
     private let favoritesOnlyButton = NSButton(title: "Favorites", target: nil, action: nil)
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
@@ -3010,6 +3041,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private var selectedItemID: String?
     private var displayMode: AnimationLibraryDisplayMode = .grid
     private var sortMode: AnimationLibrarySortMode = .spotlight
+    private var advancedFiltersVisible = false
 
     init(
         onSend: @escaping (AnimationLibraryItem) -> Void,
@@ -3165,7 +3197,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         resultsLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholderString = "Search moods, themes, categories, collections…"
+        searchField.placeholderString = "Search titles, moods, themes, and collections…"
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.sendsSearchStringImmediately = true
@@ -3195,6 +3227,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             sortPopUp.lastItem?.representedObject = mode.rawValue
         }
         sortPopUp.selectItem(at: sortMode.rawValue)
+
+        filterDisclosureButton.translatesAutoresizingMaskIntoConstraints = false
+        filterDisclosureButton.bezelStyle = .rounded
+        filterDisclosureButton.image = makeMenuSymbol("line.3.horizontal.decrease.circle", description: "More Filters")
+        filterDisclosureButton.imagePosition = .imageLeading
+        filterDisclosureButton.target = self
+        filterDisclosureButton.action = #selector(toggleAdvancedFilters)
 
         displayModeControl.translatesAutoresizingMaskIntoConstraints = false
         displayModeControl.selectedSegment = AnimationLibraryDisplayMode.grid.rawValue
@@ -3228,7 +3267,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         searchCloudButton.translatesAutoresizingMaskIntoConstraints = false
         searchCloudButton.bezelStyle = .rounded
-        searchCloudButton.title = "Cloud Search"
+        searchCloudButton.title = "Search Cloud"
         searchCloudButton.image = makeMenuSymbol("magnifyingglass.circle", description: "Cloud Search")
         searchCloudButton.imagePosition = .imageLeading
         searchCloudButton.target = self
@@ -3250,7 +3289,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         let headerSpacer = NSView()
         headerSpacer.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerTopRow = NSStackView(views: [titleRow, headerSpacer, resultsLabel, syncCloudButton, searchCloudButton, cloudLoginButton])
+        let accountCluster = NSStackView(views: [syncCloudButton, cloudLoginButton])
+        accountCluster.orientation = .horizontal
+        accountCluster.alignment = .centerY
+        accountCluster.spacing = 10
+        accountCluster.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerTopRow = NSStackView(views: [titleRow, headerSpacer, accountCluster])
         headerTopRow.orientation = .horizontal
         headerTopRow.alignment = .centerY
         headerTopRow.spacing = 12
@@ -3262,19 +3307,26 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         chipRow.spacing = 8
         chipRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let searchRow = NSStackView(views: [searchField, displayModeControl, favoritesOnlyButton, refreshButton])
+        let searchRow = NSStackView(views: [searchField, resultsLabel])
         searchRow.orientation = .horizontal
         searchRow.alignment = .centerY
         searchRow.spacing = 12
         searchRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let filterRow = NSStackView(views: [sourcePopUp, scopePopUp, categoryPopUp, collectionPopUp, sortPopUp])
-        filterRow.orientation = .horizontal
-        filterRow.alignment = .centerY
-        filterRow.spacing = 10
-        filterRow.translatesAutoresizingMaskIntoConstraints = false
+        let utilityRow = NSStackView(views: [sourcePopUp, sortPopUp, displayModeControl, favoritesOnlyButton, filterDisclosureButton, searchCloudButton, refreshButton])
+        utilityRow.orientation = .horizontal
+        utilityRow.alignment = .centerY
+        utilityRow.spacing = 10
+        utilityRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let heroStack = NSStackView(views: [headerTopRow, summaryLabel, chipRow, searchRow, filterRow])
+        advancedFilterRow.setViews([scopePopUp, categoryPopUp, collectionPopUp], in: .leading)
+        advancedFilterRow.orientation = .horizontal
+        advancedFilterRow.alignment = .centerY
+        advancedFilterRow.spacing = 10
+        advancedFilterRow.translatesAutoresizingMaskIntoConstraints = false
+        advancedFilterRow.isHidden = !advancedFiltersVisible
+
+        let heroStack = NSStackView(views: [headerTopRow, summaryLabel, chipRow, searchRow, utilityRow, advancedFilterRow])
         heroStack.orientation = .vertical
         heroStack.alignment = .leading
         heroStack.spacing = 10
@@ -3429,12 +3481,12 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             heroStack.topAnchor.constraint(equalTo: heroCard.topAnchor, constant: 18),
             heroStack.bottomAnchor.constraint(equalTo: heroCard.bottomAnchor, constant: -18),
 
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
             sourcePopUp.widthAnchor.constraint(equalToConstant: 150),
+            sortPopUp.widthAnchor.constraint(equalToConstant: 150),
             scopePopUp.widthAnchor.constraint(equalToConstant: 146),
             categoryPopUp.widthAnchor.constraint(equalToConstant: 148),
             collectionPopUp.widthAnchor.constraint(equalToConstant: 154),
-            sortPopUp.widthAnchor.constraint(equalToConstant: 150),
             displayModeControl.widthAnchor.constraint(equalToConstant: 120),
 
             splitView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
@@ -3467,6 +3519,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         updateDetailPanel()
         updateCollectionLayout()
+        updateAdvancedFilterVisibility()
     }
 
     @objc private func searchChanged() {
@@ -3517,6 +3570,11 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
     @objc private func refreshLibrary() {
         reloadLibrary()
+    }
+
+    @objc private func toggleAdvancedFilters() {
+        advancedFiltersVisible.toggle()
+        updateAdvancedFilterVisibility()
     }
 
     @objc private func syncCloudNow() {
@@ -3749,45 +3807,64 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     }
 
     private func updateCloudLoginButton() {
-        let hasLocalCredentials = DivoomCloudCredentialResolver.appKeychainCredentials() != nil
+        let localEmailHint = DivoomCloudCredentialResolver.passiveLocalCredentialHint()
+        let syncedHint = DivoomCloudCredentialResolver.syncedInternetPasswordHint()
+        let hasLocalCredentials = localEmailHint != nil
         syncCloudButton.isEnabled = hasLocalCredentials
         searchCloudButton.isEnabled = hasLocalCredentials
 
-        if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
+        if let localEmailHint {
             cloudLoginButton.title = "Manage Cloud"
-            cloudLoginButton.toolTip = "Cloud ready as \(credentials.email). Click to manage credentials and sync."
+            cloudLoginButton.toolTip = "Local cloud credentials are saved for \(localEmailHint). Click to manage credentials and sync."
             cloudLoginButton.image = makeMenuSymbol("lock.icloud", description: "Cloud Ready")
             cloudLoginButton.action = #selector(openCloudSettings)
             return
         }
 
-        if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
-            cloudLoginButton.title = "Import from Passwords"
-            cloudLoginButton.toolTip = "A synced Passwords entry exists for \(hint.email) on \(hint.server). Import it into the app Keychain."
-            cloudLoginButton.image = makeMenuSymbol("square.and.arrow.down.on.square", description: "Import Cloud Login")
-            cloudLoginButton.action = #selector(importCloudCredentials)
+        if let syncedHint {
+            cloudLoginButton.title = "Import Cloud…"
+            cloudLoginButton.toolTip = "A Passwords entry for \(syncedHint.email) on \(syncedHint.server) is available to import."
+            cloudLoginButton.image = makeMenuSymbol("square.and.arrow.down.on.square", description: "Import Cloud")
+            cloudLoginButton.action = #selector(openCloudSettings)
             return
         }
 
         cloudLoginButton.title = "Cloud Login…"
-        cloudLoginButton.toolTip = "Add Divoom cloud credentials."
+        cloudLoginButton.toolTip = "Add Divoom cloud credentials or import them from Passwords."
         cloudLoginButton.image = makeMenuSymbol("person.crop.circle.badge.plus", description: "Cloud Login")
         cloudLoginButton.action = #selector(openCloudSettings)
     }
 
     private func updateLibrarySummary(visibleSourceCount: Int) {
-        let cloudSummary: String
-        if let credentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
-            cloudSummary = "Cloud ready as \(credentials.email)."
-        } else if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
-            cloudSummary = "A Passwords entry exists for \(hint.email). Import it once to enable native cloud features."
-        } else {
-            cloudSummary = "Cloud login not set yet."
-        }
-
         let storeChannels = cloudManifest?.storeClassify?.count ?? 0
         let playlists = (cloudManifest?.myPlaylists?.count ?? 0) + (cloudManifest?.someonePlaylists?.count ?? 0)
-        summaryLabel.stringValue = "\(allItems.count) animations across \(visibleSourceCount) visible sources. \(storeChannels) store channels discovered. \(playlists) cloud playlists cached. \(cloudSummary)"
+        var fragments = [
+            "\(allItems.count) animations ready",
+            "\(visibleSourceCount) sources visible",
+        ]
+        if storeChannels > 0 {
+            fragments.append("\(storeChannels) cloud channels")
+        }
+        if playlists > 0 {
+            fragments.append("\(playlists) playlists")
+        }
+        if let localEmailHint = DivoomCloudCredentialResolver.passiveLocalCredentialHint() {
+            fragments.append("local cloud login for \(localEmailHint)")
+        } else if let syncedHint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
+            fragments.append("Passwords import ready for \(syncedHint.email)")
+        } else {
+            fragments.append("add cloud login to unlock store and search")
+        }
+        summaryLabel.stringValue = fragments.joined(separator: " • ")
+    }
+
+    private func updateAdvancedFilterVisibility() {
+        advancedFilterRow.isHidden = !advancedFiltersVisible
+        filterDisclosureButton.title = advancedFiltersVisible ? "Hide Filters" : "More Filters"
+        filterDisclosureButton.toolTip = advancedFiltersVisible
+            ? "Collapse scope, category, and collection filters"
+            : "Expand scope, category, and collection filters"
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     private func sortItems(_ items: [AnimationLibraryItem]) -> [AnimationLibraryItem] {
@@ -4873,11 +4950,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var lastActionDetails: String?
     private var lastActionSuccess = true
     private var lastActionDate: Date?
+    private var cachedFavoriteCount = 0
+    private var cachedCloudItemCount = 0
     private var animationLibraryController: AnimationLibraryWindowController?
     private var settingsController: AppSettingsWindowController?
     private var recentAnimationRelativePaths = UserDefaults.standard.stringArray(forKey: "dev.kirniy.divoom.recent-library-animations") ?? []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppLog.write("applicationDidFinishLaunching begin")
         runner.delegate = self
         bluetoothDiagnostics.statusHandler = { [weak self] summary, details in
             self?.updateConnectionStatus(summary: summary, details: details)
@@ -4887,11 +4967,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         configureStatusItem()
         configureIPC()
         configureCloudSyncBehavior()
-        DispatchQueue.global(qos: .utility).async {
-            let items = AnimationLibraryCatalog.loadItems()
-            _ = AnimationLibraryCatalog.loadFavorites(resolvingAgainst: items)
-        }
-        AppLog.write("applicationDidFinishLaunching")
+        refreshSummaryMetadataAsync()
+        AppLog.write("applicationDidFinishLaunching ready")
         bluetoothDiagnostics.requestAccessAndScan()
     }
 
@@ -4899,6 +4976,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         timer?.invalidate()
         cloudSyncTimer?.invalidate()
         ipcTimer?.invalidate()
+        ipcTimer = nil
     }
 
     func commandDidFinish(spec: CommandSpec, success: Bool, output: String) {
@@ -5041,16 +5119,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     private func configureIPC() {
         ensureIPCDirectories()
-        ipcTimer = Timer(timeInterval: 0.18, repeats: true) { [weak self] _ in
+        cleanupStaleIPCArtifacts()
+        ipcTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.18, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.drainIPCQueue()
             }
         }
-        ipcTimer?.tolerance = 0.12
-        if let ipcTimer {
-            RunLoop.main.add(ipcTimer, forMode: .default)
-            RunLoop.main.add(ipcTimer, forMode: .common)
-        }
+        timer.tolerance = 0.12
+        RunLoop.main.add(timer, forMode: .default)
+        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        ipcTimer = timer
+        AppLog.write("configureIPC root=\(ipcRootURL.path)")
     }
 
     private func makeItem(_ title: String, action: Selector, keyEquivalent: String = "", symbolName: String? = nil) -> NSMenuItem {
@@ -5190,20 +5271,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func currentCloudCredentialUIState() -> DivoomCloudCredentialUIState {
-        if let localCredentials = DivoomCloudCredentialResolver.appKeychainCredentials() {
+        if let localEmailHint = DivoomCloudCredentialResolver.passiveLocalCredentialHint() {
             return DivoomCloudCredentialUIState(
-                email: localCredentials.email,
+                email: localEmailHint,
                 passwordPlaceholder: "Password saved in this app's Keychain",
-                status: "Using credentials saved in Ditoo Pro Mac Keychain.",
-                canImportSyncedCredentials: DivoomCloudCredentialResolver.syncedInternetPasswordHint() != nil
+                status: "Local Divoom cloud credentials are saved in this app Keychain.",
+                canImportSyncedCredentials: true
             )
         }
 
-        if let hint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
+        if let syncedHint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
             return DivoomCloudCredentialUIState(
-                email: hint.email,
+                email: syncedHint.email,
                 passwordPlaceholder: "Import from Passwords or enter manually",
-                status: "A synced Passwords entry exists for \(hint.server). Import it once into the app Keychain so cloud features stop depending on Passwords prompts.",
+                status: "A synced Passwords entry is available for \(syncedHint.email) on \(syncedHint.server). Import it once to store it in this app Keychain.",
                 canImportSyncedCredentials: true
             )
         }
@@ -5225,7 +5306,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     private func currentCloudManifestSummary() -> String {
         guard let manifest = loadCurrentCloudManifest() else {
-            return "No synced Divoom cloud manifest yet. Use Sync Now after saving credentials in Settings, or reuse the synced Passwords entry for divoom-gz.com."
+            return "No synced Divoom cloud manifest yet. Use Sync Now after saving credentials in Settings or importing them from Passwords."
         }
 
         let generatedAt = ISO8601DateFormatter().date(from: manifest.generatedAt)
@@ -5250,6 +5331,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         let emailSaved = DivoomCloudKeychain.write(trimmedEmail, account: divoomCloudEmailAccount)
         let passwordSaved = DivoomCloudKeychain.write(password, account: divoomCloudPasswordAccount)
         if emailSaved && passwordSaved {
+            DivoomCloudCredentialResolver.setPassiveLocalCredentialHint(trimmedEmail)
             DivoomCloudCredentialResolver.resetPassiveCaches()
         }
         return emailSaved && passwordSaved
@@ -5306,12 +5388,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func clearCloudCredentials() {
         DivoomCloudKeychain.delete(account: divoomCloudEmailAccount)
         DivoomCloudKeychain.delete(account: divoomCloudPasswordAccount)
+        DivoomCloudCredentialResolver.setPassiveLocalCredentialHint(nil)
         DivoomCloudCredentialResolver.resetPassiveCaches()
         settingsController?.refresh()
         updateActionStatus(
             summary: "Cleared saved cloud credentials",
             success: true,
-            details: "The app Keychain override was removed. The app can still fall back to a synced Passwords entry if one exists."
+            details: "The app-local cloud login was removed. You can still import a synced Passwords entry again later."
         )
     }
 
@@ -5359,6 +5442,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func setCloudLibraryEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: cloudLibraryEnabledDefaultsKey)
         animationLibraryController?.reloadFromExternalSync()
+        refreshSummaryMetadataAsync()
         settingsController?.refresh()
         updateActionStatus(
             summary: enabled ? "Cloud library source enabled" : "Cloud library source disabled",
@@ -5764,16 +5848,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         connectionSummary = summary
         connectionDetails = details
         if lastActionDate == nil {
-            if summary.localizedCaseInsensitiveContains("denied")
-                || summary.localizedCaseInsensitiveContains("not granted")
-                || summary.localizedCaseInsensitiveContains("failed")
-            {
+            let facts = currentConnectionFacts()
+            if facts.authorizationDenied || facts.audioOnly {
                 statusIconState = .error
-            } else if summary.localizedCaseInsensitiveContains("ready")
-                || summary.localizedCaseInsensitiveContains("finished")
-                || summary.localizedCaseInsensitiveContains("powered on")
-            {
+            } else if facts.lightReady || facts.lightConnected {
                 statusIconState = .ok
+            } else {
+                statusIconState = .idle
             }
         }
         refreshSummaryCard()
@@ -5792,67 +5873,131 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func currentSummaryPresentation() -> (subtitle: String, headline: String, rotatingLines: [String], chips: [SummaryChipSpec]) {
-        let favoritesCount = AnimationLibraryCatalog.loadFavorites().count
-        let cloudItemCount = loadCurrentCloudManifest()?.itemCount ?? 0
         return (
             subtitle: currentSummarySubtitle(),
             headline: currentSummaryHeadline(),
-            rotatingLines: currentSummaryRotatingLines(favoritesCount: favoritesCount, cloudItemCount: cloudItemCount),
-            chips: currentSummaryChips(favoritesCount: favoritesCount, cloudItemCount: cloudItemCount)
+            rotatingLines: currentSummaryRotatingLines(favoritesCount: cachedFavoriteCount, cloudItemCount: cachedCloudItemCount),
+            chips: currentSummaryChips(favoritesCount: cachedFavoriteCount, cloudItemCount: cachedCloudItemCount)
         )
     }
 
+    private func currentConnectionFacts() -> ConnectionFacts {
+        let summary = connectionSummary.lowercased()
+        let details = (connectionDetails ?? "").lowercased()
+        let combined = "\(summary)\n\(details)"
+
+        var facts = ConnectionFacts()
+        facts.authorizationPending = summary.contains("requested bluetooth access") || details.contains("bluetooth auth=notdetermined")
+        facts.authorizationDenied = summary.contains("not granted")
+            || summary.contains("unauthorized")
+            || summary.contains("denied")
+            || details.contains("bluetooth auth=denied")
+            || details.contains("state=unauthorized")
+        facts.lightReady = combined.contains("ble light write characteristic ready")
+        facts.lightConnected = facts.lightReady || combined.contains("ble light connected")
+        facts.lightConnecting = combined.contains("ble light connecting") || combined.contains("ble light reconnecting")
+        facts.lightVisible = facts.lightConnected || details.contains("le scan: ditoopro-light")
+        facts.lightIdle = combined.contains("ble light idle")
+        facts.scanInProgress = summary.contains("ble scan progress") || summary.contains("scanning")
+        facts.scanFinished = summary.contains("ble scan finished")
+        facts.classicAudioVisible = combined.contains("ditoopro-audio@")
+        return facts
+    }
+
+    private func refreshSummaryMetadataAsync() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let items = AnimationLibraryCatalog.loadItems()
+            let favoritesCount = AnimationLibraryCatalog.loadFavorites(resolvingAgainst: items).count
+            let cloudItemCount = Self.cloudManifestItemCount()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.cachedFavoriteCount = favoritesCount
+                self.cachedCloudItemCount = cloudItemCount
+                self.refreshSummaryCard()
+            }
+        }
+    }
+
+    nonisolated private static func cloudManifestItemCount() -> Int {
+        guard let data = try? Data(contentsOf: cloudManifestURL),
+              let manifest = try? JSONDecoder().decode(DivoomCloudManifest.self, from: data)
+        else {
+            return 0
+        }
+        return manifest.itemCount
+    }
+
     private func currentSummarySubtitle() -> String {
-        let lower = connectionSummary.lowercased()
-        if lower.contains("scan finished") || lower.contains("write characteristic ready") || lower.contains("ready") {
-            return "The Ditoo is connected and ready."
+        let facts = currentConnectionFacts()
+        if facts.authorizationPending {
+            return "Bluetooth access pending"
         }
-        if lower.contains("requested bluetooth access") {
-            return "Bluetooth permission is still waiting on macOS."
+        if facts.authorizationDenied {
+            return "Bluetooth access required"
         }
-        if lower.contains("not granted") || lower.contains("unauthorized") {
-            return "Bluetooth permission is required before anything can beam."
+        if facts.lightReady {
+            return "Light link online"
         }
-        if lower.contains("scan progress") || lower.contains("scanning") {
-            return "Looking for the paired Ditoo link."
+        if facts.lightConnecting {
+            return "Connecting to light link"
         }
-        if lower.contains("connecting") {
-            return "Connecting to the paired Ditoo."
+        if facts.audioOnly {
+            return "Audio side only"
+        }
+        if facts.scanInProgress {
+            return "Scanning for light link"
+        }
+        if facts.scanFinished || facts.lightIdle {
+            return "Light link missing"
         }
         if connectionSummary.isEmpty {
-            return "Ready for the next beam."
+            return "Waiting for Ditoo"
         }
         return connectionSummary
             .replacingOccurrences(of: "BLE ", with: "")
-            .replacingOccurrences(of: "finished", with: "ready")
+            .replacingOccurrences(of: "Ditoo ", with: "")
     }
 
     private func currentSummaryHeadline() -> String {
-        let lower = connectionSummary.lowercased()
-        if lower.contains("requested bluetooth access") || lower.contains("not granted") || lower.contains("unauthorized") {
-            return "Allow Bluetooth and the Ditoo is back online."
+        let facts = currentConnectionFacts()
+        if facts.authorizationPending || facts.authorizationDenied {
+            return "Allow Bluetooth to unlock beams."
         }
-        if lower.contains("scan progress") || lower.contains("scanning") {
-            return "Searching for the Ditoo."
+        if facts.audioOnly {
+            return "DitooPro-Light is not visible right now."
         }
-        if lower.contains("connecting") {
-            return "Locking onto the Ditoo."
+        if facts.lightConnecting {
+            return "Trying to reach the hidden light endpoint."
+        }
+        if facts.scanInProgress {
+            return "Searching for the hidden light link."
+        }
+        if (facts.scanFinished || facts.lightIdle) && !facts.lightReady {
+            return "No light-side display endpoint found."
         }
         if autoRefreshMode != .off {
-            return "\(autoRefreshMode.title) is live on the Ditoo."
+            return "\(autoRefreshMode.title) is live."
         }
         if lastActionDate != nil {
             let cleaned = cleanedActionSummary()
             if lastActionSuccess {
                 return cleaned.isEmpty ? "The last beam landed cleanly." : cleaned
             }
-            return cleaned.isEmpty ? "Something needs attention." : "Needs attention: \(cleaned)"
+            return cleaned.isEmpty ? "Something needs attention." : cleaned
         }
-        return "Ready to beam colors, feeds, and animations."
+        return "Ready for colors, feeds, and animations."
     }
 
     private func currentSummaryRotatingLines(favoritesCount: Int, cloudItemCount: Int) -> [String] {
         var lines: [String] = []
+        let facts = currentConnectionFacts()
+
+        if facts.audioOnly {
+            lines.append("The speaker side is present, but the 16x16 display link is not.")
+            lines.append("Colors and animations beam through DitooPro-Light, not the audio profile.")
+        } else if (facts.scanFinished || facts.lightIdle) && !facts.lightReady {
+            lines.append("The last BLE scan did not surface DitooPro-Light.")
+        }
 
         if autoRefreshMode != .off {
             if let lastActionDate {
@@ -5863,56 +6008,60 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 lines.append("Favorites rotate \(currentFavoritesPlaybackOption().title.lowercased()) per animation.")
             }
         } else if let lastActionDate {
-            lines.append(lastActionSuccess ? "Last beam finished at \(timestampFormatter.string(from: lastActionDate))." : "Open Settings > Logs for the full failure trace.")
+            lines.append(lastActionSuccess ? "Last beam landed at \(timestampFormatter.string(from: lastActionDate))." : "Open Settings > Logs for the full failure trace.")
         }
 
         if favoritesCount > 0 {
             lines.append("\(favoritesCount) favorites are ready for quick sends and rotation.")
         }
         if cloudItemCount > 0 {
-            lines.append("\(cloudItemCount) cloud animations are cached in the native library.")
+            lines.append("\(cloudItemCount) cloud animations are cached locally.")
         } else if isCloudLibraryEnabled() {
             lines.append("Sync Cloud to pull fresh Divoom animations into the library.")
         }
 
-        lines.append("Open Library for curated picks, cloud browsing, and favorites.")
+        lines.append("Library holds curated picks, favorites, and cloud browsing.")
         lines.append("Studio can beam multi-color motion palettes, not just flat fills.")
 
         var uniqueLines: [String] = []
         for line in lines where !uniqueLines.contains(line) {
             uniqueLines.append(line)
         }
-        return Array(uniqueLines.prefix(5))
+        return Array(uniqueLines.prefix(4))
     }
 
     private func currentSummaryChips(favoritesCount: Int, cloudItemCount: Int) -> [SummaryChipSpec] {
         [
             currentLinkChip(),
             currentLiveModeChip(),
-            SummaryChipSpec(
-                text: favoritesCount == 0 ? "No Favorites" : "\(favoritesCount) Favorites",
-                symbolName: "star.fill",
-                accentColor: favoritesCount == 0 ? nil : .systemYellow
-            ),
-            currentCloudChip(cloudItemCount: cloudItemCount),
+            currentLibraryChip(favoritesCount: favoritesCount, cloudItemCount: cloudItemCount),
         ]
     }
 
     private func currentLinkChip() -> SummaryChipSpec {
-        let lower = connectionSummary.lowercased()
-        if lower.contains("requested bluetooth access") {
+        let facts = currentConnectionFacts()
+        if facts.authorizationPending {
             return SummaryChipSpec(text: "Waiting Access", symbolName: "dot.radiowaves.left.and.right", accentColor: .systemOrange)
         }
-        if lower.contains("not granted") || lower.contains("unauthorized") {
+        if facts.authorizationDenied {
             return SummaryChipSpec(text: "Bluetooth Needed", symbolName: "bolt.horizontal.circle", accentColor: .systemOrange)
         }
-        if lower.contains("scan progress") || lower.contains("scanning") {
+        if facts.lightReady {
+            return SummaryChipSpec(text: "Light Ready", symbolName: "dot.radiowaves.left.and.right", accentColor: .systemMint)
+        }
+        if facts.lightConnecting {
+            return SummaryChipSpec(text: "Light Connecting", symbolName: "link")
+        }
+        if facts.audioOnly {
+            return SummaryChipSpec(text: "Audio Only", symbolName: "speaker.wave.2", accentColor: .systemOrange)
+        }
+        if facts.scanInProgress {
             return SummaryChipSpec(text: "Scanning", symbolName: "magnifyingglass")
         }
-        if lower.contains("connecting") {
-            return SummaryChipSpec(text: "Connecting", symbolName: "link")
+        if facts.scanFinished || facts.lightIdle {
+            return SummaryChipSpec(text: "No Light Link", symbolName: "bolt.horizontal.circle", accentColor: .systemOrange)
         }
-        return SummaryChipSpec(text: "Device Ready", symbolName: "dot.radiowaves.left.and.right", accentColor: statusIconState == .error ? .systemOrange : .systemMint)
+        return SummaryChipSpec(text: "Link Unknown", symbolName: "questionmark.circle")
     }
 
     private func currentLiveModeChip() -> SummaryChipSpec {
@@ -5927,17 +6076,30 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func currentCloudChip(cloudItemCount: Int) -> SummaryChipSpec {
-        if DivoomCloudCredentialResolver.appKeychainCredentials() != nil {
-            let text = cloudItemCount > 0 ? "\(cloudItemCount) Cloud" : "Cloud Ready"
-            return SummaryChipSpec(text: text, symbolName: "lock.icloud", accentColor: .systemTeal)
-        }
-        if DivoomCloudCredentialResolver.syncedInternetPasswordHint() != nil {
-            return SummaryChipSpec(text: "Import Cloud", symbolName: "square.and.arrow.down.on.square", accentColor: .systemBlue)
-        }
         if isCloudLibraryEnabled() {
-            return SummaryChipSpec(text: "Cloud Login", symbolName: "icloud")
+            let text = cloudItemCount > 0 ? "\(cloudItemCount) Cloud" : "Cloud Library"
+            return SummaryChipSpec(text: text, symbolName: "icloud", accentColor: cloudItemCount > 0 ? .systemTeal : nil)
         }
         return SummaryChipSpec(text: "Cloud Hidden", symbolName: "icloud.slash")
+    }
+
+    private func currentLibraryChip(favoritesCount: Int, cloudItemCount: Int) -> SummaryChipSpec {
+        let text: String
+        let accent: NSColor?
+        if favoritesCount > 0 && cloudItemCount > 0 {
+            text = "\(favoritesCount) Fav • \(cloudItemCount) Cloud"
+            accent = .systemPink
+        } else if favoritesCount > 0 {
+            text = "\(favoritesCount) Favorites"
+            accent = .systemYellow
+        } else if cloudItemCount > 0 {
+            text = "\(cloudItemCount) Cloud"
+            accent = .systemTeal
+        } else {
+            text = "Library Ready"
+            accent = nil
+        }
+        return SummaryChipSpec(text: text, symbolName: "photo.stack", accentColor: accent)
     }
 
     private func cleanedActionSummary() -> String {
@@ -6056,6 +6218,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
 
         ipcBusy = true
+        AppLog.write("IPC dequeue file=\(requestURL.lastPathComponent)")
         handleIPCRequest(at: requestURL)
     }
 
@@ -6067,6 +6230,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 try FileManager.default.removeItem(at: processingURL)
             }
             try FileManager.default.moveItem(at: requestURL, to: processingURL)
+            AppLog.write("IPC moved file=\(processingURL.lastPathComponent)")
 
             let data = try Data(contentsOf: processingURL)
             let request = try JSONDecoder().decode(IPCRequestPayload.self, from: data)
@@ -6091,6 +6255,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
             performIPCInvocation(invocation) { [weak self] result in
                 guard let self else { return }
+                AppLog.write("IPC completion id=\(request.id) success=\(result.success)")
                 self.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
                 self.writeIPCResult(
                     IPCResultPayload(
@@ -6272,6 +6437,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         do {
             let data = try JSONEncoder().encode(result)
             try data.write(to: resultURL, options: .atomic)
+            AppLog.write("writeIPCResult path=\(resultURL.lastPathComponent) success=\(result.success)")
         } catch {
             AppLog.write("writeIPCResult failed \(error.localizedDescription)")
         }
@@ -6963,6 +7129,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     }
                     if success && reloadLibrary {
                         self.animationLibraryController?.reloadFromExternalSync()
+                        self.refreshSummaryMetadataAsync()
                     }
                     completion?(success, details)
                 }
@@ -7246,6 +7413,28 @@ private struct IPCResultPayload: Codable {
 private func ensureIPCDirectories() {
     try? FileManager.default.createDirectory(at: ipcRequestsURL, withIntermediateDirectories: true)
     try? FileManager.default.createDirectory(at: ipcResultsURL, withIntermediateDirectories: true)
+}
+
+private func cleanupStaleIPCArtifacts() {
+    let fileManager = FileManager.default
+    let now = Date()
+    let staleAge: TimeInterval = 24 * 60 * 60
+
+    for directoryURL in [ipcRequestsURL, ipcResultsURL] {
+        let entries = (try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for entry in entries {
+            let modifiedAt = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            guard now.timeIntervalSince(modifiedAt) > staleAge else {
+                continue
+            }
+            try? fileManager.removeItem(at: entry)
+        }
+    }
 }
 
 private func parseRGBHex(_ value: String) -> (UInt8, UInt8, UInt8)? {
