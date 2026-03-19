@@ -1,7 +1,10 @@
 import AVFoundation
 import AppKit
+import CryptoKit
 import Darwin
 import Foundation
+import ImageIO
+import QuartzCore
 
 enum AppLog {
     private static let logURL = URL(fileURLWithPath: "/Users/kirniy/Library/Logs/DivoomMenuBar.log")
@@ -31,6 +34,8 @@ private enum AutoRefreshMode {
     case off
     case codex
     case claude
+    case pair
+    case ipFlag
 
     var title: String {
         switch self {
@@ -40,13 +45,59 @@ private enum AutoRefreshMode {
             return "Codex"
         case .claude:
             return "Claude"
+        case .pair:
+            return "Codex + Claude"
+        case .ipFlag:
+            return "IP Flag"
         }
+    }
+
+    var feedIdentifier: String? {
+        switch self {
+        case .off:
+            return nil
+        case .codex:
+            return "codex"
+        case .claude:
+            return "claude"
+        case .pair:
+            return "pair"
+        case .ipFlag:
+            return "ip-flag"
+        }
+    }
+
+    var quickActionKind: QuickActionKind? {
+        switch self {
+        case .off:
+            return nil
+        case .codex:
+            return .codex
+        case .claude:
+            return .claude
+        case .pair:
+            return .pair
+        case .ipFlag:
+            return .ipFlag
+        }
+    }
+}
+
+private enum CodexBarMetricPreference: String, CaseIterable {
+    case primary
+    case secondary
+    case tertiary
+
+    var title: String {
+        rawValue.capitalized
     }
 }
 
 private struct CommandSpec {
     let label: String
     let arguments: [String]
+    let successSound: FeedbackSoundProfile?
+    let playErrorSound: Bool
 }
 
 private enum FeedbackSoundProfile: String {
@@ -85,6 +136,15 @@ private enum FeedbackSoundProfile: String {
             return 0.09
         }
     }
+}
+
+private enum QuickActionKind: String {
+    case codex
+    case claude
+    case pair
+    case ipFlag
+    case library
+    case screenPick
 }
 
 private enum StatusIconState {
@@ -155,6 +215,57 @@ private func makeStatusItemIcon(state: StatusIconState) -> NSImage {
     return image
 }
 
+private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSImage {
+    let image = NSImage(size: NSSize(width: size, height: size))
+    image.lockFocus()
+
+    switch provider {
+    case "codex":
+        let petalColor = NSColor.systemTeal
+        let centers = [
+            NSPoint(x: size * 0.50, y: size * 0.20),
+            NSPoint(x: size * 0.74, y: size * 0.34),
+            NSPoint(x: size * 0.74, y: size * 0.66),
+            NSPoint(x: size * 0.50, y: size * 0.80),
+            NSPoint(x: size * 0.26, y: size * 0.66),
+            NSPoint(x: size * 0.26, y: size * 0.34),
+        ]
+        for center in centers {
+            let rect = NSRect(x: center.x - size * 0.11, y: center.y - size * 0.11, width: size * 0.22, height: size * 0.22)
+            let path = NSBezierPath(roundedRect: rect, xRadius: size * 0.06, yRadius: size * 0.06)
+            petalColor.setFill()
+            path.fill()
+        }
+        NSColor.windowBackgroundColor.setFill()
+        NSBezierPath(ovalIn: NSRect(x: size * 0.38, y: size * 0.38, width: size * 0.24, height: size * 0.24)).fill()
+    case "claude":
+        let base = NSColor.systemOrange
+        let points = [
+            NSPoint(x: size * 0.50, y: size * 0.14),
+            NSPoint(x: size * 0.68, y: size * 0.32),
+            NSPoint(x: size * 0.86, y: size * 0.50),
+            NSPoint(x: size * 0.68, y: size * 0.68),
+            NSPoint(x: size * 0.50, y: size * 0.86),
+            NSPoint(x: size * 0.32, y: size * 0.68),
+            NSPoint(x: size * 0.14, y: size * 0.50),
+            NSPoint(x: size * 0.32, y: size * 0.32),
+        ]
+        for point in points {
+            let rect = NSRect(x: point.x - size * 0.08, y: point.y - size * 0.08, width: size * 0.16, height: size * 0.16)
+            base.setFill()
+            NSBezierPath(ovalIn: rect).fill()
+        }
+        NSColor.windowBackgroundColor.setFill()
+        NSBezierPath(ovalIn: NSRect(x: size * 0.40, y: size * 0.40, width: size * 0.20, height: size * 0.20)).fill()
+    default:
+        let symbol = NSImage(systemSymbolName: "sparkles", accessibilityDescription: provider)
+        symbol?.draw(in: NSRect(origin: .zero, size: NSSize(width: size, height: size)))
+    }
+
+    image.unlockFocus()
+    return image
+}
+
 private final class MenuSummaryView: NSView {
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "Ditoo Pro 16x16 RGB")
@@ -163,7 +274,7 @@ private final class MenuSummaryView: NSView {
     private let refreshLabel = NSTextField(labelWithString: "Automation: Off")
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 320, height: 106)
+        NSSize(width: 356, height: 106)
     }
 
     override init(frame frameRect: NSRect) {
@@ -236,7 +347,7 @@ private final class MenuSummaryView: NSView {
         addSubview(contentStack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 320),
+            widthAnchor.constraint(equalToConstant: 356),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
@@ -444,16 +555,1624 @@ private final class ColorStudioView: NSView {
     }
 }
 
+private final class QuickActionTileView: NSControl {
+    var onActivate: (() -> Void)?
+    var isActive = false {
+        didSet {
+            updateAppearance()
+        }
+    }
+    var isLoading = false {
+        didSet {
+            updateAppearance()
+        }
+    }
+
+    private let iconView = NSImageView()
+    private let spinner = NSProgressIndicator()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private var trackingAreaRef: NSTrackingArea?
+    private var isHovering = false {
+        didSet {
+            updateAppearance()
+        }
+    }
+    private var isPressing = false {
+        didSet {
+            updateAppearance()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 96, height: 62)
+    }
+
+    init(title: String, image: NSImage?, tooltip: String) {
+        super.init(frame: .zero)
+        titleLabel.stringValue = title
+        iconView.image = image
+        self.toolTip = tooltip
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaRef {
+            removeTrackingArea(trackingAreaRef)
+        }
+        let tracking = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(tracking)
+        trackingAreaRef = tracking
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPressing = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let shouldActivate = bounds.contains(point)
+        isPressing = false
+        if shouldActivate {
+            onActivate?()
+        }
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 18
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 1
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        layer?.shadowOpacity = 1
+        layer?.shadowRadius = 8
+        layer?.shadowOffset = NSSize(width: 0, height: -2)
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.imageScaling = .scaleProportionallyDown
+
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.maximumNumberOfLines = 2
+
+        let iconStack = NSStackView(views: [iconView, spinner])
+        iconStack.orientation = .vertical
+        iconStack.alignment = .centerX
+        iconStack.spacing = 0
+
+        let stack = NSStackView(views: [iconStack, titleLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+        ])
+
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        let baseBackground = NSColor.white.withAlphaComponent(isHovering ? 0.24 : 0.18)
+        let activeBackground = NSColor.controlAccentColor.withAlphaComponent(isHovering ? 0.23 : 0.18)
+        layer?.backgroundColor = (isActive ? activeBackground : baseBackground).cgColor
+        layer?.borderColor = (isActive
+            ? NSColor.controlAccentColor.withAlphaComponent(0.58)
+            : NSColor.separatorColor.withAlphaComponent(0.22)).cgColor
+        alphaValue = isPressing ? 0.88 : 1.0
+        iconView.isHidden = isLoading
+        if isLoading {
+            spinner.startAnimation(nil)
+        } else {
+            spinner.stopAnimation(nil)
+        }
+    }
+}
+
+private final class QuickActionHubView: NSView {
+    var onCodex: (() -> Void)?
+    var onClaude: (() -> Void)?
+    var onPair: (() -> Void)?
+    var onIPFlag: (() -> Void)?
+    var onLibrary: (() -> Void)?
+    var onScreenPick: (() -> Void)?
+
+    var activeAction: QuickActionKind? {
+        didSet {
+            updateTileAppearance()
+        }
+    }
+    var loadingAction: QuickActionKind? {
+        didSet {
+            updateTileAppearance()
+        }
+    }
+
+    private var tiles: [QuickActionKind: QuickActionTileView] = [:]
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 356, height: 164)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 18
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.82).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.24).cgColor
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.14).cgColor
+        layer?.shadowOpacity = 1
+        layer?.shadowRadius = 14
+        layer?.shadowOffset = NSSize(width: 0, height: -4)
+
+        let topRow = NSStackView(views: [
+            makeTile(title: "Codex Live", actionID: .codex),
+            makeTile(title: "Claude Live", actionID: .claude),
+            makeTile(title: "Split Live", actionID: .pair),
+        ])
+        topRow.orientation = .horizontal
+        topRow.spacing = 12
+        topRow.distribution = .fillEqually
+        topRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let bottomRow = NSStackView(views: [
+            makeTile(title: "IP Flag", actionID: .ipFlag),
+            makeTile(title: "Open Library", actionID: .library),
+            makeTile(title: "Pick Color", actionID: .screenPick),
+        ])
+        bottomRow.orientation = .horizontal
+        bottomRow.spacing = 12
+        bottomRow.distribution = .fillEqually
+        bottomRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [topRow, bottomRow])
+        stack.orientation = .vertical
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 356),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+        ])
+
+        updateTileAppearance()
+    }
+
+    private func makeTile(title: String, actionID: QuickActionKind) -> QuickActionTileView {
+        let tile = QuickActionTileView(title: title, image: image(for: actionID), tooltip: tooltip(for: actionID))
+        tile.translatesAutoresizingMaskIntoConstraints = false
+        tile.onActivate = { [weak self] in
+            self?.handleAction(actionID)
+        }
+        tiles[actionID] = tile
+        return tile
+    }
+
+    private func image(for actionID: QuickActionKind) -> NSImage? {
+        switch actionID {
+        case .codex:
+            return makeProviderLogoImage(provider: "codex", size: 18)
+        case .claude:
+            return makeProviderLogoImage(provider: "claude", size: 18)
+        case .pair:
+            return makeMenuSymbol("square.split.2x1", description: "Split Live")
+        case .ipFlag:
+            return makeMenuSymbol("flag.2.crossed", description: "IP Flag")
+        case .library:
+            return makeMenuSymbol("photo.stack", description: "Open Library")
+        case .screenPick:
+            return makeMenuSymbol("eyedropper.halffull", description: "Pick Color")
+        }
+    }
+
+    private func tooltip(for actionID: QuickActionKind) -> String {
+        switch actionID {
+        case .codex:
+            return "Start or stop the live Codex feed."
+        case .claude:
+            return "Start or stop the live Claude feed."
+        case .pair:
+            return "Start or stop the live Codex + Claude split view."
+        case .ipFlag:
+            return "Start or stop the live public IP country flag."
+        case .library:
+            return "Open the native animation library."
+        case .screenPick:
+            return "Sample any color from the screen and beam it."
+        }
+    }
+
+    private func updateTileAppearance() {
+        for (kind, tile) in tiles {
+            tile.isActive = kind == activeAction
+            tile.isLoading = kind == loadingAction
+        }
+    }
+
+    private func handleAction(_ actionID: QuickActionKind) {
+        switch actionID {
+        case .codex:
+            onCodex?()
+        case .claude:
+            onClaude?()
+        case .pair:
+            onPair?()
+        case .ipFlag:
+            onIPFlag?()
+        case .library:
+            onLibrary?()
+        case .screenPick:
+            onScreenPick?()
+        }
+    }
+}
+
+private struct AnimationLibraryItem: Hashable {
+    let id: String
+    let title: String
+    let category: String
+    let collection: String
+    let relativePath: String
+    let fileURL: URL
+    let searchText: String
+    let duplicateCount: Int
+}
+
+private enum AnimationLibraryCatalog {
+    static let rootURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
+    static let favoritesDefaultsKey = "dev.kirniy.divoom.animation-library-favorites"
+
+    static func loadItems() -> [AnimationLibraryItem] {
+        guard FileManager.default.fileExists(atPath: rootURL.path) else {
+            return []
+        }
+
+        var groupedItems: [String: [AnimationLibraryItem]] = [:]
+        let keys: Set<URLResourceKey> = [.isRegularFileKey]
+        let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        )
+
+        while let fileURL = enumerator?.nextObject() as? URL {
+            guard fileURL.pathExtension.lowercased() == "gif" else {
+                continue
+            }
+            guard let values = try? fileURL.resourceValues(forKeys: keys), values.isRegularFile == true else {
+                continue
+            }
+
+            let relativePath = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
+            let parts = relativePath.split(separator: "/").map(String.init)
+            let category = parts.first ?? "misc"
+            let collection = parts.count > 2 ? parts[1] : (parts.count == 2 ? "root" : "root")
+            let title = prettifyAnimationTitle(fileURL.deletingPathExtension().lastPathComponent)
+            let id = relativePath
+            let searchText = [title, category, collection, relativePath].joined(separator: " ").lowercased()
+            guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else {
+                continue
+            }
+            let digest = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
+
+            let item =
+                AnimationLibraryItem(
+                    id: id,
+                    title: title,
+                    category: category,
+                    collection: collection,
+                    relativePath: relativePath,
+                    fileURL: fileURL,
+                    searchText: searchText,
+                    duplicateCount: 1
+                )
+            groupedItems[digest, default: []].append(item)
+        }
+
+        let items = groupedItems.values.compactMap { group -> AnimationLibraryItem? in
+            guard let canonical = group.max(by: { preferenceScore(for: $0) < preferenceScore(for: $1) }) else {
+                return nil
+            }
+            return AnimationLibraryItem(
+                id: canonical.id,
+                title: canonical.title,
+                category: canonical.category,
+                collection: canonical.collection,
+                relativePath: canonical.relativePath,
+                fileURL: canonical.fileURL,
+                searchText: canonical.searchText,
+                duplicateCount: group.count
+            )
+        }
+
+        return items.sorted { lhs, rhs in
+            if lhs.category == rhs.category {
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+            return lhs.category.localizedCaseInsensitiveCompare(rhs.category) == .orderedAscending
+        }
+    }
+
+    static func loadFavorites() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: favoritesDefaultsKey) ?? [])
+    }
+
+    static func saveFavorites(_ favorites: Set<String>) {
+        UserDefaults.standard.set(Array(favorites).sorted(), forKey: favoritesDefaultsKey)
+    }
+
+    static func displayTitle(for value: String) -> String {
+        let words = value.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+        return words.split(separator: " ").map { part in
+            part.prefix(1).uppercased() + part.dropFirst().lowercased()
+        }.joined(separator: " ")
+    }
+
+    private static func prettifyAnimationTitle(_ value: String) -> String {
+        let pattern = #"[._-]\d{4,}$"#
+        let trimmed = value.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        let cleaned = trimmed.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+        let squashed = cleaned.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        return squashed.isEmpty ? value : squashed
+    }
+
+    private static func preferenceScore(for item: AnimationLibraryItem) -> Int {
+        var score = 0
+        if !item.relativePath.contains("/textfiles/") {
+            score += 20
+        }
+        if item.collection == "root" {
+            score += 8
+        }
+        if item.category == "pixel-displays" || item.category == "divoom" {
+            score += 4
+        }
+        score -= item.relativePath.count
+        return score
+    }
+}
+
+private func animationCategorySymbolName(_ category: String) -> String {
+    switch category {
+    case "90s-web":
+        return "globe"
+    case "retro-os":
+        return "desktopcomputer"
+    case "weather":
+        return "cloud.sun"
+    case "space":
+        return "sparkles"
+    case "cute":
+        return "face.smiling"
+    case "animals":
+        return "pawprint"
+    case "gaming":
+        return "gamecontroller"
+    case "pixel-displays", "divoom":
+        return "square.grid.3x3.fill"
+    case "emoji":
+        return "face.smiling.inverse"
+    case "status":
+        return "waveform.path.ecg"
+    default:
+        return "sparkles"
+    }
+}
+
+private final class AnimatedPreviewSequence: NSObject {
+    let frames: [CGImage]
+    let keyTimes: [NSNumber]
+    let duration: CFTimeInterval
+
+    init?(fileURL: URL) {
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
+            return nil
+        }
+
+        let count = CGImageSourceGetCount(source)
+        guard count > 0 else {
+            return nil
+        }
+
+        var collectedFrames: [CGImage] = []
+        var frameDurations: [Double] = []
+
+        for index in 0..<count {
+            guard let frame = CGImageSourceCreateImageAtIndex(source, index, nil) else {
+                continue
+            }
+            collectedFrames.append(frame)
+            frameDurations.append(Self.frameDuration(for: source, index: index))
+        }
+
+        guard !collectedFrames.isEmpty else {
+            return nil
+        }
+
+        let totalDuration = max(frameDurations.reduce(0, +), 0.12)
+        var cumulative = 0.0
+        let times = frameDurations.map { frameDuration -> NSNumber in
+            defer { cumulative += frameDuration }
+            return NSNumber(value: cumulative / totalDuration)
+        }
+
+        frames = collectedFrames
+        keyTimes = times
+        duration = totalDuration
+    }
+
+    private static func frameDuration(for source: CGImageSource, index: Int) -> Double {
+        guard
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+            let gifProperties = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+        else {
+            return 0.12
+        }
+
+        let unclamped = gifProperties[kCGImagePropertyGIFUnclampedDelayTime] as? Double
+        let clamped = gifProperties[kCGImagePropertyGIFDelayTime] as? Double
+        return max(unclamped ?? clamped ?? 0.12, 0.06)
+    }
+}
+
+private enum AnimationPreviewCache {
+    static let sequences = NSCache<NSString, AnimatedPreviewSequence>()
+
+    static func sequence(for fileURL: URL) -> AnimatedPreviewSequence? {
+        let key = fileURL.path as NSString
+        if let cached = sequences.object(forKey: key) {
+            return cached
+        }
+        guard let sequence = AnimatedPreviewSequence(fileURL: fileURL) else {
+            return nil
+        }
+        sequences.setObject(sequence, forKey: key)
+        return sequence
+    }
+}
+
+private final class PixelArtAnimationView: NSView {
+    private let imageLayer = CALayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    override func layout() {
+        super.layout()
+        let inset: CGFloat = min(bounds.width, bounds.height) < 90 ? 10 : 14
+        let availableSide = max(min(bounds.width, bounds.height) - inset * 2, 16)
+        let quantizedSide = max(floor(availableSide / 16) * 16, 16)
+        let origin = NSPoint(
+            x: floor((bounds.width - quantizedSide) / 2.0),
+            y: floor((bounds.height - quantizedSide) / 2.0)
+        )
+        imageLayer.frame = NSRect(origin: origin, size: NSSize(width: quantizedSide, height: quantizedSide)).integral
+        updateContentsScale()
+    }
+
+    func setFileURL(_ fileURL: URL?) {
+        imageLayer.removeAnimation(forKey: "pixelFrames")
+        guard let fileURL, let sequence = AnimationPreviewCache.sequence(for: fileURL) else {
+            imageLayer.contents = nil
+            return
+        }
+
+        imageLayer.contents = sequence.frames.first
+        guard sequence.frames.count > 1 else {
+            return
+        }
+
+        let animation = CAKeyframeAnimation(keyPath: "contents")
+        animation.values = sequence.frames
+        animation.keyTimes = sequence.keyTimes
+        animation.duration = sequence.duration
+        animation.repeatCount = .infinity
+        animation.calculationMode = .discrete
+        animation.isRemovedOnCompletion = false
+        imageLayer.add(animation, forKey: "pixelFrames")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateContentsScale()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateContentsScale()
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 22
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+
+        imageLayer.contentsGravity = .resizeAspect
+        imageLayer.magnificationFilter = .nearest
+        imageLayer.minificationFilter = .nearest
+        imageLayer.allowsEdgeAntialiasing = false
+        layer?.addSublayer(imageLayer)
+    }
+
+    private func updateContentsScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        layer?.contentsScale = scale
+        imageLayer.contentsScale = scale
+    }
+}
+
+private final class HoverActionPreviewView: NSView {
+    enum Style {
+        case compact
+        case hero
+    }
+
+    let previewView = PixelArtAnimationView()
+
+    private let overlayView = NSVisualEffectView()
+    private let overlayButton = NSButton(title: "", target: nil, action: nil)
+    private let overlayLabel = NSTextField(labelWithString: "Beam")
+    private var trackingAreaHandle: NSTrackingArea?
+    private let style: Style
+    private var isHovering = false
+    private var hasContent = false
+
+    var onPrimaryAction: (() -> Void)?
+
+    init(style: Style) {
+        self.style = style
+        super.init(frame: .zero)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        self.style = .compact
+        super.init(coder: coder)
+        setup()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaHandle {
+            removeTrackingArea(trackingAreaHandle)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaHandle = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        isHovering = true
+        updateOverlay(animated: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        isHovering = false
+        updateOverlay(animated: true)
+    }
+
+    func setFileURL(_ fileURL: URL?) {
+        hasContent = fileURL != nil
+        previewView.setFileURL(fileURL)
+        updateOverlay(animated: false)
+    }
+
+    private func setup() {
+        translatesAutoresizingMaskIntoConstraints = false
+
+        previewView.translatesAutoresizingMaskIntoConstraints = false
+
+        overlayView.translatesAutoresizingMaskIntoConstraints = false
+        overlayView.material = .hudWindow
+        overlayView.blendingMode = .withinWindow
+        overlayView.state = .active
+        overlayView.wantsLayer = true
+        overlayView.layer?.cornerCurve = .continuous
+        overlayView.layer?.borderWidth = 1
+        overlayView.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        overlayView.layer?.shadowOpacity = 0.18
+        overlayView.layer?.shadowRadius = 16
+        overlayView.layer?.shadowOffset = NSSize(width: 0, height: -2)
+        overlayView.alphaValue = 0
+
+        overlayButton.translatesAutoresizingMaskIntoConstraints = false
+        overlayButton.isBordered = false
+        overlayButton.imagePosition = .imageOnly
+        overlayButton.contentTintColor = .white
+        overlayButton.target = self
+        overlayButton.action = #selector(triggerPrimaryAction)
+
+        overlayLabel.translatesAutoresizingMaskIntoConstraints = false
+        overlayLabel.font = .systemFont(ofSize: style == .hero ? 12 : 11, weight: .semibold)
+        overlayLabel.textColor = .white.withAlphaComponent(0.96)
+        overlayLabel.alignment = .center
+        overlayLabel.isHidden = style == .compact
+
+        let overlayStack = NSStackView(views: style == .hero ? [overlayButton, overlayLabel] : [overlayButton])
+        overlayStack.orientation = .vertical
+        overlayStack.alignment = .centerX
+        overlayStack.spacing = style == .hero ? 4 : 0
+        overlayStack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(previewView)
+        addSubview(overlayView)
+        overlayView.addSubview(overlayStack)
+
+        let iconPointSize: CGFloat = style == .hero ? 32 : 20
+        let symbolWeight: NSFont.Weight = style == .hero ? .bold : .semibold
+        overlayButton.image = NSImage(
+            systemSymbolName: "paperplane.fill",
+            accessibilityDescription: "Beam to Ditoo"
+        )?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: iconPointSize, weight: symbolWeight))
+
+        let overlaySide: CGFloat = style == .hero ? 102 : 58
+        overlayView.layer?.cornerRadius = style == .hero ? 28 : 20
+
+        NSLayoutConstraint.activate([
+            previewView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            previewView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            previewView.topAnchor.constraint(equalTo: topAnchor),
+            previewView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            overlayView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            overlayView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            overlayView.widthAnchor.constraint(equalToConstant: overlaySide),
+            overlayView.heightAnchor.constraint(equalToConstant: style == .hero ? 84 : overlaySide),
+
+            overlayStack.centerXAnchor.constraint(equalTo: overlayView.centerXAnchor),
+            overlayStack.centerYAnchor.constraint(equalTo: overlayView.centerYAnchor),
+        ])
+    }
+
+    @objc private func triggerPrimaryAction() {
+        guard hasContent else {
+            NSSound.beep()
+            return
+        }
+        onPrimaryAction?()
+    }
+
+    private func updateOverlay(animated: Bool) {
+        let targetAlpha: CGFloat = hasContent && isHovering ? 1.0 : 0.0
+        let updates = { self.overlayView.animator().alphaValue = targetAlpha }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                updates()
+            }
+        } else {
+            overlayView.alphaValue = targetAlpha
+        }
+    }
+}
+
+private final class HeaderStatChipView: NSVisualEffectView {
+    private let iconView = NSImageView()
+    private let textLabel = NSTextField(labelWithString: "")
+
+    init(symbolName: String, text: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        material = .menu
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 999
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.22).cgColor
+
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: text)?.withSymbolConfiguration(configuration)
+        iconView.contentTintColor = .secondaryLabelColor
+
+        textLabel.translatesAutoresizingMaskIntoConstraints = false
+        textLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        textLabel.textColor = .secondaryLabelColor
+        textLabel.stringValue = text
+
+        let stack = NSStackView(views: [iconView, textLabel])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(text: String, symbolName: String? = nil) {
+        textLabel.stringValue = text
+        if let symbolName {
+            let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: text)?.withSymbolConfiguration(configuration)
+        }
+    }
+}
+
+private enum AnimationLibraryDisplayMode: Int {
+    case grid = 0
+    case list = 1
+}
+
+private final class AnimationLibraryCollectionItem: NSCollectionViewItem {
+    private let glassView = NSVisualEffectView()
+    private let previewView = HoverActionPreviewView(style: .compact)
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let metaIconView = NSImageView()
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let pathLabel = NSTextField(labelWithString: "")
+    private let favoriteButton = NSButton(title: "", target: nil, action: nil)
+    private let duplicateChip = HeaderStatChipView(symbolName: "square.on.square", text: "2x")
+    private var currentItem: AnimationLibraryItem?
+    private var gridConstraints: [NSLayoutConstraint] = []
+    private var listConstraints: [NSLayoutConstraint] = []
+    private var currentDisplayMode: AnimationLibraryDisplayMode = .grid
+
+    var onToggleFavorite: ((AnimationLibraryItem) -> Void)?
+    var onBeam: ((AnimationLibraryItem) -> Void)?
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        buildUI()
+    }
+
+    override var isSelected: Bool {
+        didSet {
+            updateSelectionAppearance()
+        }
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        previewView.setFileURL(nil)
+    }
+
+    func configure(item: AnimationLibraryItem, isFavorite: Bool, displayMode: AnimationLibraryDisplayMode) {
+        currentItem = item
+        currentDisplayMode = displayMode
+        titleLabel.stringValue = item.title
+        let collectionTitle = item.collection == "root" ? "Root" : AnimationLibraryCatalog.displayTitle(for: item.collection)
+        metaIconView.image = makeMenuSymbol(animationCategorySymbolName(item.category), description: item.category)
+        metaLabel.stringValue = "\(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+        pathLabel.stringValue = item.relativePath
+        previewView.setFileURL(item.fileURL)
+        previewView.onPrimaryAction = { [weak self] in
+            guard let self, let currentItem = self.currentItem else { return }
+            self.onBeam?(currentItem)
+        }
+        duplicateChip.isHidden = item.duplicateCount <= 1
+        if item.duplicateCount > 1 {
+            duplicateChip.update(text: "\(item.duplicateCount)x", symbolName: "square.on.square")
+        }
+        updateFavoriteAppearance(isFavorite: isFavorite)
+        applyDisplayMode(displayMode)
+        updateSelectionAppearance()
+    }
+
+    @objc private func toggleFavorite() {
+        guard let currentItem else {
+            return
+        }
+        onToggleFavorite?(currentItem)
+    }
+
+    private func buildUI() {
+        glassView.translatesAutoresizingMaskIntoConstraints = false
+        glassView.material = .popover
+        glassView.blendingMode = .withinWindow
+        glassView.state = .active
+        glassView.wantsLayer = true
+        glassView.layer?.cornerRadius = 22
+        glassView.layer?.cornerCurve = .continuous
+        glassView.layer?.borderWidth = 1
+        glassView.layer?.shadowOpacity = 0.10
+        glassView.layer?.shadowRadius = 18
+        glassView.layer?.shadowOffset = NSSize(width: 0, height: -2)
+
+        previewView.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        metaIconView.translatesAutoresizingMaskIntoConstraints = false
+        metaIconView.contentTintColor = .secondaryLabelColor
+
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+        metaLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        metaLabel.textColor = .secondaryLabelColor
+        metaLabel.lineBreakMode = .byTruncatingTail
+
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
+        pathLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        pathLabel.textColor = .secondaryLabelColor
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+
+        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
+        favoriteButton.isBordered = false
+        favoriteButton.bezelStyle = .regularSquare
+        favoriteButton.imagePosition = .imageOnly
+        favoriteButton.target = self
+        favoriteButton.action = #selector(toggleFavorite)
+        favoriteButton.contentTintColor = .systemOrange
+
+        duplicateChip.translatesAutoresizingMaskIntoConstraints = false
+        duplicateChip.isHidden = true
+
+        let metaRow = NSStackView(views: [metaIconView, metaLabel])
+        metaRow.orientation = .horizontal
+        metaRow.alignment = .centerY
+        metaRow.spacing = 6
+        metaRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView(views: [titleLabel, metaRow, pathLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 4
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(glassView)
+        glassView.addSubview(previewView)
+        glassView.addSubview(textStack)
+        glassView.addSubview(favoriteButton)
+        glassView.addSubview(duplicateChip)
+
+        NSLayoutConstraint.activate([
+            glassView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            glassView.topAnchor.constraint(equalTo: view.topAnchor),
+            glassView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            favoriteButton.topAnchor.constraint(equalTo: glassView.topAnchor, constant: 12),
+            favoriteButton.trailingAnchor.constraint(equalTo: glassView.trailingAnchor, constant: -12),
+            favoriteButton.widthAnchor.constraint(equalToConstant: 28),
+            favoriteButton.heightAnchor.constraint(equalToConstant: 28),
+
+            metaIconView.widthAnchor.constraint(equalToConstant: 14),
+            metaIconView.heightAnchor.constraint(equalToConstant: 14),
+
+            duplicateChip.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 12),
+            duplicateChip.topAnchor.constraint(equalTo: glassView.topAnchor, constant: 12),
+        ])
+
+        gridConstraints = [
+            previewView.topAnchor.constraint(equalTo: glassView.topAnchor, constant: 16),
+            previewView.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 16),
+            previewView.trailingAnchor.constraint(equalTo: glassView.trailingAnchor, constant: -16),
+            previewView.heightAnchor.constraint(equalToConstant: 138),
+
+            textStack.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 16),
+            textStack.trailingAnchor.constraint(equalTo: glassView.trailingAnchor, constant: -16),
+            textStack.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 12),
+            textStack.bottomAnchor.constraint(lessThanOrEqualTo: glassView.bottomAnchor, constant: -16),
+        ]
+
+        listConstraints = [
+            previewView.leadingAnchor.constraint(equalTo: glassView.leadingAnchor, constant: 14),
+            previewView.centerYAnchor.constraint(equalTo: glassView.centerYAnchor),
+            previewView.widthAnchor.constraint(equalToConstant: 72),
+            previewView.heightAnchor.constraint(equalToConstant: 72),
+
+            textStack.leadingAnchor.constraint(equalTo: previewView.trailingAnchor, constant: 14),
+            textStack.trailingAnchor.constraint(equalTo: favoriteButton.leadingAnchor, constant: -14),
+            textStack.centerYAnchor.constraint(equalTo: glassView.centerYAnchor),
+        ]
+
+        applyDisplayMode(.grid)
+    }
+
+    private func applyDisplayMode(_ displayMode: AnimationLibraryDisplayMode) {
+        switch displayMode {
+        case .grid:
+            NSLayoutConstraint.deactivate(listConstraints)
+            NSLayoutConstraint.activate(gridConstraints)
+            pathLabel.isHidden = true
+        case .list:
+            NSLayoutConstraint.deactivate(gridConstraints)
+            NSLayoutConstraint.activate(listConstraints)
+            pathLabel.isHidden = false
+        }
+    }
+
+    private func updateFavoriteAppearance(isFavorite: Bool) {
+        let symbol = isFavorite ? "star.fill" : "star"
+        favoriteButton.image = makeMenuSymbol(symbol, description: "Favorite")
+        favoriteButton.toolTip = isFavorite ? "Remove from favorites" : "Add to favorites"
+    }
+
+    private func updateSelectionAppearance() {
+        let accentColor = isSelected ? NSColor.systemBlue.withAlphaComponent(0.42) : NSColor.separatorColor.withAlphaComponent(0.22)
+        glassView.layer?.borderColor = accentColor.cgColor
+        glassView.layer?.backgroundColor = (isSelected ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18) : NSColor.white.withAlphaComponent(0.16)).cgColor
+    }
+}
+
+@MainActor
+private final class AnimationLibraryWindowController: NSWindowController, NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+    private let onSend: (AnimationLibraryItem) -> Void
+    private let onReveal: (AnimationLibraryItem) -> Void
+
+    private let headerIconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "Animation Library")
+    private let summaryLabel = NSTextField(labelWithString: "Native Swift picker with direct Ditoo beam.")
+    private let assetChip = HeaderStatChipView(symbolName: "sparkles", text: "0 curated")
+    private let categoryChip = HeaderStatChipView(symbolName: "square.grid.3x3.fill", text: "0 categories")
+    private let favoriteChip = HeaderStatChipView(symbolName: "star.fill", text: "0 favorites")
+    private let resultsLabel = NSTextField(labelWithString: "0 visible")
+    private let searchField = NSSearchField()
+    private let categoryPopUp = NSPopUpButton()
+    private let displayModeControl = NSSegmentedControl(labels: ["Grid", "List"], trackingMode: .selectOne, target: nil, action: nil)
+    private let favoritesOnlyButton = NSButton(title: "Favorites", target: nil, action: nil)
+    private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
+    private let flowLayout = NSCollectionViewFlowLayout()
+    private let collectionView = NSCollectionView()
+    private let collectionScrollView = NSScrollView()
+    private let emptyLabel = NSTextField(labelWithString: "No animations match the current filters.")
+    private let inspectorView = NSVisualEffectView()
+    private let detailPreviewView = HoverActionPreviewView(style: .hero)
+    private let detailTitleLabel = NSTextField(labelWithString: "Select an animation")
+    private let detailMetaLabel = NSTextField(labelWithString: "Pick something excellent, then send it straight to the Ditoo.")
+    private let detailCategoryChip = HeaderStatChipView(symbolName: "sparkles", text: "Category")
+    private let detailCollectionChip = HeaderStatChipView(symbolName: "folder", text: "Collection")
+    private let detailDuplicateChip = HeaderStatChipView(symbolName: "square.on.square", text: "Unique")
+    private let detailPathLabel = NSTextField(wrappingLabelWithString: "")
+    private let sendButton = NSButton(title: "Beam to Ditoo", target: nil, action: nil)
+    private let revealButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
+    private let favoriteButton = NSButton(title: "Favorite", target: nil, action: nil)
+
+    private var allItems: [AnimationLibraryItem] = []
+    private var filteredItems: [AnimationLibraryItem] = []
+    private var favorites = AnimationLibraryCatalog.loadFavorites()
+    private var selectedCategory = "all"
+    private var selectedItemID: String?
+    private var displayMode: AnimationLibraryDisplayMode = .grid
+
+    init(onSend: @escaping (AnimationLibraryItem) -> Void, onReveal: @escaping (AnimationLibraryItem) -> Void) {
+        self.onSend = onSend
+        self.onReveal = onReveal
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Animation Library"
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.minSize = NSSize(width: 980, height: 680)
+
+        super.init(window: panel)
+        panel.delegate = self
+        buildUI(in: panel)
+        reloadLibrary()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func showLibrary() {
+        window?.center()
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        updateCollectionLayout()
+    }
+
+    func numberOfSections(in collectionView: NSCollectionView) -> Int {
+        1
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+        filteredItems.count
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+        let identifier = NSUserInterfaceItemIdentifier("AnimationLibraryCollectionItem")
+        let item = collectionView.makeItem(withIdentifier: identifier, for: indexPath)
+        guard let collectionItem = item as? AnimationLibraryCollectionItem else {
+            return item
+        }
+
+        let animation = filteredItems[indexPath.item]
+        collectionItem.configure(item: animation, isFavorite: favorites.contains(animation.id), displayMode: displayMode)
+        collectionItem.onToggleFavorite = { [weak self] selectedAnimation in
+            self?.toggleFavorite(selectedAnimation)
+        }
+        collectionItem.onBeam = { [weak self] selectedAnimation in
+            guard let self else { return }
+            if let index = self.filteredItems.firstIndex(where: { $0.id == selectedAnimation.id }) {
+                self.selectItem(at: index)
+            }
+            self.triggerSend(for: selectedAnimation)
+        }
+        return collectionItem
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
+        guard let indexPath = indexPaths.first, indexPath.item < filteredItems.count else {
+            return
+        }
+        selectedItemID = filteredItems[indexPath.item].id
+        updateDetailPanel()
+    }
+
+    private func buildUI(in panel: NSPanel) {
+        guard let contentView = panel.contentView else {
+            return
+        }
+
+        let rootView = NSVisualEffectView()
+        rootView.translatesAutoresizingMaskIntoConstraints = false
+        rootView.material = .underWindowBackground
+        rootView.blendingMode = .behindWindow
+        rootView.state = .active
+        contentView.addSubview(rootView)
+
+        headerIconView.translatesAutoresizingMaskIntoConstraints = false
+        let headerSymbolConfig = NSImage.SymbolConfiguration(pointSize: 28, weight: .bold)
+        headerIconView.image = NSImage(systemSymbolName: "photo.stack.fill", accessibilityDescription: "Animation Library")?.withSymbolConfiguration(headerSymbolConfig)
+        headerIconView.contentTintColor = .systemOrange
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 24, weight: .bold)
+
+        summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        summaryLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        summaryLabel.textColor = .secondaryLabelColor
+
+        resultsLabel.translatesAutoresizingMaskIntoConstraints = false
+        resultsLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        resultsLabel.textColor = .secondaryLabelColor
+
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.placeholderString = "Search nyan, bunny, weather, retro, cute…"
+        searchField.target = self
+        searchField.action = #selector(searchChanged)
+        searchField.sendsSearchStringImmediately = true
+
+        categoryPopUp.translatesAutoresizingMaskIntoConstraints = false
+        categoryPopUp.target = self
+        categoryPopUp.action = #selector(categoryChanged)
+
+        displayModeControl.translatesAutoresizingMaskIntoConstraints = false
+        displayModeControl.selectedSegment = AnimationLibraryDisplayMode.grid.rawValue
+        displayModeControl.target = self
+        displayModeControl.action = #selector(displayModeChanged)
+
+        favoritesOnlyButton.translatesAutoresizingMaskIntoConstraints = false
+        favoritesOnlyButton.setButtonType(.toggle)
+        favoritesOnlyButton.bezelStyle = .rounded
+        favoritesOnlyButton.image = makeMenuSymbol("star", description: "Favorites")
+        favoritesOnlyButton.imagePosition = .imageLeading
+        favoritesOnlyButton.target = self
+        favoritesOnlyButton.action = #selector(toggleFavoritesOnly)
+
+        refreshButton.translatesAutoresizingMaskIntoConstraints = false
+        refreshButton.bezelStyle = .rounded
+        refreshButton.image = makeMenuSymbol("arrow.clockwise", description: "Refresh")
+        refreshButton.imagePosition = .imageLeading
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshLibrary)
+
+        let titleRow = NSStackView(views: [headerIconView, titleLabel])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 10
+        titleRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let chipRow = NSStackView(views: [assetChip, categoryChip, favoriteChip])
+        chipRow.orientation = .horizontal
+        chipRow.alignment = .centerY
+        chipRow.spacing = 8
+        chipRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerStack = NSStackView(views: [titleRow, summaryLabel, chipRow])
+        headerStack.orientation = .vertical
+        headerStack.alignment = .leading
+        headerStack.spacing = 8
+        headerStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let toolbarStack = NSStackView(views: [searchField, categoryPopUp, displayModeControl, favoritesOnlyButton, refreshButton, resultsLabel])
+        toolbarStack.orientation = .horizontal
+        toolbarStack.alignment = .centerY
+        toolbarStack.spacing = 10
+        toolbarStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let splitView = NSSplitView()
+        splitView.translatesAutoresizingMaskIntoConstraints = false
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+
+        let browserPane = NSView()
+        browserPane.translatesAutoresizingMaskIntoConstraints = false
+
+        collectionScrollView.translatesAutoresizingMaskIntoConstraints = false
+        collectionScrollView.hasVerticalScroller = true
+        collectionScrollView.drawsBackground = false
+
+        flowLayout.sectionInset = NSEdgeInsets(top: 6, left: 4, bottom: 24, right: 4)
+        flowLayout.minimumInteritemSpacing = 14
+        flowLayout.minimumLineSpacing = 14
+
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.collectionViewLayout = flowLayout
+        collectionView.isSelectable = true
+        collectionView.backgroundColors = [.clear]
+        collectionView.delegate = self
+        collectionView.dataSource = self
+        collectionView.register(AnimationLibraryCollectionItem.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("AnimationLibraryCollectionItem"))
+        collectionScrollView.documentView = collectionView
+
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        emptyLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.isHidden = true
+
+        browserPane.addSubview(collectionScrollView)
+        browserPane.addSubview(emptyLabel)
+
+        inspectorView.translatesAutoresizingMaskIntoConstraints = false
+        inspectorView.material = .menu
+        inspectorView.blendingMode = .withinWindow
+        inspectorView.state = .active
+        inspectorView.wantsLayer = true
+        inspectorView.layer?.cornerRadius = 24
+        inspectorView.layer?.cornerCurve = .continuous
+        inspectorView.layer?.borderWidth = 1
+        inspectorView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.25).cgColor
+
+        detailPreviewView.translatesAutoresizingMaskIntoConstraints = false
+        detailPreviewView.onPrimaryAction = { [weak self] in
+            guard let self, let item = self.currentSelectedItem else { return }
+            self.triggerSend(for: item)
+        }
+
+        detailTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailTitleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
+        detailTitleLabel.lineBreakMode = .byTruncatingTail
+
+        detailMetaLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailMetaLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        detailMetaLabel.textColor = .secondaryLabelColor
+
+        detailPathLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailPathLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        detailPathLabel.textColor = .secondaryLabelColor
+        detailPathLabel.maximumNumberOfLines = 3
+        detailPathLabel.lineBreakMode = .byTruncatingMiddle
+
+        sendButton.translatesAutoresizingMaskIntoConstraints = false
+        sendButton.bezelStyle = .rounded
+        sendButton.bezelColor = NSColor.systemBlue.withAlphaComponent(0.92)
+        sendButton.contentTintColor = .white
+        sendButton.image = makeMenuSymbol("paperplane.circle.fill", description: "Beam to Ditoo")
+        sendButton.imagePosition = .imageLeading
+        sendButton.keyEquivalent = "\r"
+        sendButton.target = self
+        sendButton.action = #selector(sendSelectedItem)
+
+        revealButton.translatesAutoresizingMaskIntoConstraints = false
+        revealButton.bezelStyle = .rounded
+        revealButton.image = makeMenuSymbol("folder", description: "Reveal in Finder")
+        revealButton.imagePosition = .imageLeading
+        revealButton.target = self
+        revealButton.action = #selector(revealSelectedItem)
+
+        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
+        favoriteButton.bezelStyle = .rounded
+        favoriteButton.image = makeMenuSymbol("star", description: "Favorite")
+        favoriteButton.imagePosition = .imageLeading
+        favoriteButton.target = self
+        favoriteButton.action = #selector(toggleFavoriteForSelectedItem)
+
+        let secondaryButtons = NSStackView(views: [revealButton, favoriteButton])
+        secondaryButtons.orientation = .horizontal
+        secondaryButtons.alignment = .centerY
+        secondaryButtons.spacing = 10
+        secondaryButtons.distribution = .fillEqually
+        secondaryButtons.translatesAutoresizingMaskIntoConstraints = false
+
+        let inspectorButtons = NSStackView(views: [sendButton, secondaryButtons])
+        inspectorButtons.orientation = .vertical
+        inspectorButtons.alignment = .leading
+        inspectorButtons.spacing = 10
+        inspectorButtons.translatesAutoresizingMaskIntoConstraints = false
+
+        let inspectorChipRow = NSStackView(views: [detailCategoryChip, detailCollectionChip, detailDuplicateChip])
+        inspectorChipRow.orientation = .horizontal
+        inspectorChipRow.alignment = .centerY
+        inspectorChipRow.spacing = 8
+        inspectorChipRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let inspectorText = NSStackView(views: [detailTitleLabel, detailMetaLabel, inspectorChipRow, detailPathLabel, inspectorButtons])
+        inspectorText.orientation = .vertical
+        inspectorText.alignment = .leading
+        inspectorText.spacing = 10
+        inspectorText.translatesAutoresizingMaskIntoConstraints = false
+
+        inspectorView.addSubview(detailPreviewView)
+        inspectorView.addSubview(inspectorText)
+
+        splitView.addArrangedSubview(browserPane)
+        splitView.addArrangedSubview(inspectorView)
+
+        rootView.addSubview(headerStack)
+        rootView.addSubview(toolbarStack)
+        rootView.addSubview(splitView)
+
+        let safeGuide = rootView.safeAreaLayoutGuide
+
+        NSLayoutConstraint.activate([
+            rootView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            rootView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            rootView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            rootView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+
+            headerStack.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
+            headerStack.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
+            headerStack.topAnchor.constraint(equalTo: safeGuide.topAnchor, constant: 18),
+
+            toolbarStack.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
+            toolbarStack.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
+            toolbarStack.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 12),
+
+            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
+            categoryPopUp.widthAnchor.constraint(equalToConstant: 170),
+            displayModeControl.widthAnchor.constraint(equalToConstant: 120),
+
+            splitView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 22),
+            splitView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -22),
+            splitView.topAnchor.constraint(equalTo: toolbarStack.bottomAnchor, constant: 16),
+            splitView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -22),
+
+            collectionScrollView.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor),
+            collectionScrollView.trailingAnchor.constraint(equalTo: browserPane.trailingAnchor),
+            collectionScrollView.topAnchor.constraint(equalTo: browserPane.topAnchor),
+            collectionScrollView.bottomAnchor.constraint(equalTo: browserPane.bottomAnchor),
+
+            emptyLabel.centerXAnchor.constraint(equalTo: browserPane.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: browserPane.centerYAnchor),
+
+            inspectorView.widthAnchor.constraint(equalToConstant: 320),
+
+            detailPreviewView.topAnchor.constraint(equalTo: inspectorView.topAnchor, constant: 18),
+            detailPreviewView.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
+            detailPreviewView.trailingAnchor.constraint(equalTo: inspectorView.trailingAnchor, constant: -18),
+            detailPreviewView.heightAnchor.constraint(equalToConstant: 250),
+
+            inspectorText.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
+            inspectorText.trailingAnchor.constraint(equalTo: inspectorView.trailingAnchor, constant: -18),
+            inspectorText.topAnchor.constraint(equalTo: detailPreviewView.bottomAnchor, constant: 16),
+
+            sendButton.widthAnchor.constraint(equalTo: inspectorText.widthAnchor),
+            secondaryButtons.widthAnchor.constraint(equalTo: inspectorText.widthAnchor),
+        ])
+
+        updateDetailPanel()
+        updateCollectionLayout()
+    }
+
+    @objc private func searchChanged() {
+        applyFilters()
+    }
+
+    @objc private func categoryChanged() {
+        selectedCategory = (categoryPopUp.selectedItem?.representedObject as? String) ?? "all"
+        applyFilters()
+    }
+
+    @objc private func displayModeChanged() {
+        displayMode = AnimationLibraryDisplayMode(rawValue: displayModeControl.selectedSegment) ?? .grid
+        updateCollectionLayout()
+        collectionView.reloadData()
+    }
+
+    @objc private func toggleFavoritesOnly() {
+        applyFilters()
+    }
+
+    @objc private func refreshLibrary() {
+        reloadLibrary()
+    }
+
+    @objc private func sendSelectedItem() {
+        guard let currentSelectedItem else {
+            NSSound.beep()
+            return
+        }
+        triggerSend(for: currentSelectedItem)
+    }
+
+    @objc private func revealSelectedItem() {
+        guard let currentSelectedItem else {
+            NSSound.beep()
+            return
+        }
+        onReveal(currentSelectedItem)
+    }
+
+    @objc private func toggleFavoriteForSelectedItem() {
+        guard let currentSelectedItem else {
+            NSSound.beep()
+            return
+        }
+        toggleFavorite(currentSelectedItem)
+    }
+
+    private var currentSelectedItem: AnimationLibraryItem? {
+        guard let selectedItemID else {
+            return nil
+        }
+        return filteredItems.first(where: { $0.id == selectedItemID }) ?? allItems.first(where: { $0.id == selectedItemID })
+    }
+
+    private func reloadLibrary() {
+        summaryLabel.stringValue = "Loading curated animation library…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let items = AnimationLibraryCatalog.loadItems()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.allItems = items
+                self.rebuildCategoryMenu()
+                self.applyFilters()
+            }
+        }
+    }
+
+    private func rebuildCategoryMenu() {
+        let previousCategory = selectedCategory
+        let categories = Array(Set(allItems.map(\.category))).sorted()
+        categoryPopUp.removeAllItems()
+        categoryPopUp.addItem(withTitle: "All Categories")
+        categoryPopUp.lastItem?.representedObject = "all"
+        categoryPopUp.lastItem?.image = makeMenuSymbol("square.grid.3x3.fill", description: "All Categories")
+        for category in categories {
+            categoryPopUp.addItem(withTitle: AnimationLibraryCatalog.displayTitle(for: category))
+            categoryPopUp.lastItem?.representedObject = category
+            categoryPopUp.lastItem?.image = makeMenuSymbol(animationCategorySymbolName(category), description: category)
+        }
+
+        let targetCategory = previousCategory != "all" && categories.contains(previousCategory) ? previousCategory : "all"
+        selectedCategory = targetCategory
+        if let item = categoryPopUp.itemArray.first(where: { ($0.representedObject as? String) == targetCategory }) {
+            categoryPopUp.select(item)
+        } else {
+            categoryPopUp.selectItem(at: 0)
+        }
+    }
+
+    private func applyFilters() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let favoritesOnly = favoritesOnlyButton.state == .on
+        let preservedSelectionID = selectedItemID
+
+        filteredItems = allItems.filter { item in
+            if selectedCategory != "all" && item.category != selectedCategory {
+                return false
+            }
+            if favoritesOnly && !favorites.contains(item.id) {
+                return false
+            }
+            if !query.isEmpty && !item.searchText.contains(query) {
+                return false
+            }
+            return true
+        }
+
+        collectionView.reloadData()
+        emptyLabel.isHidden = !filteredItems.isEmpty
+        summaryLabel.stringValue = "Native Swift picker with crisp previews and direct Ditoo beam."
+        updateHeaderChips()
+        resultsLabel.stringValue = "\(filteredItems.count) visible"
+
+        if let preservedSelectionID, let index = filteredItems.firstIndex(where: { $0.id == preservedSelectionID }) {
+            selectItem(at: index)
+        } else if let firstIndex = filteredItems.indices.first {
+            selectItem(at: firstIndex)
+        } else {
+            collectionView.deselectAll(nil)
+            selectedItemID = nil
+            updateDetailPanel()
+        }
+    }
+
+    private func selectItem(at index: Int) {
+        guard index >= 0, index < filteredItems.count else {
+            return
+        }
+        let indexPath = IndexPath(item: index, section: 0)
+        collectionView.selectItems(at: [indexPath], scrollPosition: [])
+        selectedItemID = filteredItems[index].id
+        updateDetailPanel()
+    }
+
+    private func updateCollectionLayout() {
+        let contentWidth = collectionScrollView.contentSize.width
+        switch displayMode {
+        case .grid:
+            let targetCardWidth: CGFloat = 196
+            let spacing: CGFloat = 16
+            let columns = max(Int((contentWidth + spacing) / (targetCardWidth + spacing)), 2)
+            let totalSpacing = CGFloat(max(columns - 1, 0)) * spacing
+            let width = floor((contentWidth - totalSpacing - 8) / CGFloat(columns))
+            flowLayout.itemSize = NSSize(width: max(width, 168), height: max(width, 168) + 74)
+            flowLayout.minimumInteritemSpacing = spacing
+            flowLayout.minimumLineSpacing = spacing
+        case .list:
+            flowLayout.itemSize = NSSize(width: max(contentWidth - 8, 420), height: 96)
+            flowLayout.minimumInteritemSpacing = 0
+            flowLayout.minimumLineSpacing = 10
+        }
+        flowLayout.invalidateLayout()
+    }
+
+    private func triggerSend(for item: AnimationLibraryItem) {
+        sendButton.title = "Beaming…"
+        sendButton.image = makeMenuSymbol("bolt.circle.fill", description: "Beaming")
+        sendButton.isEnabled = false
+        resultsLabel.stringValue = "Beaming \(item.title)…"
+        onSend(item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            self.sendButton.title = "Beam to Ditoo"
+            self.sendButton.image = makeMenuSymbol("paperplane.circle.fill", description: "Beam to Ditoo")
+            self.sendButton.isEnabled = self.currentSelectedItem != nil
+            self.resultsLabel.stringValue = "\(self.filteredItems.count) visible"
+        }
+    }
+
+    private func updateDetailPanel() {
+        guard let item = currentSelectedItem else {
+            detailPreviewView.setFileURL(nil)
+            detailTitleLabel.stringValue = "Select an animation"
+            detailMetaLabel.stringValue = "Pick something excellent, then send it straight to the Ditoo."
+            detailCategoryChip.update(text: "Category", symbolName: "sparkles")
+            detailCollectionChip.update(text: "Collection", symbolName: "folder")
+            detailDuplicateChip.update(text: "Unique", symbolName: "square.on.square")
+            detailPathLabel.stringValue = ""
+            sendButton.isEnabled = false
+            revealButton.isEnabled = false
+            favoriteButton.isEnabled = false
+            favoriteButton.title = "Favorite"
+            return
+        }
+
+        let collectionTitle = item.collection == "root" ? "Root" : AnimationLibraryCatalog.displayTitle(for: item.collection)
+        detailPreviewView.setFileURL(item.fileURL)
+        detailTitleLabel.stringValue = item.title
+        detailMetaLabel.stringValue = "\(AnimationLibraryCatalog.displayTitle(for: item.category)) · \(collectionTitle)"
+        detailCategoryChip.update(text: AnimationLibraryCatalog.displayTitle(for: item.category), symbolName: animationCategorySymbolName(item.category))
+        detailCollectionChip.update(text: collectionTitle, symbolName: item.collection == "root" ? "shippingbox" : "folder")
+        detailDuplicateChip.update(text: item.duplicateCount > 1 ? "\(item.duplicateCount) dupes" : "Unique", symbolName: "square.on.square")
+        detailPathLabel.stringValue = item.relativePath
+        sendButton.isEnabled = true
+        sendButton.title = "Beam to Ditoo"
+        sendButton.image = makeMenuSymbol("paperplane.circle.fill", description: "Beam to Ditoo")
+        revealButton.isEnabled = true
+        favoriteButton.isEnabled = true
+        favoriteButton.title = favorites.contains(item.id) ? "Unfavorite" : "Favorite"
+        favoriteButton.image = makeMenuSymbol(favorites.contains(item.id) ? "star.fill" : "star", description: "Favorite")
+    }
+
+    private func toggleFavorite(_ item: AnimationLibraryItem) {
+        if favorites.contains(item.id) {
+            favorites.remove(item.id)
+        } else {
+            favorites.insert(item.id)
+        }
+        AnimationLibraryCatalog.saveFavorites(favorites)
+        collectionView.reloadData()
+        updateDetailPanel()
+        updateHeaderChips()
+    }
+
+    private func updateHeaderChips() {
+        assetChip.update(text: "\(allItems.count) curated")
+        categoryChip.update(text: "\(Set(allItems.map(\.category)).count) categories")
+        favoriteChip.update(text: "\(favorites.count) favorites")
+    }
+}
+
 @MainActor
 private protocol CommandRunnerDelegate: AnyObject {
-    func commandDidFinish(label: String, success: Bool, output: String)
+    func commandDidFinish(spec: CommandSpec, success: Bool, output: String)
 }
 
 private final class CommandRunner {
     private let executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
     weak var delegate: CommandRunnerDelegate?
 
-    func run(_ spec: CommandSpec) {
+    func run(_ spec: CommandSpec, completion: (@MainActor (Bool, String) -> Void)? = nil) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let process = Process()
             let stdoutPipe = Pipe()
@@ -473,19 +2192,14 @@ private final class CommandRunner {
                     .joined(separator: "\n")
 
                 Task { @MainActor [weak self] in
-                    self?.delegate?.commandDidFinish(
-                        label: spec.label,
-                        success: process.terminationStatus == 0,
-                        output: combined
-                    )
+                    let success = process.terminationStatus == 0
+                    completion?(success, combined)
+                    self?.delegate?.commandDidFinish(spec: spec, success: success, output: combined)
                 }
             } catch {
                 Task { @MainActor [weak self] in
-                    self?.delegate?.commandDidFinish(
-                        label: spec.label,
-                        success: false,
-                        output: error.localizedDescription
-                    )
+                    completion?(false, error.localizedDescription)
+                    self?.delegate?.commandDidFinish(spec: spec, success: false, output: error.localizedDescription)
                 }
             }
         }
@@ -498,11 +2212,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private let bluetoothDiagnostics = BluetoothDiagnostics()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
-    private let animationGalleryBuilderURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/tools/build_animation_gallery.py")
-    private let animationGalleryURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/docs/animation-gallery/index.html")
     private let curatedAnimationsURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
-    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: 320, height: 106))
+    private let recentAnimationDefaultsKey = "dev.kirniy.divoom.recent-library-animations"
+    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: 356, height: 106))
     private let summaryCardItem = NSMenuItem()
+    private let quickActionHub = QuickActionHubView(frame: NSRect(x: 0, y: 0, width: 356, height: 164))
+    private let quickActionHubItem = NSMenuItem()
     private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: 356, height: 136))
     private let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -513,6 +2228,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     private var autoCodexItem = NSMenuItem()
     private var autoClaudeItem = NSMenuItem()
+    private var autoPairItem = NSMenuItem()
+    private var autoIPFlagItem = NSMenuItem()
+    private var codexBarShowUsedItem = NSMenuItem()
+    private var codexBarShowRemainingItem = NSMenuItem()
+    private var codexMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
+    private var claudeMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
     private var timer: Timer?
     private var ipcTimer: Timer?
     private var ipcBusy = false
@@ -526,6 +2247,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var lastActionDetails: String?
     private var lastActionSuccess = true
     private var lastActionDate: Date?
+    private var animationLibraryController: AnimationLibraryWindowController?
+    private var recentAnimationRelativePaths = UserDefaults.standard.stringArray(forKey: "dev.kirniy.divoom.recent-library-animations") ?? []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         runner.delegate = self
@@ -545,14 +2268,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         ipcTimer?.invalidate()
     }
 
-    func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
-            handleIncomingURL(url)
+    func commandDidFinish(spec: CommandSpec, success: Bool, output: String) {
+        updateActionStatus(summary: spec.label, success: success, details: output)
+        if success {
+            if let successSound = spec.successSound {
+                playFeedbackSound(successSound)
+            }
+        } else if spec.playErrorSound {
+            playFeedbackSound(.error)
         }
-    }
-
-    func commandDidFinish(label: String, success: Bool, output: String) {
-        updateActionStatus(summary: label, success: success, details: output)
     }
 
     private func configureStatusItem() {
@@ -572,16 +2296,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         summaryCardItem.view = summaryCard
         menu.addItem(summaryCardItem)
         menu.addItem(.separator())
+        quickActionHubItem.isEnabled = false
+        quickActionHubItem.view = quickActionHub
+        quickActionHub.onCodex = { [weak self] in self?.toggleAutoCodex() }
+        quickActionHub.onClaude = { [weak self] in self?.toggleAutoClaude() }
+        quickActionHub.onPair = { [weak self] in self?.toggleAutoPair() }
+        quickActionHub.onIPFlag = { [weak self] in self?.toggleAutoIPFlag() }
+        quickActionHub.onLibrary = { [weak self] in self?.openAnimationLibrary() }
+        quickActionHub.onScreenPick = { [weak self] in self?.pickScreenColor() }
+        menu.addItem(quickActionHubItem)
+        menu.addItem(.separator())
 
-        let connectionMenu = NSMenu(title: "Connection")
-        connectionMenu.addItem(makeSectionHeader("Transport"))
-        connectionMenu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
-        connectionMenu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
-        connectionMenu.addItem(.separator())
-        connectionMenu.addItem(makeSectionHeader("Device"))
-        connectionMenu.addItem(makeItem("Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
-
-        let displayMenu = NSMenu(title: "Display")
+        let studioMenu = NSMenu(title: "Studio")
         let colorStudioItem = NSMenuItem()
         colorStudioItem.isEnabled = false
         colorStudioItem.view = colorStudioView
@@ -591,71 +2317,82 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         colorStudioView.onPickScreen = { [weak self] in
             self?.pickScreenColor()
         }
-        displayMenu.addItem(colorStudioItem)
-        displayMenu.addItem(.separator())
-        displayMenu.addItem(makeSectionHeader("Core"))
-        displayMenu.addItem(makeItem("Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
-        displayMenu.addItem(makeItem("Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
-        displayMenu.addItem(makeItem("Pixel Badge Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
-        displayMenu.addItem(.separator())
-        displayMenu.addItem(makeSectionHeader("Telemetry"))
-        displayMenu.addItem(makeItem("Battery Panel", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
-        displayMenu.addItem(makeItem("System Panel", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
-        displayMenu.addItem(makeItem("Network Panel", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
+        studioMenu.addItem(colorStudioItem)
+        studioMenu.addItem(.separator())
+        studioMenu.addItem(makeSectionHeader("Beam"))
+        studioMenu.addItem(makeItem("Solid Red", action: #selector(runNativeSolidRed), symbolName: "lightspectrum.horizontal"))
+        studioMenu.addItem(makeItem("Purity Red", action: #selector(runNativePurityRed), symbolName: "flashlight.on.fill"))
+        studioMenu.addItem(makeItem("Pixel Badge Test", action: #selector(runNativePixelTest), symbolName: "square.grid.3x3.fill"))
+        studioMenu.addItem(.separator())
+        studioMenu.addItem(makeSectionHeader("Motion"))
+        studioMenu.addItem(makeItem("Signal Sweep Loop", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
+        studioMenu.addItem(makeItem("Doom Fire Loop", action: #selector(runNativeUploadDoomFire), symbolName: "flame.fill"))
+        studioMenu.addItem(makeItem("Nyan Cat", action: #selector(runNativeUploadNyan), symbolName: "star"))
+        studioMenu.addItem(makeItem("Bunny Hop", action: #selector(runNativeUploadBunny), symbolName: "hare"))
+        studioMenu.addItem(makeRecentAnimationsMenuItem())
+        studioMenu.addItem(.separator())
+        studioMenu.addItem(makeSectionHeader("Library"))
+        studioMenu.addItem(makeItem("Open Animation Library", action: #selector(openAnimationLibrary), symbolName: "photo.stack"))
+        studioMenu.addItem(makeItem("Reveal Curated Folder", action: #selector(revealCuratedAnimations), symbolName: "folder"))
 
-        let motionMenu = NSMenu(title: "Motion")
-        motionMenu.addItem(makeSectionHeader("Animations"))
-        motionMenu.addItem(makeItem("Signal Sweep Loop", action: #selector(runNativeAnimationSample), symbolName: "sparkles"))
-        motionMenu.addItem(makeItem("Doom Fire Loop", action: #selector(runNativeUploadDoomFire), symbolName: "flame.fill"))
-        motionMenu.addItem(makeItem("Nyan Cat", action: #selector(runNativeUploadNyan), symbolName: "star"))
-        motionMenu.addItem(makeItem("Bunny Hop", action: #selector(runNativeUploadBunny), symbolName: "hare"))
-        motionMenu.addItem(.separator())
-        motionMenu.addItem(makeSectionHeader("Library"))
-        motionMenu.addItem(makeItem("Open Animation Gallery", action: #selector(openAnimationGallery), symbolName: "photo.on.rectangle.angled"))
-        motionMenu.addItem(makeItem("Reveal Curated Folder", action: #selector(revealCuratedAnimations), symbolName: "folder"))
-        motionMenu.addItem(.separator())
-        motionMenu.addItem(makeSectionHeader("Ambient"))
-        motionMenu.addItem(makeItem("Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
-        motionMenu.addItem(makeItem("Analog Clock", action: #selector(runNativeClockFace), symbolName: "clock"))
-        motionMenu.addItem(makeItem("Animated Clock", action: #selector(runNativeAnimatedClock), symbolName: "clock.arrow.2.circlepath"))
-        motionMenu.addItem(makeItem("Pomodoro Timer", action: #selector(runNativePomodoroTimer), symbolName: "timer"))
+        let liveMenu = NSMenu(title: "Live")
+        liveMenu.addItem(makeSectionHeader("Sources"))
+        autoCodexItem = makeItem("Codex", action: #selector(toggleAutoCodex), symbolName: "brain")
+        autoClaudeItem = makeItem("Claude", action: #selector(toggleAutoClaude), symbolName: "message")
+        autoPairItem = makeItem("Codex + Claude", action: #selector(toggleAutoPair), symbolName: "rectangle.split.2x1")
+        autoIPFlagItem = makeItem("IP Flag", action: #selector(toggleAutoIPFlag), symbolName: "flag.2.crossed")
+        liveMenu.addItem(autoCodexItem)
+        liveMenu.addItem(autoClaudeItem)
+        liveMenu.addItem(autoPairItem)
+        liveMenu.addItem(autoIPFlagItem)
+        liveMenu.addItem(.separator())
+        liveMenu.addItem(makeSectionHeader("CodexBar Sync"))
+        let usageModeMenu = NSMenu(title: "Usage Mode")
+        let showUsed = codexBarPreferences().showUsed
+        codexBarShowUsedItem = makeItem("Show Used", action: #selector(setCodexBarShowUsed), symbolName: "chart.bar.fill")
+        codexBarShowRemainingItem = makeItem("Show Remaining", action: #selector(setCodexBarShowRemaining), symbolName: "arrow.uturn.backward.circle")
+        codexBarShowUsedItem.state = showUsed ? .on : .off
+        codexBarShowRemainingItem.state = showUsed ? .off : .on
+        usageModeMenu.addItem(codexBarShowUsedItem)
+        usageModeMenu.addItem(codexBarShowRemainingItem)
+        liveMenu.addItem(makeSubmenuItem("Usage Mode", symbolName: "dial.medium", submenu: usageModeMenu))
+        liveMenu.addItem(makeCodexBarMetricMenu(title: "Codex Metric", symbolName: "brain", provider: "codex", action: #selector(setCodexMetricPreference(_:))))
+        liveMenu.addItem(makeCodexBarMetricMenu(title: "Claude Metric", symbolName: "message", provider: "claude", action: #selector(setClaudeMetricPreference(_:))))
+        liveMenu.addItem(.separator())
+        liveMenu.addItem(makeSectionHeader("Extras"))
+        liveMenu.addItem(makeItem("OpenClaw Crab", action: #selector(pushOpenClawCrab), symbolName: "ladybug"))
+        liveMenu.addItem(makeItem("Codex Pixel Art", action: #selector(pushOrbitArt), symbolName: "sparkles.square.filled.on.square"))
 
-        let feedsMenu = NSMenu(title: "Feeds")
-        feedsMenu.addItem(makeSectionHeader("Status"))
-        feedsMenu.addItem(makeItem("Codex Status", action: #selector(pushCodexStatus), symbolName: "brain"))
-        feedsMenu.addItem(makeItem("Claude Status", action: #selector(pushClaudeStatus), symbolName: "message"))
-        feedsMenu.addItem(.separator())
-        feedsMenu.addItem(makeSectionHeader("Samples"))
-        feedsMenu.addItem(makeItem("Orbit Art", action: #selector(pushOrbitArt), symbolName: "sparkles.square.filled.on.square"))
-        feedsMenu.addItem(makeItem("Doom Fire Sample", action: #selector(pushDoomFireSample), symbolName: "flame.fill"))
-        feedsMenu.addItem(makeItem("Bunny Sample", action: #selector(pushBunnySample), symbolName: "hare"))
-
-        let audioMenu = NSMenu(title: "Audio")
-        audioMenu.addItem(makeSectionHeader("Speaker"))
-        audioMenu.addItem(makeItem("Attention Chime", action: #selector(playAttentionSound), symbolName: "bell.badge"))
-        audioMenu.addItem(makeItem("Completion Chime", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
-
-        let automationMenu = NSMenu(title: "Automation")
-        automationMenu.addItem(makeSectionHeader("Auto Refresh"))
-        autoCodexItem = makeItem("Codex Every 60s", action: #selector(toggleAutoCodex), symbolName: "arrow.clockwise")
-        autoClaudeItem = makeItem("Claude Every 60s", action: #selector(toggleAutoClaude), symbolName: "arrow.clockwise.circle")
-        automationMenu.addItem(autoCodexItem)
-        automationMenu.addItem(autoClaudeItem)
+        let deviceMenu = NSMenu(title: "Device")
+        deviceMenu.addItem(makeSectionHeader("Bluetooth"))
+        deviceMenu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
+        deviceMenu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
+        deviceMenu.addItem(makeItem("Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
+        deviceMenu.addItem(.separator())
+        deviceMenu.addItem(makeSectionHeader("Ambient"))
+        deviceMenu.addItem(makeItem("Battery Panel", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
+        deviceMenu.addItem(makeItem("System Panel", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
+        deviceMenu.addItem(makeItem("Network Panel", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
+        deviceMenu.addItem(makeItem("Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
+        deviceMenu.addItem(makeItem("Analog Clock", action: #selector(runNativeClockFace), symbolName: "clock"))
+        deviceMenu.addItem(makeItem("Animated Clock", action: #selector(runNativeAnimatedClock), symbolName: "clock.arrow.2.circlepath"))
+        deviceMenu.addItem(makeItem("Pomodoro Timer", action: #selector(runNativePomodoroTimer), symbolName: "timer"))
+        deviceMenu.addItem(.separator())
+        deviceMenu.addItem(makeSectionHeader("Feedback"))
+        deviceMenu.addItem(makeItem("Attention Chime", action: #selector(playAttentionSound), symbolName: "bell.badge"))
+        deviceMenu.addItem(makeItem("Completion Chime", action: #selector(playCompletionSound), symbolName: "checkmark.circle"))
 
         let toolsMenu = NSMenu(title: "Tools")
         toolsMenu.addItem(makeSectionHeader("Workspace"))
-        toolsMenu.addItem(makeItem("Refresh Animation Gallery", action: #selector(refreshAnimationGallery), symbolName: "arrow.triangle.2.circlepath"))
         toolsMenu.addItem(makeItem("Open Research Notes", action: #selector(openResearch), symbolName: "doc.text.magnifyingglass"))
+        toolsMenu.addItem(makeItem("Open OpenClaw Notes", action: #selector(openOpenClawNotes), symbolName: "doc.richtext"))
         toolsMenu.addItem(.separator())
         toolsMenu.addItem(makeSectionHeader("App"))
         toolsMenu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
 
-        menu.addItem(makeSubmenuItem("Connection", symbolName: "dot.radiowaves.left.and.right", submenu: connectionMenu))
-        menu.addItem(makeSubmenuItem("Display", symbolName: "lightspectrum.horizontal", submenu: displayMenu))
-        menu.addItem(makeSubmenuItem("Motion", symbolName: "sparkles", submenu: motionMenu))
-        menu.addItem(makeSubmenuItem("Feeds", symbolName: "brain", submenu: feedsMenu))
-        menu.addItem(makeSubmenuItem("Audio", symbolName: "speaker.wave.2.fill", submenu: audioMenu))
-        menu.addItem(makeSubmenuItem("Automation", symbolName: "arrow.trianglehead.2.clockwise.rotate.90", submenu: automationMenu))
+        menu.addItem(makeSubmenuItem("Studio", symbolName: "wand.and.stars", submenu: studioMenu))
+        menu.addItem(makeSubmenuItem("Live", symbolName: "brain", submenu: liveMenu))
+        menu.addItem(makeSubmenuItem("Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
         menu.addItem(.separator())
         menu.addItem(makeSubmenuItem("Tools", symbolName: "slider.horizontal.3", submenu: toolsMenu))
         updateAutoRefreshUI()
@@ -702,8 +2439,185 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         return item
     }
 
-    private func run(label: String, arguments: [String]) {
-        runner.run(CommandSpec(label: label, arguments: arguments))
+    private func codexBarPreferences() -> (metrics: [String: String], showUsed: Bool) {
+        let domain = UserDefaults.standard.persistentDomain(forName: "com.steipete.codexbar") ?? [:]
+        let metrics = (domain["menuBarMetricPreferences"] as? [String: String]) ?? [:]
+        let showUsed = domain["usageBarsShowUsed"] as? Bool ?? true
+        return (metrics, showUsed)
+    }
+
+    private func mutateCodexBarPreferences(_ mutate: (inout [String: Any]) -> Void) {
+        var domain = UserDefaults.standard.persistentDomain(forName: "com.steipete.codexbar") ?? [:]
+        mutate(&domain)
+        UserDefaults.standard.setPersistentDomain(domain, forName: "com.steipete.codexbar")
+        configureMenu()
+    }
+
+    private func makeCodexBarMetricMenu(
+        title: String,
+        symbolName: String,
+        provider: String,
+        action: Selector
+    ) -> NSMenuItem {
+        let submenu = NSMenu(title: title)
+        let currentMetric = codexBarPreferences().metrics[provider] ?? "primary"
+        var items: [CodexBarMetricPreference: NSMenuItem] = [:]
+
+        for metric in CodexBarMetricPreference.allCases {
+            let item = makeItem(metric.title, action: action, symbolName: nil)
+            item.representedObject = metric.rawValue
+            item.state = currentMetric == metric.rawValue ? .on : .off
+            submenu.addItem(item)
+            items[metric] = item
+        }
+
+        if provider == "codex" {
+            codexMetricItems = items
+        } else if provider == "claude" {
+            claudeMetricItems = items
+        }
+
+        return makeSubmenuItem(title, symbolName: symbolName, submenu: submenu)
+    }
+
+    private func makeRecentAnimationsMenuItem() -> NSMenuItem {
+        let submenu = NSMenu(title: "Recent Picks")
+        let recentPaths = Array(recentAnimationRelativePaths.prefix(8))
+
+        if recentPaths.isEmpty {
+            let emptyItem = NSMenuItem(title: "No recent sends yet", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            submenu.addItem(emptyItem)
+        } else {
+            for relativePath in recentPaths {
+                let title = prettifyRecentAnimationTitle(relativePath)
+                let item = NSMenuItem(title: title, action: #selector(sendRecentAnimation(_:)), keyEquivalent: "")
+                item.target = self
+                item.image = makeMenuSymbol("clock.arrow.circlepath", description: title)
+                item.representedObject = relativePath
+                submenu.addItem(item)
+            }
+        }
+
+        return makeSubmenuItem("Recent Picks", symbolName: "clock.arrow.circlepath", submenu: submenu)
+    }
+
+    private func prettifyRecentAnimationTitle(_ relativePath: String) -> String {
+        let fileName = URL(fileURLWithPath: relativePath).deletingPathExtension().lastPathComponent
+        let cleaned = fileName.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+        let title = cleaned.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? fileName : title
+    }
+
+    private func recordRecentAnimation(relativePath: String) {
+        recentAnimationRelativePaths.removeAll(where: { $0 == relativePath })
+        recentAnimationRelativePaths.insert(relativePath, at: 0)
+        recentAnimationRelativePaths = Array(recentAnimationRelativePaths.prefix(8))
+        UserDefaults.standard.set(recentAnimationRelativePaths, forKey: recentAnimationDefaultsKey)
+        configureMenu()
+    }
+
+    private func run(
+        label: String,
+        arguments: [String],
+        successSound: FeedbackSoundProfile? = nil,
+        playErrorSound: Bool = true,
+        completion: (@MainActor (Bool, String) -> Void)? = nil
+    ) {
+        runner.run(
+            CommandSpec(
+                label: label,
+                arguments: arguments,
+                successSound: successSound,
+                playErrorSound: playErrorSound
+            ),
+            completion: completion
+        )
+    }
+
+    private func runRenderedFeed(
+        label: String,
+        feed: String,
+        successSound: FeedbackSoundProfile? = nil,
+        playErrorSound: Bool = true,
+        completion: (@MainActor (Bool, String) -> Void)? = nil
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
+            process.arguments = ["render-feed", "--feed", feed]
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+                guard process.terminationStatus == 0 else {
+                    Task { @MainActor [weak self] in
+                        self?.updateActionStatus(summary: label, success: false, details: stderr.isEmpty ? stdout : stderr)
+                        if playErrorSound {
+                            self?.playFeedbackSound(.error)
+                        }
+                        completion?(false, stderr.isEmpty ? stdout : stderr)
+                    }
+                    return
+                }
+
+                guard
+                    let data = stdout.data(using: .utf8),
+                    let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let outputPath = payload["output"] as? String
+                else {
+                    Task { @MainActor [weak self] in
+                        self?.updateActionStatus(summary: label, success: false, details: "Renderer did not return a usable output path.")
+                        if playErrorSound {
+                            self?.playFeedbackSound(.error)
+                        }
+                        completion?(false, "Renderer did not return a usable output path.")
+                    }
+                    return
+                }
+
+                let resolvedLabel = (payload["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? (payload["label"] as? String ?? label)
+                    : label
+
+                Task { @MainActor [weak self] in
+                    self?.run(
+                        label: resolvedLabel,
+                        arguments: ["native-headless", "send-gif", "--path", outputPath],
+                        successSound: successSound,
+                        playErrorSound: playErrorSound,
+                        completion: completion
+                    )
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.updateActionStatus(summary: label, success: false, details: error.localizedDescription)
+                    if playErrorSound {
+                        self?.playFeedbackSound(.error)
+                    }
+                    completion?(false, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func launchDetachedShellCommand(_ command: String, summary: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", command]
+        do {
+            try process.run()
+            updateActionStatus(summary: summary, success: true, details: command)
+        } catch {
+            updateActionStatus(summary: summary, success: false, details: error.localizedDescription)
+        }
     }
 
     private func feedbackSoundURL(for profile: FeedbackSoundProfile) -> URL {
@@ -825,13 +2739,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                switch self.autoRefreshMode {
-                case .codex:
-                    self.pushCodexStatus()
-                case .claude:
-                    self.pushClaudeStatus()
-                case .off:
-                    break
+                if self.autoRefreshMode != .off {
+                    self.refreshLiveFeed(self.autoRefreshMode)
                 }
             }
         }
@@ -842,6 +2751,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func updateAutoRefreshUI() {
         autoCodexItem.state = autoRefreshMode == .codex ? .on : .off
         autoClaudeItem.state = autoRefreshMode == .claude ? .on : .off
+        autoPairItem.state = autoRefreshMode == .pair ? .on : .off
+        autoIPFlagItem.state = autoRefreshMode == .ipFlag ? .on : .off
+        quickActionHub.activeAction = autoRefreshMode.quickActionKind
         refreshSummaryCard()
     }
 
@@ -853,6 +2765,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return "Codex every 60s"
         case .claude:
             return "Claude every 60s"
+        case .pair:
+            return "Codex + Claude every 60s"
+        case .ipFlag:
+            return "IP Flag every 60s"
         }
     }
 
@@ -1096,15 +3012,36 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     @objc private func pushCodexStatus() {
-        run(label: "Codex status", arguments: ["send-status", "--provider", "codex", "--terminate"])
+        runRenderedFeed(label: "Codex", feed: "codex", successSound: .animation)
     }
 
     @objc private func pushClaudeStatus() {
-        run(label: "Claude status", arguments: ["send-status", "--provider", "claude", "--terminate"])
+        runRenderedFeed(label: "Claude", feed: "claude", successSound: .animation)
+    }
+
+    @objc private func pushSplitAgentStatus() {
+        runRenderedFeed(label: "Codex + Claude", feed: "pair", successSound: .animation)
+    }
+
+    @objc private func pushCurrentIPFlag() {
+        runRenderedFeed(label: "IP Flag", feed: "ip-flag", successSound: .animation)
+    }
+
+    @objc private func pushOpenClawCrab() {
+        run(
+            label: "OpenClaw crab",
+            arguments: [
+                "native-headless",
+                "send-gif",
+                "--path",
+                "/Users/kirniy/dev/divoom/assets/16x16/curated/pixel-displays/soniccrabe.gif",
+            ],
+            successSound: .animation
+        )
     }
 
     @objc private func pushOrbitArt() {
-        run(label: "Orbit art", arguments: ["send-art", "--style", "orbit", "--seed", "17", "--terminate"])
+        run(label: "Orbit art", arguments: ["send-art", "--style", "orbit", "--seed", "17", "--terminate"], successSound: .animation)
     }
 
     @objc private func pushDoomFireSample() {
@@ -1114,7 +3051,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 "send-divoom16",
                 "/Users/kirniy/dev/divoom/assets/16x16/generated/doom_fire.divoom16",
                 "--terminate",
-            ]
+            ],
+            successSound: .animation
         )
     }
 
@@ -1125,7 +3063,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 "send-divoom16",
                 "/Users/kirniy/dev/divoom/andreas-js/images/bunny.divoom16",
                 "--terminate",
-            ]
+            ],
+            successSound: .animation
         )
     }
 
@@ -1336,19 +3275,74 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     @objc private func toggleAutoCodex() {
-        setAutoRefreshMode(autoRefreshMode == .codex ? .off : .codex)
+        toggleLiveFeed(.codex)
     }
 
     @objc private func toggleAutoClaude() {
-        setAutoRefreshMode(autoRefreshMode == .claude ? .off : .claude)
+        toggleLiveFeed(.claude)
     }
 
-    @objc private func openAnimationGallery() {
-        openAnimationGalleryPage(forceRefresh: true)
+    @objc private func toggleAutoPair() {
+        toggleLiveFeed(.pair)
     }
 
-    @objc private func refreshAnimationGallery() {
-        openAnimationGalleryPage(forceRefresh: true)
+    @objc private func toggleAutoIPFlag() {
+        toggleLiveFeed(.ipFlag)
+    }
+
+    @objc private func setCodexBarShowUsed() {
+        mutateCodexBarPreferences { domain in
+            domain["usageBarsShowUsed"] = true
+        }
+        updateActionStatus(
+            summary: "CodexBar sync set to used",
+            success: true,
+            details: "Ditoo feeds will now follow CodexBar's used percentages."
+        )
+    }
+
+    @objc private func setCodexBarShowRemaining() {
+        mutateCodexBarPreferences { domain in
+            domain["usageBarsShowUsed"] = false
+        }
+        updateActionStatus(
+            summary: "CodexBar sync set to remaining",
+            success: true,
+            details: "Ditoo feeds will now follow CodexBar's remaining percentages."
+        )
+    }
+
+    @objc private func setCodexMetricPreference(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String else { return }
+        mutateCodexBarPreferences { domain in
+            var metrics = (domain["menuBarMetricPreferences"] as? [String: String]) ?? [:]
+            metrics["codex"] = rawValue
+            domain["menuBarMetricPreferences"] = metrics
+        }
+        updateActionStatus(
+            summary: "Codex metric set to \(rawValue)",
+            success: true,
+            details: "Ditoo feeds now follow CodexBar's codex metric = \(rawValue)."
+        )
+    }
+
+    @objc private func setClaudeMetricPreference(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String else { return }
+        mutateCodexBarPreferences { domain in
+            var metrics = (domain["menuBarMetricPreferences"] as? [String: String]) ?? [:]
+            metrics["claude"] = rawValue
+            domain["menuBarMetricPreferences"] = metrics
+        }
+        updateActionStatus(
+            summary: "Claude metric set to \(rawValue)",
+            success: true,
+            details: "Ditoo feeds now follow CodexBar's claude metric = \(rawValue)."
+        )
+    }
+
+    @objc private func openAnimationLibrary() {
+        let controller = ensureAnimationLibraryController()
+        controller.showLibrary()
     }
 
     @objc private func revealCuratedAnimations() {
@@ -1360,132 +3354,112 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         )
     }
 
+    @objc private func sendRecentAnimation(_ sender: NSMenuItem) {
+        guard let relativePath = sender.representedObject as? String else {
+            NSSound.beep()
+            return
+        }
+        let animationURL = curatedAnimationsURL.appendingPathComponent(relativePath)
+        guard FileManager.default.fileExists(atPath: animationURL.path) else {
+            updateActionStatus(
+                summary: "Recent animation missing",
+                success: false,
+                details: animationURL.path
+            )
+            return
+        }
+
+        recordRecentAnimation(relativePath: relativePath)
+        bluetoothDiagnostics.runNativeBLESendGIF(path: animationURL.path, loopCount: 0) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleNativeActionResult(result, summary: sender.title, successSound: .animation)
+            }
+        }
+    }
+
     @objc private func openResearch() {
         NSWorkspace.shared.open(URL(fileURLWithPath: "/Users/kirniy/dev/divoom/RESEARCH.md"))
+    }
+
+    @objc private func openOpenClawDashboard() {
+        launchDetachedShellCommand("openclaw dashboard >/tmp/divoom-openclaw-dashboard.log 2>&1 &", summary: "Opened OpenClaw dashboard")
+    }
+
+    @objc private func openOpenClawNotes() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/Users/kirniy/dev/divoom/OPENCLAW_INTEGRATION.md"))
     }
 
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
 
-    private func openAnimationGalleryPage(forceRefresh: Bool) {
-        if forceRefresh || !FileManager.default.fileExists(atPath: animationGalleryURL.path) {
-            let rebuildResult = rebuildAnimationGallery()
-            guard rebuildResult.success else {
-                updateActionStatus(
-                    summary: "Animation gallery refresh failed",
-                    success: false,
-                    details: rebuildResult.details
-                )
-                return
-            }
+    private func toggleLiveFeed(_ mode: AutoRefreshMode) {
+        if autoRefreshMode == mode {
+            setAutoRefreshMode(.off)
+            quickActionHub.loadingAction = nil
+            updateActionStatus(
+                summary: "Live \(mode.title) stopped",
+                success: true,
+                details: "Automatic refresh disabled."
+            )
+            return
         }
 
-        let opened = NSWorkspace.shared.open(animationGalleryURL)
-        updateActionStatus(
-            summary: opened ? "Opened animation gallery" : "Open animation gallery failed",
-            success: opened,
-            details: animationGalleryURL.path
+        guard let feed = mode.feedIdentifier else {
+            return
+        }
+
+        setAutoRefreshMode(.off)
+        quickActionHub.loadingAction = mode.quickActionKind
+        runRenderedFeed(
+            label: mode.title,
+            feed: feed,
+            successSound: .animation,
+            playErrorSound: true
+        ) { [weak self] success, _ in
+            guard let self else { return }
+            self.quickActionHub.loadingAction = nil
+            guard success else { return }
+            self.setAutoRefreshMode(mode)
+        }
+    }
+
+    private func refreshLiveFeed(_ mode: AutoRefreshMode) {
+        guard let feed = mode.feedIdentifier else {
+            return
+        }
+        runRenderedFeed(
+            label: mode.title,
+            feed: feed,
+            successSound: nil,
+            playErrorSound: false
         )
     }
 
-    private func rebuildAnimationGallery() -> (success: Bool, details: String) {
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [animationGalleryBuilderURL.path]
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let combined = [stdout.trimmingCharacters(in: .whitespacesAndNewlines), stderr.trimmingCharacters(in: .whitespacesAndNewlines)]
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-            return (process.terminationStatus == 0, combined.isEmpty ? "Gallery builder completed." : combined)
-        } catch {
-            return (false, error.localizedDescription)
+    private func ensureAnimationLibraryController() -> AnimationLibraryWindowController {
+        if let animationLibraryController {
+            return animationLibraryController
         }
-    }
-
-    private func handleIncomingURL(_ url: URL) {
-        guard url.scheme == "divoom-menubar" else {
-            return
-        }
-
-        let action = url.host?.lowercased() ?? ""
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        let queryItems = components?.queryItems ?? []
-        let pathValue = queryItems.first(where: { $0.name == "path" })?.value
-
-        switch action {
-        case "send-gif":
-            guard let pathValue, !pathValue.isEmpty else {
-                updateActionStatus(
-                    summary: "Gallery send failed",
-                    success: false,
-                    details: "Missing path query item."
+        let controller = AnimationLibraryWindowController(
+            onSend: { [weak self] item in
+                self?.recordRecentAnimation(relativePath: item.relativePath)
+                self?.run(
+                    label: "Library \(item.title)",
+                    arguments: ["native-headless", "send-gif", "--path", item.fileURL.path],
+                    successSound: .animation
                 )
-                return
-            }
-            handleGallerySend(path: pathValue)
-        case "reveal":
-            guard let pathValue, !pathValue.isEmpty else {
-                updateActionStatus(
-                    summary: "Gallery reveal failed",
-                    success: false,
-                    details: "Missing path query item."
+            },
+            onReveal: { [weak self] item in
+                NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
+                self?.updateActionStatus(
+                    summary: "Revealed animation",
+                    success: true,
+                    details: item.fileURL.path
                 )
-                return
             }
-            handleGalleryReveal(path: pathValue)
-        case "open-gallery":
-            openAnimationGalleryPage(forceRefresh: false)
-        default:
-            updateActionStatus(
-                summary: "Ignored gallery URL",
-                success: false,
-                details: "Unsupported action: \(action.isEmpty ? "<empty>" : action)"
-            )
-        }
-    }
-
-    private func handleGallerySend(path: String) {
-        let resolvedPath = URL(fileURLWithPath: path).standardizedFileURL.path
-        guard FileManager.default.fileExists(atPath: resolvedPath) else {
-            updateActionStatus(
-                summary: "Gallery send failed",
-                success: false,
-                details: "File not found: \(resolvedPath)"
-            )
-            return
-        }
-
-        let label = "Gallery \(URL(fileURLWithPath: resolvedPath).deletingPathExtension().lastPathComponent)"
-        run(label: label, arguments: ["native-headless", "send-gif", "--path", resolvedPath])
-    }
-
-    private func handleGalleryReveal(path: String) {
-        let fileURL = URL(fileURLWithPath: path).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            updateActionStatus(
-                summary: "Gallery reveal failed",
-                success: false,
-                details: "File not found: \(fileURL.path)"
-            )
-            return
-        }
-
-        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-        updateActionStatus(
-            summary: "Revealed animation",
-            success: true,
-            details: fileURL.path
         )
+        animationLibraryController = controller
+        return controller
     }
 }
 

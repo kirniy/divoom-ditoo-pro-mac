@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
+import plistlib
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +12,15 @@ from PIL import Image, ImageDraw
 
 
 SIZE = 16
-FRAME_COUNT = 24
+FRAME_COUNT = 1
+CODEXBAR_PREFERENCES_PATH = Path.home() / "Library" / "Preferences" / "com.steipete.codexbar.plist"
+CODEXBAR_WIDGET_SNAPSHOT_PATH = (
+    Path.home()
+    / "Library"
+    / "Group Containers"
+    / "group.com.steipete.codexbar"
+    / "widget-snapshot.json"
+)
 
 
 @dataclass
@@ -21,27 +29,144 @@ class UsageSnapshot:
     primary_used: int | None
     secondary_used: int | None
     tertiary_used: int | None
+    selected_metric: str
+    show_used: bool
 
 
 THEMES = {
     "codex": {
-        "bg": (5, 8, 12),
-        "base": (20, 36, 46),
-        "ring": (56, 205, 186),
-        "accent": (140, 255, 214),
-        "glow": (78, 130, 255),
+        "bg": (4, 8, 12),
+        "panel": (11, 20, 28),
+        "base": (23, 47, 54),
+        "ring": (59, 196, 177),
+        "accent": (175, 255, 233),
+        "glow": (74, 121, 255),
+        "shadow": (7, 16, 22),
     },
     "claude": {
-        "bg": (17, 8, 5),
-        "base": (48, 27, 17),
-        "ring": (247, 137, 59),
-        "accent": (255, 208, 124),
-        "glow": (255, 90, 54),
+        "bg": (18, 8, 5),
+        "panel": (31, 16, 10),
+        "base": (68, 37, 18),
+        "ring": (243, 134, 59),
+        "accent": (255, 216, 148),
+        "glow": (255, 92, 55),
+        "shadow": (21, 11, 7),
     },
 }
 
+DIGITS_3X5 = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("111", "001", "111", "100", "111"),
+    "3": ("111", "001", "111", "001", "111"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "111", "001", "111"),
+    "6": ("111", "100", "111", "101", "111"),
+    "7": ("111", "001", "010", "010", "010"),
+    "8": ("111", "101", "111", "101", "111"),
+    "9": ("111", "101", "111", "001", "111"),
+    "-": ("000", "000", "111", "000", "000"),
+}
+
+
+def load_codexbar_menu_preferences() -> tuple[dict[str, str], bool]:
+    if not CODEXBAR_PREFERENCES_PATH.exists():
+        return {}, True
+    try:
+        with CODEXBAR_PREFERENCES_PATH.open("rb") as handle:
+            payload = plistlib.load(handle)
+    except Exception:
+        return {}, True
+
+    raw_preferences = payload.get("menuBarMetricPreferences") or {}
+    preferences = {
+        str(provider): str(metric)
+        for provider, metric in raw_preferences.items()
+        if str(metric) in {"primary", "secondary", "tertiary"}
+    }
+    show_used = bool(payload.get("usageBarsShowUsed", True))
+    return preferences, show_used
+
+
+def load_usage_from_widget_snapshot(provider: str) -> UsageSnapshot | None:
+    if not CODEXBAR_WIDGET_SNAPSHOT_PATH.exists():
+        return None
+    try:
+        payload = json.loads(CODEXBAR_WIDGET_SNAPSHOT_PATH.read_text())
+    except Exception:
+        return None
+
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return None
+
+    selected_entry = None
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("provider") or "").strip().lower() == provider:
+            selected_entry = entry
+            break
+
+    if not isinstance(selected_entry, dict):
+        return None
+
+    def metric_used_percent(key: str) -> int | None:
+        metric = selected_entry.get(key)
+        if not isinstance(metric, dict):
+            return None
+        value = metric.get("usedPercent")
+        if value is None:
+            return None
+        return int(round(float(value)))
+
+    preferences, show_used = load_codexbar_menu_preferences()
+    return UsageSnapshot(
+        provider=provider,
+        primary_used=metric_used_percent("primary"),
+        secondary_used=metric_used_percent("secondary"),
+        tertiary_used=metric_used_percent("tertiary"),
+        selected_metric=preferences.get(provider, "primary"),
+        show_used=show_used,
+    )
+
+
+def metric_value(snapshot: UsageSnapshot, metric: str) -> int | None:
+    if metric == "primary":
+        return snapshot.primary_used
+    if metric == "secondary":
+        return snapshot.secondary_used
+    if metric == "tertiary":
+        return snapshot.tertiary_used
+    return None
+
+
+def resolved_metric(snapshot: UsageSnapshot) -> str:
+    preferred = snapshot.selected_metric if snapshot.selected_metric in {"primary", "secondary", "tertiary"} else "primary"
+    if metric_value(snapshot, preferred) is not None:
+        return preferred
+    for fallback in ("primary", "secondary", "tertiary"):
+        if metric_value(snapshot, fallback) is not None:
+            return fallback
+    return "primary"
+
+
+def display_percent(snapshot: UsageSnapshot) -> int:
+    used = normalized_percent(metric_value(snapshot, resolved_metric(snapshot)))
+    if snapshot.show_used:
+        return used
+    return max(0, 100 - used)
+
+
+def display_label(snapshot: UsageSnapshot) -> str:
+    metric = resolved_metric(snapshot)
+    mode = "used" if snapshot.show_used else "remaining"
+    return f"{snapshot.provider} {metric} {mode} {display_percent(snapshot)}%"
+
 
 def load_usage(provider: str) -> UsageSnapshot:
+    snapshot = load_usage_from_widget_snapshot(provider)
+    if snapshot is not None:
+        return snapshot
+
     cmd = [
         "codexbar",
         "usage",
@@ -53,7 +178,7 @@ def load_usage(provider: str) -> UsageSnapshot:
         "json",
         "--json-only",
     ]
-    raw = subprocess.check_output(cmd, text=True)
+    raw = subprocess.check_output(cmd, text=True, timeout=8)
     payload = json.loads(raw)[0]
     usage = payload.get("usage", {})
     primary_payload = usage.get("primary") or {}
@@ -62,89 +187,259 @@ def load_usage(provider: str) -> UsageSnapshot:
     primary = primary_payload.get("usedPercent")
     secondary = secondary_payload.get("usedPercent")
     tertiary = tertiary_payload.get("usedPercent")
+    preferences, show_used = load_codexbar_menu_preferences()
     return UsageSnapshot(
         provider=provider,
         primary_used=primary,
         secondary_used=secondary,
         tertiary_used=tertiary,
+        selected_metric=preferences.get(provider, "primary"),
+        show_used=show_used,
     )
-
-
-def perimeter_points() -> list[tuple[int, int]]:
-    points: list[tuple[int, int]] = []
-    for x in range(1, 15):
-        points.append((x, 1))
-    for y in range(2, 15):
-        points.append((14, y))
-    for x in range(13, 0, -1):
-        points.append((x, 14))
-    for y in range(13, 1, -1):
-        points.append((1, y))
-    return points
-
-
-RING_POINTS = perimeter_points()
 
 
 def mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
     return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def draw_frame(snapshot: UsageSnapshot, frame_index: int) -> Image.Image:
+def draw_pixel_block(draw: ImageDraw.ImageDraw, x: int, y: int, color: tuple[int, int, int], size: int = 1) -> None:
+    for yy in range(y, y + size):
+        for xx in range(x, x + size):
+            if 0 <= xx < SIZE and 0 <= yy < SIZE:
+                draw.point((xx, yy), fill=color)
+
+
+def normalized_percent(value: int | None) -> int:
+    if value is None:
+        return 0
+    return max(0, min(99, int(value)))
+
+
+def draw_background(draw: ImageDraw.ImageDraw, theme: dict[str, tuple[int, int, int]], frame_index: int) -> None:
+    for y in range(SIZE):
+        row = mix(theme["bg"], theme["panel"], y / max(1, SIZE - 1))
+        for x in range(SIZE):
+            draw.point((x, y), fill=row)
+
+    edge = mix(theme["base"], theme["ring"], 0.25)
+    for x in range(1, 15):
+        draw.point((x, 1), fill=edge)
+        draw.point((x, 14), fill=theme["shadow"])
+    for y in range(2, 14):
+        draw.point((1, y), fill=edge)
+        draw.point((14, y), fill=theme["shadow"])
+
+    sweep_x = (frame_index * 2) % 18 - 2
+    for x in range(max(2, sweep_x), min(14, sweep_x + 4)):
+        draw.point((x, 2), fill=mix(theme["accent"], theme["glow"], 0.2))
+
+
+def draw_provider_badge(
+    draw: ImageDraw.ImageDraw,
+    provider: str,
+    theme: dict[str, tuple[int, int, int]],
+    x: int,
+    y: int,
+    frame_index: int,
+) -> None:
+    lit = mix(theme["accent"], theme["glow"], 0.35)
+    dim = mix(theme["ring"], theme["base"], 0.25)
+    if provider == "codex":
+        pixels = [
+            (1, 0), (2, 0),
+            (0, 1),         (3, 1),
+            (0, 2),         (3, 2),
+            (1, 3), (2, 3),
+        ]
+        focus = frame_index % len(pixels)
+        for index, (px, py) in enumerate(pixels):
+            draw.point((x + px, y + py), fill=lit if index == focus else dim)
+        draw.point((x + 1, y + 1), fill=theme["bg"])
+        draw.point((x + 2, y + 2), fill=theme["bg"])
+    else:
+        pixels = [
+            (1, 0),
+            (0, 1), (1, 1), (2, 1),
+            (1, 2),
+        ]
+        for px, py in pixels:
+            draw.point((x + px, y + py), fill=dim)
+        halo = [(1, -1), (-1, 1), (3, 1), (1, 3)]
+        focus = frame_index % len(halo)
+        for index, (px, py) in enumerate(halo):
+            if 0 <= x + px < SIZE and 0 <= y + py < SIZE:
+                draw.point((x + px, y + py), fill=lit if index == focus else theme["base"])
+
+
+def draw_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    x: int,
+    y: int,
+    color: tuple[int, int, int],
+    scale: int = 1,
+    shadow: tuple[int, int, int] | None = None,
+) -> None:
+    cursor_x = x
+    for char in text:
+        glyph = DIGITS_3X5.get(char, DIGITS_3X5["-"])
+        if shadow is not None:
+            for row_index, row in enumerate(glyph):
+                for col_index, bit in enumerate(row):
+                    if bit == "1":
+                        draw_pixel_block(
+                            draw,
+                            cursor_x + col_index * scale + 1,
+                            y + row_index * scale + 1,
+                            shadow,
+                            size=scale,
+                        )
+        for row_index, row in enumerate(glyph):
+            for col_index, bit in enumerate(row):
+                if bit == "1":
+                    draw_pixel_block(
+                        draw,
+                        cursor_x + col_index * scale,
+                        y + row_index * scale,
+                        color,
+                        size=scale,
+                    )
+        cursor_x += 3 * scale + scale
+
+
+def draw_meter(
+    draw: ImageDraw.ImageDraw,
+    theme: dict[str, tuple[int, int, int]],
+    used: int,
+    frame_index: int,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    fill = max(0, min(width, round(width * used / 100)))
+    for row in range(height):
+        for col in range(width):
+            draw.point((x + col, y + row), fill=theme["shadow"])
+    for row in range(height):
+        for col in range(fill):
+            ratio = col / max(1, width - 1)
+            color = mix(theme["ring"], theme["accent"], ratio)
+            if col == (frame_index + row) % max(1, fill):
+                color = theme["glow"]
+            draw.point((x + col, y + row), fill=color)
+
+
+def rect_perimeter_points(x: int, y: int, width: int, height: int) -> list[tuple[int, int]]:
+    points: list[tuple[int, int]] = []
+    if width < 2 or height < 2:
+        return points
+    for px in range(x, x + width):
+        points.append((px, y))
+    for py in range(y + 1, y + height):
+        points.append((x + width - 1, py))
+    for px in range(x + width - 2, x - 1, -1):
+        points.append((px, y + height - 1))
+    for py in range(y + height - 2, y, -1):
+        points.append((x, py))
+    return points
+
+
+def draw_perimeter_meter(
+    draw: ImageDraw.ImageDraw,
+    theme: dict[str, tuple[int, int, int]],
+    percent: int,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    points = rect_perimeter_points(x, y, width, height)
+    fill_count = max(0, min(len(points), round(len(points) * percent / 100)))
+    for index, point in enumerate(points):
+        if index < fill_count:
+            ratio = index / max(1, len(points) - 1)
+            color = mix(theme["ring"], theme["accent"], ratio)
+        else:
+            color = mix(theme["base"], theme["panel"], 0.35)
+        draw.point(point, fill=color)
+
+
+def draw_single_frame(snapshot: UsageSnapshot, frame_index: int) -> Image.Image:
     theme = THEMES[snapshot.provider]
     img = Image.new("RGB", (SIZE, SIZE), theme["bg"])
     draw = ImageDraw.Draw(img)
+    draw_background(draw, theme, frame_index)
 
-    secondary_used = snapshot.secondary_used or 0
-    primary_used = snapshot.primary_used or 0
-    tertiary_used = snapshot.tertiary_used or 0
+    percent = display_percent(snapshot)
+    label = f"{percent:02d}"
+    text_width = len(label) * 6 + (len(label) - 1) * 1
+    text_x = 4
 
-    secondary_fill = max(0, min(len(RING_POINTS), round(len(RING_POINTS) * secondary_used / 100)))
-    orbit = frame_index % len(RING_POINTS)
-    pulse = (math.sin(frame_index / FRAME_COUNT * math.tau) + 1) / 2
+    draw_perimeter_meter(draw, theme, percent, x=1, y=1, width=14, height=14)
+    draw_provider_badge(draw, snapshot.provider, theme, x=2, y=3, frame_index=frame_index)
+    draw_text(
+        draw,
+        label,
+        x=text_x,
+        y=5,
+        color=theme["accent"],
+        scale=2,
+        shadow=theme["shadow"],
+    )
+    return img
 
-    for index, point in enumerate(RING_POINTS):
-        color = theme["base"]
-        if index < secondary_fill:
-            glow_mix = 0.35 + 0.45 * pulse
-            color = mix(theme["ring"], theme["accent"], glow_mix)
-        if index == orbit:
-            color = theme["glow"]
-        draw.point(point, fill=color)
 
-    # Inner capsule shows primary window
-    capsule_height = max(1, round(8 * max(0, 100 - primary_used) / 100))
-    for y in range(4, 12):
-        for x in range(6, 10):
-            draw.point((x, y), fill=(18, 18, 20))
-    for y in range(12 - capsule_height, 12):
-        for x in range(6, 10):
-            color = mix(theme["ring"], theme["accent"], (y - (12 - capsule_height)) / max(1, capsule_height))
-            draw.point((x, y), fill=color)
+def draw_split_card(
+    draw: ImageDraw.ImageDraw,
+    snapshot: UsageSnapshot,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> None:
+    theme = THEMES[snapshot.provider]
+    percent = display_percent(snapshot)
+    panel = mix(theme["panel"], theme["bg"], 0.08)
+    for row in range(height):
+        for col in range(width):
+            draw.point((x + col, y + row), fill=panel)
+    draw_perimeter_meter(draw, theme, percent, x=x, y=y, width=width, height=height)
+    draw_provider_badge(draw, snapshot.provider, theme, x=x + 1, y=y + 1, frame_index=0)
+    draw_text(
+        draw,
+        f"{percent:02d}",
+        x=x + 5,
+        y=y + 1,
+        color=theme["accent"],
+        scale=1,
+        shadow=None,
+    )
 
-    # Tertiary window appears as bottom sparks when present.
-    if tertiary_used:
-        spark_count = max(1, round(4 * (100 - tertiary_used) / 100))
-        for i in range(spark_count):
-            x = 5 + i * 2
-            draw.point((x, 13), fill=theme["accent"])
 
-    # Center pulse
-    center = 7.5
-    radius = 1.5 + pulse * 1.2
-    color = mix(theme["glow"], theme["accent"], pulse)
-    for y in range(SIZE):
-        for x in range(SIZE):
-            dx = x - center
-            dy = y - center
-            if dx * dx + dy * dy <= radius * radius:
-                draw.point((x, y), fill=color)
-
+def draw_pair_frame(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapshot, frame_index: int) -> Image.Image:
+    img = Image.new("RGB", (SIZE, SIZE), (10, 12, 18))
+    draw = ImageDraw.Draw(img)
+    draw_split_card(draw, codex_snapshot, x=1, y=1, width=14, height=6)
+    draw_split_card(draw, claude_snapshot, x=1, y=9, width=14, height=6)
     return img
 
 
 def render(snapshot: UsageSnapshot, output_path: Path) -> None:
-    frames = [draw_frame(snapshot, i) for i in range(FRAME_COUNT)]
+    frames = [draw_single_frame(snapshot, i) for i in range(FRAME_COUNT)]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=70,
+        loop=0,
+        disposal=2,
+    )
+
+
+def render_pair(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapshot, output_path: Path) -> None:
+    frames = [draw_pair_frame(codex_snapshot, claude_snapshot, i) for i in range(FRAME_COUNT)]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         output_path,
@@ -171,6 +466,10 @@ def main() -> int:
                 "primaryUsed": snapshot.primary_used,
                 "secondaryUsed": snapshot.secondary_used,
                 "tertiaryUsed": snapshot.tertiary_used,
+                "selectedMetric": resolved_metric(snapshot),
+                "displayMode": "used" if snapshot.show_used else "remaining",
+                "displayPercent": display_percent(snapshot),
+                "label": display_label(snapshot),
                 "output": args.output,
             },
             indent=2,

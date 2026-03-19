@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import io
 import json
 import math
 import os
@@ -14,11 +15,19 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.request import Request, urlopen
 
 from PIL import Image, ImageColor, ImageOps, ImageSequence
 import serial
 
-from render_status_gif import render as render_status_gif, load_usage
+from render_status_gif import (
+    display_label,
+    display_percent,
+    render as render_status_gif,
+    render_pair as render_status_pair_gif,
+    resolved_metric,
+    load_usage,
+)
 from render_generative_gif import render as render_art_gif
 
 
@@ -349,14 +358,193 @@ def render_status(provider: str) -> tuple[Path, dict[str, object]]:
     output = Path(tempfile.gettempdir()) / f"divoom-{provider}-status.gif"
     snapshot = load_usage(provider)
     render_status_gif(snapshot, output)
+    selected_metric = resolved_metric(snapshot)
+    raw_used = getattr(snapshot, f"{selected_metric}_used", 0) or 0
+    display_mode = "used" if snapshot.show_used else "remaining"
+    current_display_percent = display_percent(snapshot)
     info = {
         "provider": snapshot.provider,
         "primaryUsed": snapshot.primary_used,
         "secondaryUsed": snapshot.secondary_used,
         "tertiaryUsed": snapshot.tertiary_used,
+        "selectedMetric": selected_metric,
+        "displayMode": display_mode,
+        "displayPercent": current_display_percent,
+        "label": display_label(snapshot),
         "output": str(output),
     }
     return output, info
+
+
+def render_status_pair() -> tuple[Path, dict[str, object]]:
+    output = Path(tempfile.gettempdir()) / "divoom-codex-claude-status.gif"
+
+    codex_snapshot = load_usage("codex")
+    claude_snapshot = load_usage("claude")
+    render_status_pair_gif(codex_snapshot, claude_snapshot, output)
+    codex_display_percent = display_percent(codex_snapshot)
+    claude_display_percent = display_percent(claude_snapshot)
+
+    info = {
+        "provider": "codex+claude",
+        "codexPrimaryUsed": codex_snapshot.primary_used,
+        "codexSecondaryUsed": codex_snapshot.secondary_used,
+        "codexTertiaryUsed": codex_snapshot.tertiary_used,
+        "codexSelectedMetric": resolved_metric(codex_snapshot),
+        "codexDisplayMode": "used" if codex_snapshot.show_used else "remaining",
+        "codexDisplayPercent": codex_display_percent,
+        "claudePrimaryUsed": claude_snapshot.primary_used,
+        "claudeSecondaryUsed": claude_snapshot.secondary_used,
+        "claudeTertiaryUsed": claude_snapshot.tertiary_used,
+        "claudeSelectedMetric": resolved_metric(claude_snapshot),
+        "claudeDisplayMode": "used" if claude_snapshot.show_used else "remaining",
+        "claudeDisplayPercent": claude_display_percent,
+        "label": f"Codex {codex_display_percent}% / Claude {claude_display_percent}%",
+        "output": str(output),
+    }
+    return output, info
+
+
+def read_json_url(url: str) -> dict[str, object]:
+    request = Request(url, headers={"User-Agent": "DivoomDitooProMac/1.0"})
+    with urlopen(request, timeout=8) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def normalize_country_code(value: object) -> str:
+    country = str(value or "").strip().upper()
+    return country if len(country) == 2 else ""
+
+
+def lookup_public_ip_country() -> dict[str, str]:
+    providers = [
+        (
+            "ipinfo",
+            "https://ipinfo.io/json",
+            lambda payload: {
+                "ip": str(payload.get("ip") or "").strip(),
+                "country": normalize_country_code(payload.get("country")),
+                "city": str(payload.get("city") or "").strip(),
+                "region": str(payload.get("region") or "").strip(),
+            },
+        ),
+        (
+            "ipapi",
+            "https://ipapi.co/json/",
+            lambda payload: {
+                "ip": str(payload.get("ip") or "").strip(),
+                "country": normalize_country_code(payload.get("country_code")),
+                "city": str(payload.get("city") or "").strip(),
+                "region": str(payload.get("region") or "").strip(),
+            },
+        ),
+        (
+            "ip-api",
+            "http://ip-api.com/json/",
+            lambda payload: {
+                "ip": str(payload.get("query") or "").strip(),
+                "country": normalize_country_code(payload.get("countryCode")),
+                "city": str(payload.get("city") or "").strip(),
+                "region": str(payload.get("regionName") or "").strip(),
+            },
+        ),
+    ]
+
+    errors: list[str] = []
+    for name, url, parser in providers:
+        try:
+            resolved = parser(read_json_url(url))
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            continue
+        if resolved["country"]:
+            resolved["source"] = name
+            return resolved
+        errors.append(f"{name}: invalid country code")
+
+    try:
+        request = Request("https://www.cloudflare.com/cdn-cgi/trace", headers={"User-Agent": "DivoomDitooProMac/1.0"})
+        with urlopen(request, timeout=8) as response:
+            body = response.read().decode("utf-8")
+        payload = dict(
+            line.split("=", 1)
+            for line in body.splitlines()
+            if "=" in line
+        )
+        country = normalize_country_code(payload.get("loc"))
+        if country:
+            return {
+                "ip": str(payload.get("ip") or "").strip(),
+                "country": country,
+                "city": "",
+                "region": "",
+                "source": "cloudflare-trace",
+            }
+        errors.append("cloudflare-trace: invalid country code")
+    except Exception as exc:
+        errors.append(f"cloudflare-trace: {exc}")
+
+    raise RuntimeError("Could not determine public IP country. " + "; ".join(errors))
+
+
+def render_ip_flag() -> tuple[Path, dict[str, object]]:
+    lookup = lookup_public_ip_country()
+    country = lookup["country"].lower()
+    flag_url = f"https://flagcdn.com/w80/{country}.png"
+    with urlopen(flag_url, timeout=8) as response:
+        raw = response.read()
+
+    source = Image.open(io.BytesIO(raw)).convert("RGB")
+    fitted = ImageOps.fit(source, (16, 12), method=Image.Resampling.BILINEAR, centering=(0.5, 0.5))
+    fitted = lift_ditoo_black(fitted)
+
+    frames: list[Image.Image] = []
+    for index in range(12):
+        frame = Image.new("RGB", (16, 16), (6, 8, 12))
+        wave = index / 12.0 * math.tau
+        for y in range(12):
+            row = fitted.crop((0, y, 16, y + 1))
+            offset = round(math.sin(wave + y * 0.45) * 1.6)
+            frame.paste(row, (offset, y + 2))
+        shine_x = (index * 2) % 20 - 2
+        for x in range(max(0, shine_x), min(16, shine_x + 3)):
+            for y in range(2, 14):
+                base = frame.getpixel((x, y))
+                frame.putpixel((x, y), tuple(min(255, channel + 28) for channel in base))
+        frames.append(frame)
+
+    output = Path(tempfile.gettempdir()) / f"divoom-flag-{country}.gif"
+    frames[0].save(
+        output,
+        save_all=True,
+        append_images=frames[1:],
+        duration=80,
+        loop=0,
+        disposal=2,
+    )
+    info = {
+        "provider": "ip-flag",
+        "ip": lookup["ip"],
+        "country": lookup["country"],
+        "city": lookup["city"],
+        "region": lookup["region"],
+        "source": lookup.get("source", ""),
+        "label": f"IP Flag {lookup['country']}",
+        "output": str(output),
+    }
+    return output, info
+
+
+def lift_ditoo_black(image: Image.Image) -> Image.Image:
+    lifted = image.copy()
+    for y in range(lifted.height):
+        for x in range(lifted.width):
+            red, green, blue = lifted.getpixel((x, y))
+            if max(red, green, blue) <= 24:
+                lifted.putpixel((x, y), (44, 48, 60))
+            elif max(red, green, blue) <= 42:
+                lifted.putpixel((x, y), (58, 64, 78))
+    return lifted
 
 
 def render_art(style: str, seed: int) -> tuple[Path, dict[str, object]]:
@@ -385,47 +573,46 @@ def available_output_devices() -> list[str]:
 
 
 def sound_path_for_profile(profile: str) -> str:
+    sounds_dir = ROOT / "assets" / "sounds" / "openpeon-cute-minimal"
     candidates = {
-        "attention": [
-            "/System/Library/Sounds/Glass.aiff",
-            "/System/Library/Sounds/Ping.aiff",
-        ],
-        "complete": [
-            "/System/Library/Sounds/Hero.aiff",
-            "/System/Library/Sounds/Pop.aiff",
-        ],
+        "attention": sounds_dir / "hover-sound-low.wav",
+        "complete": sounds_dir / "confirm-sound.wav",
+        "color-set": sounds_dir / "confirm-sound.wav",
+        "animation": sounds_dir / "pause-sound.wav",
+        "error": sounds_dir / "cancel-sound-low.wav",
     }
-    for path in candidates[profile]:
-        if Path(path).exists():
-            return path
-    raise FileNotFoundError(f"no system sound found for profile {profile}")
+    path = candidates[profile]
+    if path.exists():
+        return str(path)
+    raise FileNotFoundError(f"no sound found for profile {profile}: {path}")
 
 
 def audio_is_disabled() -> bool:
     return DEFAULT_AUDIO_DISABLE_FILE.exists()
 
 
-def play_sound_via_divoom(profile: str) -> dict[str, str]:
+def default_volume_for_profile(profile: str) -> float:
+    volumes = {
+        "attention": 0.10,
+        "complete": 0.13,
+        "color-set": 0.12,
+        "animation": 0.14,
+        "error": 0.09,
+    }
+    return volumes[profile]
+
+
+def play_sound_via_divoom(profile: str, volume: float | None = None) -> dict[str, str]:
     if audio_is_disabled():
         return {
             "profile": profile,
             "skipped": "audio-disabled",
             "disableFile": str(DEFAULT_AUDIO_DISABLE_FILE),
         }
-    device_name = "DitooPro-Audio"
-    if device_name not in available_output_devices():
-        raise FileNotFoundError("DitooPro-Audio is not available as a macOS output device")
-    original_device = current_output_device()
     sound_path = sound_path_for_profile(profile)
-    try:
-        if original_device != device_name:
-            switch_output_device(device_name)
-            time.sleep(0.4)
-        subprocess.check_call(["/usr/bin/afplay", sound_path])
-    finally:
-        if current_output_device() != original_device:
-            switch_output_device(original_device)
-    return {"profile": profile, "soundPath": sound_path, "restoredOutput": original_device}
+    resolved_volume = default_volume_for_profile(profile) if volume is None else volume
+    subprocess.check_call(["/usr/bin/afplay", "-v", f"{resolved_volume:.2f}", sound_path])
+    return {"profile": profile, "soundPath": sound_path, "volume": f"{resolved_volume:.2f}", "output": "current-default"}
 
 
 def parse_color_triplet(color: str) -> tuple[int, int, int]:
@@ -726,6 +913,39 @@ def cmd_send_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_send_status_pair(args: argparse.Namespace) -> int:
+    output, info = render_status_pair()
+    payload = serialize_path(output)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, **info})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_send_ip_flag(args: argparse.Namespace) -> int:
+    output, info = render_ip_flag()
+    payload = serialize_path(output)
+    with DivoomClient(port=args.port, endpoint="display") as client:
+        result = client.upload_animation_bytes(payload, terminate=args.terminate)
+        client.show_design()
+        result.update({"port": client.port, **info})
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_render_feed(args: argparse.Namespace) -> int:
+    if args.feed == "pair":
+        output, info = render_status_pair()
+    elif args.feed == "ip-flag":
+        output, info = render_ip_flag()
+    else:
+        output, info = render_status(args.feed)
+    print(json.dumps({"output": str(output), **info}, indent=2))
+    return 0
+
+
 def cmd_send_art(args: argparse.Namespace) -> int:
     output, info = render_art(args.style, args.seed)
     payload = serialize_path(output)
@@ -774,7 +994,7 @@ def cmd_show_design(args: argparse.Namespace) -> int:
 
 
 def cmd_play_sound(args: argparse.Namespace) -> int:
-    result = play_sound_via_divoom(args.profile)
+    result = play_sound_via_divoom(args.profile, volume=args.volume)
     print(json.dumps(result, indent=2))
     return 0
 
@@ -970,15 +1190,23 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
     elif args.action == "animation-upload":
         mode = mode_map[args.action]
         parameter = str(Path(args.path).expanduser().resolve()) if args.path else None
-    elif args.action == "send-gif":
+    elif args.action in {"send-gif", "animation-verify", "animation-upload-oldmode"}:
         input_path = Path(args.path).expanduser().resolve()
         if not input_path.exists():
             print(json.dumps({"error": "FileNotFoundError", "message": f"file not found: {input_path}"}, indent=2), file=sys.stderr)
             return 1
-        divoom16_path = Path(tempfile.gettempdir()) / f"divoom-gif-{input_path.stem}.divoom16"
-        payload = serialize_path(input_path)
-        divoom16_path.write_bytes(payload)
-        mode = "--headless-native-animation-upload"
+        if input_path.suffix == ".divoom16":
+            divoom16_path = input_path
+        else:
+            divoom16_path = Path(tempfile.gettempdir()) / f"divoom-{args.action}-{input_path.stem}.divoom16"
+            payload = serialize_path(input_path)
+            divoom16_path.write_bytes(payload)
+        headless_flags = {
+            "send-gif": "--headless-native-send-gif",
+            "animation-verify": "--headless-native-animation-verify",
+            "animation-upload-oldmode": "--headless-native-animation-upload-oldmode",
+        }
+        mode = headless_flags[args.action]
         parameter = str(divoom16_path)
     elif args.action == "pomodoro-timer":
         mode = mode_map[args.action]
@@ -1048,6 +1276,20 @@ def build_parser() -> argparse.ArgumentParser:
     send_status.add_argument("--terminate", action="store_true")
     send_status.set_defaults(func=cmd_send_status)
 
+    send_status_pair = sub.add_parser("send-status-pair", help="Render combined Codex + Claude status and upload it")
+    send_status_pair.add_argument("--port")
+    send_status_pair.add_argument("--terminate", action="store_true")
+    send_status_pair.set_defaults(func=cmd_send_status_pair)
+
+    send_ip_flag = sub.add_parser("send-ip-flag", help="Render the animated flag for the current public IP country and upload it")
+    send_ip_flag.add_argument("--port")
+    send_ip_flag.add_argument("--terminate", action="store_true")
+    send_ip_flag.set_defaults(func=cmd_send_ip_flag)
+
+    render_feed = sub.add_parser("render-feed", help="Render a feed animation to a local file without uploading it")
+    render_feed.add_argument("--feed", choices=["codex", "claude", "pair", "ip-flag"], required=True)
+    render_feed.set_defaults(func=cmd_render_feed)
+
     send_art = sub.add_parser("send-art", help="Render a seeded generative animation and upload it")
     send_art.add_argument("--style", choices=["orbit", "plasma", "ripple"], default="orbit")
     send_art.add_argument("--seed", type=int, default=17)
@@ -1066,8 +1308,9 @@ def build_parser() -> argparse.ArgumentParser:
     show_design.add_argument("--port")
     show_design.set_defaults(func=cmd_show_design)
 
-    play_sound = sub.add_parser("play-sound", help="Play an attention or completion sound via DitooPro-Audio")
-    play_sound.add_argument("--profile", choices=["attention", "complete"], default="attention")
+    play_sound = sub.add_parser("play-sound", help="Play an OpenPeon cute-minimal feedback sound on the current output")
+    play_sound.add_argument("--profile", choices=["attention", "complete", "color-set", "animation", "error"], default="attention")
+    play_sound.add_argument("--volume", type=float, default=None, help="Override playback volume between 0.0 and 1.0")
     play_sound.set_defaults(func=cmd_play_sound)
 
     native_open_app = sub.add_parser(
@@ -1082,7 +1325,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     native_headless.add_argument(
         "action",
-        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer"],
+        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animation-verify", "animation-upload-oldmode", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer"],
     )
     native_headless.add_argument(
         "--color",
