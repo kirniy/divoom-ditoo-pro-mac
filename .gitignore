@@ -9,6 +9,7 @@ build/
 out/
 .cache/
 .ralph/
+.ralph-merge/
 .ralphrc
 
 com.divoom.Smart_3.8.02_und3fined.ipa
