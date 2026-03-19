@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import io
 import json
 import math
@@ -52,6 +53,9 @@ DEFAULT_NATIVE_APP_LOG = Path.home() / "Library" / "Logs" / "DivoomMenuBar.log"
 DEFAULT_NATIVE_IPC_ROOT = Path(tempfile.gettempdir()) / "divoom-menubar-ipc"
 DEFAULT_NATIVE_IPC_REQUESTS = DEFAULT_NATIVE_IPC_ROOT / "requests"
 DEFAULT_NATIVE_IPC_RESULTS = DEFAULT_NATIVE_IPC_ROOT / "results"
+DEFAULT_IP_FLAG_CACHE_DIR = ROOT / ".cache" / "ip-flag"
+DEFAULT_IP_LOOKUP_CACHE = DEFAULT_IP_FLAG_CACHE_DIR / "lookup.json"
+DEFAULT_PALETTE_RENDER_CACHE_DIR = ROOT / ".cache" / "palette-renders"
 
 
 def discover_ports() -> list[str]:
@@ -405,9 +409,9 @@ def render_status_pair() -> tuple[Path, dict[str, object]]:
     return output, info
 
 
-def read_json_url(url: str) -> dict[str, object]:
+def read_json_url(url: str, timeout: float = 2.5) -> dict[str, object]:
     request = Request(url, headers={"User-Agent": "DivoomDitooProMac/1.0"})
-    with urlopen(request, timeout=8) as response:
+    with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -417,6 +421,21 @@ def normalize_country_code(value: object) -> str:
 
 
 def lookup_public_ip_country() -> dict[str, str]:
+    if DEFAULT_IP_LOOKUP_CACHE.exists():
+        try:
+            cached = json.loads(DEFAULT_IP_LOOKUP_CACHE.read_text())
+            cached_at = float(cached.get("cachedAt", 0))
+            if time.time() - cached_at <= 30:
+                return {
+                    "ip": str(cached.get("ip") or "").strip(),
+                    "country": str(cached.get("country") or "").strip().upper(),
+                    "city": str(cached.get("city") or "").strip(),
+                    "region": str(cached.get("region") or "").strip(),
+                    "source": str(cached.get("source") or "cache"),
+                }
+        except Exception:
+            pass
+
     providers = [
         (
             "ipinfo",
@@ -464,7 +483,7 @@ def lookup_public_ip_country() -> dict[str, str]:
 
     try:
         request = Request("https://www.cloudflare.com/cdn-cgi/trace", headers={"User-Agent": "DivoomDitooProMac/1.0"})
-        with urlopen(request, timeout=8) as response:
+        with urlopen(request, timeout=2.5) as response:
             body = response.read().decode("utf-8")
         payload = dict(
             line.split("=", 1)
@@ -490,9 +509,38 @@ def lookup_public_ip_country() -> dict[str, str]:
 def render_ip_flag() -> tuple[Path, dict[str, object]]:
     lookup = lookup_public_ip_country()
     country = lookup["country"].lower()
-    flag_url = f"https://flagcdn.com/w80/{country}.png"
-    with urlopen(flag_url, timeout=8) as response:
-        raw = response.read()
+    DEFAULT_IP_FLAG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        DEFAULT_IP_LOOKUP_CACHE.write_text(
+            json.dumps({"cachedAt": time.time(), **lookup}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    output = DEFAULT_IP_FLAG_CACHE_DIR / f"{country}.gif"
+    if output.exists():
+        info = {
+            "provider": "ip-flag",
+            "ip": lookup["ip"],
+            "country": lookup["country"],
+            "city": lookup["city"],
+            "region": lookup["region"],
+            "source": lookup.get("source", ""),
+            "label": f"IP Flag {lookup['country']}",
+            "output": str(output),
+        }
+        return output, info
+
+    png_cache = DEFAULT_IP_FLAG_CACHE_DIR / f"{country}.png"
+    if png_cache.exists():
+        raw = png_cache.read_bytes()
+    else:
+        flag_url = f"https://flagcdn.com/w80/{country}.png"
+        request = Request(flag_url, headers={"User-Agent": "DivoomDitooProMac/1.0"})
+        with urlopen(request, timeout=3.0) as response:
+            raw = response.read()
+        png_cache.write_bytes(raw)
 
     source = Image.open(io.BytesIO(raw)).convert("RGB")
     fitted = ImageOps.fit(source, (16, 12), method=Image.Resampling.BILINEAR, centering=(0.5, 0.5))
@@ -513,7 +561,6 @@ def render_ip_flag() -> tuple[Path, dict[str, object]]:
                 frame.putpixel((x, y), tuple(min(255, channel + 28) for channel in base))
         frames.append(frame)
 
-    output = Path(tempfile.gettempdir()) / f"divoom-flag-{country}.gif"
     frames[0].save(
         output,
         save_all=True,
@@ -530,6 +577,126 @@ def render_ip_flag() -> tuple[Path, dict[str, object]]:
         "region": lookup["region"],
         "source": lookup.get("source", ""),
         "label": f"IP Flag {lookup['country']}",
+        "output": str(output),
+    }
+    return output, info
+
+
+def lerp_channel(left: int, right: int, fraction: float) -> int:
+    return max(0, min(255, round(left + (right - left) * fraction)))
+
+
+def sample_palette(colors: list[tuple[int, int, int]], t: float) -> tuple[int, int, int]:
+    if len(colors) == 1:
+        return colors[0]
+    clamped = max(0.0, min(0.999999, t))
+    scaled = clamped * (len(colors) - 1)
+    index = int(math.floor(scaled))
+    fraction = scaled - index
+    left = colors[index]
+    right = colors[min(index + 1, len(colors) - 1)]
+    return (
+        lerp_channel(left[0], right[0], fraction),
+        lerp_channel(left[1], right[1], fraction),
+        lerp_channel(left[2], right[2], fraction),
+    )
+
+
+def brighten(color: tuple[int, int, int], amount: int) -> tuple[int, int, int]:
+    return tuple(min(255, channel + amount) for channel in color)
+
+
+def render_palette_animation(mode: str, colors: list[tuple[int, int, int]]) -> tuple[Path, dict[str, object]]:
+    if not colors:
+        raise ValueError("at least one color is required")
+
+    DEFAULT_PALETTE_RENDER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    normalized = [f"{red:02x}{green:02x}{blue:02x}" for red, green, blue in colors]
+    cache_key = hashlib.sha1(f"{mode}|{'-'.join(normalized)}".encode("utf-8")).hexdigest()[:16]
+    output = DEFAULT_PALETTE_RENDER_CACHE_DIR / f"{mode}-{cache_key}.gif"
+
+    if output.exists():
+        return output, {
+            "provider": "palette",
+            "mode": mode,
+            "colors": [f"#{value.upper()}" for value in normalized],
+            "label": f"{mode.replace('-', ' ').title()} · {' '.join(f'#{value.upper()}' for value in normalized[:4])}",
+            "output": str(output),
+        }
+
+    frames: list[Image.Image] = []
+    durations: list[int] = []
+    frame_count = 24 if mode != "palette-steps" else max(len(colors) * 4, 12)
+
+    for frame_index in range(frame_count):
+        image = Image.new("RGB", (16, 16), (0, 0, 0))
+        if mode == "gradient-sweep":
+            offset = frame_index / frame_count
+            for y in range(16):
+                for x in range(16):
+                    t = ((x / 15.0) + offset + (y / 15.0) * 0.18) % 1.0
+                    image.putpixel((x, y), sample_palette(colors, t))
+            durations.append(70)
+        elif mode == "pulse":
+            base_t = frame_index / frame_count
+            base_color = sample_palette(colors, base_t)
+            pulse = 0.58 + 0.42 * ((math.sin(frame_index / frame_count * math.tau) + 1.0) / 2.0)
+            for y in range(16):
+                for x in range(16):
+                    distance = abs(x - 7.5) + abs(y - 7.5)
+                    falloff = max(0.55, 1.0 - distance / 24.0)
+                    scale = pulse * falloff
+                    image.putpixel(
+                        (x, y),
+                        (
+                            round(base_color[0] * scale),
+                            round(base_color[1] * scale),
+                            round(base_color[2] * scale),
+                        ),
+                    )
+            durations.append(80)
+        elif mode == "aurora":
+            offset = frame_index / frame_count * math.tau
+            for y in range(16):
+                for x in range(16):
+                    wave = math.sin(offset + x * 0.38 + y * 0.16) * 0.5 + 0.5
+                    drift = math.sin(offset * 0.7 + y * 0.42) * 0.12
+                    t = (wave + drift) % 1.0
+                    color = sample_palette(colors, t)
+                    image.putpixel((x, y), brighten(color, 10 if y < 5 else 0))
+            durations.append(75)
+        elif mode == "palette-steps":
+            palette_index = (frame_index // 4) % len(colors)
+            color = colors[palette_index]
+            accent = brighten(color, 36)
+            image.paste(color, (0, 0, 16, 16))
+            for x in range(16):
+                image.putpixel((x, 0), accent)
+                image.putpixel((x, 15), accent)
+            for y in range(16):
+                image.putpixel((0, y), accent)
+                image.putpixel((15, y), accent)
+            durations.append(110)
+        else:
+            raise ValueError(f"unsupported palette mode: {mode}")
+        frames.append(image)
+
+    frames[0].save(
+        output,
+        save_all=True,
+        append_images=frames[1:],
+        loop=0,
+        duration=durations,
+        optimize=False,
+        disposal=2,
+    )
+
+    label_mode = mode.replace("-", " ").title()
+    info = {
+        "provider": "palette",
+        "mode": mode,
+        "colors": [f"#{value.upper()}" for value in normalized],
+        "label": f"{label_mode} · {' '.join(f'#{value.upper()}' for value in normalized[:4])}",
         "output": str(output),
     }
     return output, info
@@ -946,6 +1113,15 @@ def cmd_render_feed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_render_palette(args: argparse.Namespace) -> int:
+    if len(args.color) < 3 or len(args.color) > 10:
+        raise ValueError("render-palette requires between 3 and 10 colors")
+    colors = [parse_color_triplet(value) for value in args.color]
+    output, info = render_palette_animation(args.mode, colors)
+    print(json.dumps({"output": str(output), **info}, indent=2))
+    return 0
+
+
 def cmd_send_art(args: argparse.Namespace) -> int:
     output, info = render_art(args.style, args.seed)
     payload = serialize_path(output)
@@ -1289,6 +1465,11 @@ def build_parser() -> argparse.ArgumentParser:
     render_feed = sub.add_parser("render-feed", help="Render a feed animation to a local file without uploading it")
     render_feed.add_argument("--feed", choices=["codex", "claude", "pair", "ip-flag"], required=True)
     render_feed.set_defaults(func=cmd_render_feed)
+
+    render_palette = sub.add_parser("render-palette", help="Render a palette-based 16x16 animation to a local GIF file")
+    render_palette.add_argument("--mode", choices=["gradient-sweep", "palette-steps", "pulse", "aurora"], required=True)
+    render_palette.add_argument("--color", action="append", required=True, help="Hex color triplet like #FF3B30; repeat 3-10 times")
+    render_palette.set_defaults(func=cmd_render_palette)
 
     send_art = sub.add_parser("send-art", help="Render a seeded generative animation and upload it")
     send_art.add_argument("--style", choices=["orbit", "plasma", "ripple"], default="orbit")

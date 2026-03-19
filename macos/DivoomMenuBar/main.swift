@@ -30,12 +30,99 @@ enum AppLog {
     }
 }
 
+private let menuSurfaceWidth: CGFloat = 560
+private let summaryCardHeight: CGFloat = 110
+private let quickHubHeight: CGFloat = 190
+private let colorStudioHeight: CGFloat = 246
+
+private enum ColorMotionMode: String, CaseIterable, Codable {
+    case solid
+    case gradientSweep = "gradient-sweep"
+    case paletteSteps = "palette-steps"
+    case pulse
+    case aurora
+
+    var title: String {
+        switch self {
+        case .solid:
+            return "Solid"
+        case .gradientSweep:
+            return "Gradient Sweep"
+        case .paletteSteps:
+            return "Palette Steps"
+        case .pulse:
+            return "Pulse"
+        case .aurora:
+            return "Aurora"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .solid:
+            return "Solid"
+        case .gradientSweep:
+            return "Sweep"
+        case .paletteSteps:
+            return "Steps"
+        case .pulse:
+            return "Pulse"
+        case .aurora:
+            return "Aurora"
+        }
+    }
+
+    var summaryPrefix: String {
+        switch self {
+        case .solid:
+            return "Solid"
+        case .gradientSweep:
+            return "Gradient Sweep"
+        case .paletteSteps:
+            return "Palette Steps"
+        case .pulse:
+            return "Pulse Motion"
+        case .aurora:
+            return "Aurora Motion"
+        }
+    }
+}
+
+private struct SavedColorCombo: Codable, Equatable {
+    let id: String
+    let name: String
+    let mode: ColorMotionMode
+    let colors: [String]
+}
+
+private enum SavedColorComboStore {
+    static let defaultsKey = "dev.kirniy.divoom.saved-color-combos"
+
+    static func load() -> [SavedColorCombo] {
+        guard
+            let data = UserDefaults.standard.data(forKey: defaultsKey),
+            let combos = try? JSONDecoder().decode([SavedColorCombo].self, from: data)
+        else {
+            return []
+        }
+        return combos
+    }
+
+    static func save(_ combos: [SavedColorCombo]) {
+        guard let data = try? JSONEncoder().encode(combos) else {
+            return
+        }
+        UserDefaults.standard.set(data, forKey: defaultsKey)
+    }
+}
+
 private enum AutoRefreshMode {
     case off
     case codex
     case claude
     case pair
     case ipFlag
+    case favorites
 
     var title: String {
         switch self {
@@ -49,6 +136,8 @@ private enum AutoRefreshMode {
             return "Codex + Claude"
         case .ipFlag:
             return "IP Flag"
+        case .favorites:
+            return "Rotate Favorites"
         }
     }
 
@@ -64,6 +153,8 @@ private enum AutoRefreshMode {
             return "pair"
         case .ipFlag:
             return "ip-flag"
+        case .favorites:
+            return nil
         }
     }
 
@@ -79,6 +170,8 @@ private enum AutoRefreshMode {
             return .pair
         case .ipFlag:
             return .ipFlag
+        case .favorites:
+            return .favorites
         }
     }
 }
@@ -144,6 +237,7 @@ private enum QuickActionKind: String {
     case pair
     case ipFlag
     case library
+    case favorites
     case screenPick
 }
 
@@ -216,6 +310,12 @@ private func makeStatusItemIcon(state: StatusIconState) -> NSImage {
 }
 
 private func makeProviderLogoImage(provider: String, size: CGFloat = 16) -> NSImage {
+    let assetPath = "/Users/kirniy/dev/divoom/assets/ui-icons/provider-\(provider).png"
+    if FileManager.default.fileExists(atPath: assetPath), let image = NSImage(contentsOfFile: assetPath) {
+        image.size = NSSize(width: size, height: size)
+        return image
+    }
+
     let image = NSImage(size: NSSize(width: size, height: size))
     image.lockFocus()
 
@@ -274,7 +374,7 @@ private final class MenuSummaryView: NSView {
     private let refreshLabel = NSTextField(labelWithString: "Automation: Off")
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 356, height: 106)
+        NSSize(width: menuSurfaceWidth, height: summaryCardHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -347,7 +447,7 @@ private final class MenuSummaryView: NSView {
         addSubview(contentStack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 356),
+            widthAnchor.constraint(equalToConstant: menuSurfaceWidth),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
@@ -360,18 +460,41 @@ private final class MenuSummaryView: NSView {
 
 private final class ColorStudioView: NSView {
     var onSendColor: ((NSColor) -> Void)?
+    var onSendMotion: (([NSColor], ColorMotionMode) -> Void)?
     var onPickScreen: (() -> Void)?
 
-    private let titleLabel = NSTextField(labelWithString: "Solid Color Studio")
-    private let captionLabel = NSTextField(labelWithString: "Wheel, hex, and screen pick.")
+    private let titleLabel = NSTextField(labelWithString: "Color Motion Studio")
+    private let captionLabel = NSTextField(labelWithString: "Solid fills, saved combos, gradients, and palette motion.")
+    private let modePopUp = NSPopUpButton()
+    private let slotCountLabel = NSTextField(labelWithString: "4 colors")
+    private let slotCountStepper = NSStepper()
+    private let slotPicker = NSPopUpButton()
+    private let savedComboPopUp = NSPopUpButton()
+    private let saveComboButton = NSButton(title: "Save Combo", target: nil, action: nil)
     private let colorWell = NSColorWell()
     private let hexField = NSTextField(string: "#FF0000")
-    private let sendButton = NSButton(title: "Send Color", target: nil, action: nil)
+    private let sendButton = NSButton(title: "Beam Solid", target: nil, action: nil)
     private let pickButton = NSButton(title: "Pick Screen", target: nil, action: nil)
     private let swatchHexes = ["#FF3B30", "#FF9500", "#FFD60A", "#30D158", "#64D2FF", "#0A84FF", "#BF5AF2", "#FF375F"]
+    private var slotButtons: [NSButton] = []
+    private var paletteColors: [NSColor] = [
+        NSColor.systemRed,
+        NSColor.systemOrange,
+        NSColor.systemYellow,
+        NSColor.systemBlue,
+        NSColor.systemPurple,
+        NSColor.systemGreen,
+        NSColor.systemPink,
+        NSColor.systemTeal,
+        NSColor.systemIndigo,
+        NSColor.white,
+    ]
+    private var visibleSlotCount = 4
+    private var activeSlotIndex = 0
+    private var savedCombos = SavedColorComboStore.load()
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 356, height: 136)
+        NSSize(width: menuSurfaceWidth, height: colorStudioHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -388,15 +511,16 @@ private final class ColorStudioView: NSView {
         guard let rgb = color.usingColorSpace(.deviceRGB) else {
             return
         }
-        colorWell.color = rgb
-        if let hex = hexString(for: rgb) {
-            hexField.stringValue = hex
+        if activeSlotIndex >= 0, activeSlotIndex < paletteColors.count {
+            paletteColors[activeSlotIndex] = rgb
         }
+        syncEditorWithActiveSlot()
+        refreshSlotStrip()
     }
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 12
+        layer?.cornerRadius = 16
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
         layer?.borderWidth = 1
@@ -411,8 +535,48 @@ private final class ColorStudioView: NSView {
         captionLabel.textColor = .secondaryLabelColor
         captionLabel.lineBreakMode = .byTruncatingTail
 
+        modePopUp.translatesAutoresizingMaskIntoConstraints = false
+        ColorMotionMode.allCases.forEach { mode in
+            modePopUp.addItem(withTitle: mode.title)
+            modePopUp.lastItem?.representedObject = mode.rawValue
+        }
+        modePopUp.selectItem(withTitle: ColorMotionMode.solid.title)
+        modePopUp.target = self
+        modePopUp.action = #selector(modeChanged)
+
+        slotCountLabel.translatesAutoresizingMaskIntoConstraints = false
+        slotCountLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        slotCountLabel.textColor = .secondaryLabelColor
+
+        slotCountStepper.translatesAutoresizingMaskIntoConstraints = false
+        slotCountStepper.minValue = 3
+        slotCountStepper.maxValue = 10
+        slotCountStepper.increment = 1
+        slotCountStepper.integerValue = visibleSlotCount
+        slotCountStepper.target = self
+        slotCountStepper.action = #selector(slotCountChanged)
+
+        slotPicker.translatesAutoresizingMaskIntoConstraints = false
+        slotPicker.target = self
+        slotPicker.action = #selector(slotPickerChanged)
+
+        savedComboPopUp.translatesAutoresizingMaskIntoConstraints = false
+        savedComboPopUp.target = self
+        savedComboPopUp.action = #selector(savedComboChanged)
+
+        saveComboButton.translatesAutoresizingMaskIntoConstraints = false
+        saveComboButton.bezelStyle = .rounded
+        saveComboButton.controlSize = .small
+        saveComboButton.image = makeMenuSymbol("square.and.arrow.down", description: "Save Combo")
+        saveComboButton.imagePosition = .imageLeading
+        saveComboButton.target = self
+        saveComboButton.action = #selector(saveComboPressed)
+
         colorWell.translatesAutoresizingMaskIntoConstraints = false
         colorWell.color = NSColor.systemRed
+        if #available(macOS 13.0, *) {
+            colorWell.colorWellStyle = .expanded
+        }
         colorWell.target = self
         colorWell.action = #selector(colorWellChanged)
 
@@ -439,6 +603,29 @@ private final class ColorStudioView: NSView {
         pickButton.setContentHuggingPriority(.required, for: .horizontal)
         pickButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
+        let slotStrip = NSStackView()
+        slotStrip.orientation = .horizontal
+        slotStrip.alignment = .centerY
+        slotStrip.spacing = 8
+        slotStrip.translatesAutoresizingMaskIntoConstraints = false
+        for index in 0..<10 {
+            let button = NSButton(title: "", target: self, action: #selector(slotButtonPressed(_:)))
+            button.identifier = NSUserInterfaceItemIdentifier(rawValue: "slot-\(index)")
+            button.isBordered = false
+            button.setButtonType(.momentaryPushIn)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 10
+            button.layer?.cornerCurve = .continuous
+            button.layer?.borderWidth = 1.5
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 20),
+                button.heightAnchor.constraint(equalToConstant: 20),
+            ])
+            slotButtons.append(button)
+            slotStrip.addArrangedSubview(button)
+        }
+
         let swatchesRow = NSStackView()
         swatchesRow.orientation = .horizontal
         swatchesRow.alignment = .centerY
@@ -448,14 +635,27 @@ private final class ColorStudioView: NSView {
             swatchesRow.addArrangedSubview(makeSwatchButton(hex: hex))
         }
 
-        let controlsRow = NSStackView(views: [colorWell, hexField, sendButton, pickButton])
+        let modeRow = NSStackView(views: [modePopUp, slotCountLabel, slotCountStepper, slotPicker])
+        modeRow.orientation = .horizontal
+        modeRow.alignment = .centerY
+        modeRow.spacing = 8
+        modeRow.distribution = .fill
+        modeRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let comboRow = NSStackView(views: [savedComboPopUp, saveComboButton])
+        comboRow.orientation = .horizontal
+        comboRow.alignment = .centerY
+        comboRow.spacing = 8
+        comboRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let controlsRow = NSStackView(views: [colorWell, hexField, pickButton, sendButton])
         controlsRow.orientation = .horizontal
         controlsRow.alignment = .centerY
         controlsRow.spacing = 8
         controlsRow.distribution = .fill
         controlsRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let contentStack = NSStackView(views: [titleLabel, captionLabel, swatchesRow, controlsRow])
+        let contentStack = NSStackView(views: [titleLabel, captionLabel, modeRow, slotStrip, comboRow, swatchesRow, controlsRow])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 8
@@ -464,17 +664,26 @@ private final class ColorStudioView: NSView {
         addSubview(contentStack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 356),
+            widthAnchor.constraint(equalToConstant: menuSurfaceWidth),
             colorWell.widthAnchor.constraint(equalToConstant: 40),
             colorWell.heightAnchor.constraint(equalToConstant: 24),
-            hexField.widthAnchor.constraint(equalToConstant: 98),
-            sendButton.widthAnchor.constraint(equalToConstant: 92),
+            modePopUp.widthAnchor.constraint(equalToConstant: 148),
+            slotPicker.widthAnchor.constraint(equalToConstant: 84),
+            savedComboPopUp.widthAnchor.constraint(equalToConstant: 248),
+            hexField.widthAnchor.constraint(equalToConstant: 106),
+            sendButton.widthAnchor.constraint(equalToConstant: 108),
             pickButton.widthAnchor.constraint(equalToConstant: 104),
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
         ])
+
+        refreshSavedCombos()
+        refreshSlotPicker()
+        syncEditorWithActiveSlot()
+        refreshSlotStrip()
+        updateSendButtonTitle()
     }
 
     private func makeSwatchButton(hex: String) -> NSButton {
@@ -517,27 +726,120 @@ private final class ColorStudioView: NSView {
             alpha: 1.0
         )
         setSelectedColor(color)
-        onSendColor?(color)
     }
 
     @objc private func colorWellChanged() {
         setSelectedColor(colorWell.color)
-        onSendColor?(colorWell.color)
     }
 
     @objc private func hexSubmitted() {
-        sendCurrentHexColor()
+        applyCurrentHexColor()
     }
 
     @objc private func sendPressed() {
-        sendCurrentHexColor()
+        let colors = Array(paletteColors.prefix(visibleSlotCount))
+        let mode = selectedMode()
+        if mode == .solid {
+            onSendColor?(colors.first ?? NSColor.systemRed)
+        } else {
+            onSendMotion?(colors, mode)
+        }
     }
 
     @objc private func pickScreenPressed() {
         onPickScreen?()
     }
 
-    private func sendCurrentHexColor() {
+    @objc private func modeChanged() {
+        updateSendButtonTitle()
+        refreshSavedCombos()
+    }
+
+    @objc private func slotCountChanged() {
+        visibleSlotCount = min(max(slotCountStepper.integerValue, 3), 10)
+        if activeSlotIndex >= visibleSlotCount {
+            activeSlotIndex = visibleSlotCount - 1
+        }
+        refreshSlotPicker()
+        refreshSlotStrip()
+        updateSendButtonTitle()
+    }
+
+    @objc private func slotPickerChanged() {
+        activeSlotIndex = max(slotPicker.indexOfSelectedItem, 0)
+        syncEditorWithActiveSlot()
+        refreshSlotStrip()
+    }
+
+    @objc private func slotButtonPressed(_ sender: NSButton) {
+        guard
+            let raw = sender.identifier?.rawValue.replacingOccurrences(of: "slot-", with: ""),
+            let index = Int(raw),
+            index < visibleSlotCount
+        else {
+            return
+        }
+        activeSlotIndex = index
+        slotPicker.selectItem(at: index)
+        syncEditorWithActiveSlot()
+        refreshSlotStrip()
+    }
+
+    @objc private func savedComboChanged() {
+        let selectedIndex = savedComboPopUp.indexOfSelectedItem - 1
+        guard selectedIndex >= 0, selectedIndex < savedCombos.count else {
+            return
+        }
+        let combo = savedCombos[selectedIndex]
+        visibleSlotCount = min(max(combo.colors.count, 3), 10)
+        slotCountStepper.integerValue = visibleSlotCount
+        for (index, hex) in combo.colors.enumerated() where index < paletteColors.count {
+            if
+                let (red, green, blue) = parseRGBHex(hex)
+            {
+                paletteColors[index] = NSColor(
+                    red: CGFloat(red) / 255.0,
+                    green: CGFloat(green) / 255.0,
+                    blue: CGFloat(blue) / 255.0,
+                    alpha: 1.0
+                )
+            }
+        }
+        if let targetItem = modePopUp.itemArray.first(where: { ($0.representedObject as? String) == combo.mode.rawValue }) {
+            modePopUp.select(targetItem)
+        }
+        activeSlotIndex = 0
+        refreshSlotPicker()
+        syncEditorWithActiveSlot()
+        refreshSlotStrip()
+        updateSendButtonTitle()
+    }
+
+    @objc private func saveComboPressed() {
+        let hexes = selectedPaletteHexes()
+        guard !hexes.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let mode = selectedMode()
+        if let index = savedCombos.firstIndex(where: { $0.colors == hexes && $0.mode == mode }) {
+            savedComboPopUp.selectItem(at: index + 1)
+            return
+        }
+
+        let combo = SavedColorCombo(
+            id: UUID().uuidString,
+            name: "\(mode.shortTitle) · " + hexes.prefix(3).joined(separator: " · "),
+            mode: mode,
+            colors: hexes
+        )
+        savedCombos.insert(combo, at: 0)
+        SavedColorComboStore.save(savedCombos)
+        refreshSavedCombos(selectedID: combo.id)
+    }
+
+    private func applyCurrentHexColor() {
         guard
             let (red, green, blue) = parseRGBHex(hexField.stringValue)
         else {
@@ -551,7 +853,72 @@ private final class ColorStudioView: NSView {
             alpha: 1.0
         )
         setSelectedColor(color)
-        onSendColor?(color)
+    }
+
+    private func selectedMode() -> ColorMotionMode {
+        guard
+            let rawValue = modePopUp.selectedItem?.representedObject as? String,
+            let mode = ColorMotionMode(rawValue: rawValue)
+        else {
+            return .solid
+        }
+        return mode
+    }
+
+    private func selectedPaletteHexes() -> [String] {
+        Array(paletteColors.prefix(visibleSlotCount)).compactMap { hexString(for: $0) }
+    }
+
+    private func refreshSavedCombos(selectedID: String? = nil) {
+        savedComboPopUp.removeAllItems()
+        savedComboPopUp.addItem(withTitle: "Saved Combos")
+        savedComboPopUp.lastItem?.representedObject = nil
+        for combo in savedCombos {
+            savedComboPopUp.addItem(withTitle: combo.name)
+            savedComboPopUp.lastItem?.representedObject = combo.id
+        }
+
+        if let selectedID, let item = savedComboPopUp.itemArray.first(where: { ($0.representedObject as? String) == selectedID }) {
+            savedComboPopUp.select(item)
+        } else {
+            savedComboPopUp.selectItem(at: 0)
+        }
+    }
+
+    private func refreshSlotPicker() {
+        slotCountLabel.stringValue = "\(visibleSlotCount) colors"
+        slotPicker.removeAllItems()
+        for index in 0..<visibleSlotCount {
+            slotPicker.addItem(withTitle: "Edit \(index + 1)")
+        }
+        slotPicker.selectItem(at: activeSlotIndex)
+    }
+
+    private func refreshSlotStrip() {
+        for (index, button) in slotButtons.enumerated() {
+            let visible = index < visibleSlotCount
+            button.isHidden = !visible
+            guard visible else { continue }
+            let color = paletteColors[index]
+            button.layer?.backgroundColor = color.cgColor
+            let isActive = index == activeSlotIndex
+            button.layer?.borderColor = (isActive ? NSColor.controlAccentColor : NSColor.separatorColor.withAlphaComponent(0.35)).cgColor
+            button.layer?.borderWidth = isActive ? 2.2 : 1.2
+        }
+    }
+
+    private func syncEditorWithActiveSlot() {
+        guard activeSlotIndex >= 0, activeSlotIndex < paletteColors.count else {
+            return
+        }
+        let color = paletteColors[activeSlotIndex]
+        colorWell.color = color
+        hexField.stringValue = hexString(for: color) ?? "#FF0000"
+        slotPicker.selectItem(at: activeSlotIndex)
+    }
+
+    private func updateSendButtonTitle() {
+        sendButton.title = selectedMode() == .solid ? "Beam Solid" : "Beam Motion"
     }
 }
 
@@ -584,7 +951,7 @@ private final class QuickActionTileView: NSControl {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 96, height: 62)
+        NSSize(width: 164, height: 78)
     }
 
     init(title: String, image: NSImage?, tooltip: String) {
@@ -638,12 +1005,12 @@ private final class QuickActionTileView: NSControl {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 18
+        layer?.cornerRadius = 20
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
-        layer?.shadowColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
         layer?.shadowOpacity = 1
-        layer?.shadowRadius = 8
+        layer?.shadowRadius = 10
         layer?.shadowOffset = NSSize(width: 0, height: -2)
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
@@ -658,19 +1025,28 @@ private final class QuickActionTileView: NSControl {
         titleLabel.font = .systemFont(ofSize: 11.5, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byWordWrapping
-        titleLabel.maximumNumberOfLines = 2
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.maximumNumberOfLines = 1
 
-        let iconStack = NSStackView(views: [iconView, spinner])
-        iconStack.orientation = .vertical
-        iconStack.alignment = .centerX
-        iconStack.spacing = 0
+        let iconSlot = NSView()
+        iconSlot.translatesAutoresizingMaskIntoConstraints = false
+        iconSlot.addSubview(iconView)
+        iconSlot.addSubview(spinner)
 
-        let stack = NSStackView(views: [iconStack, titleLabel])
+        NSLayoutConstraint.activate([
+            iconSlot.widthAnchor.constraint(equalToConstant: 20),
+            iconSlot.heightAnchor.constraint(equalToConstant: 20),
+            iconView.centerXAnchor.constraint(equalTo: iconSlot.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconSlot.centerYAnchor),
+            spinner.centerXAnchor.constraint(equalTo: iconSlot.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: iconSlot.centerYAnchor),
+        ])
+
+        let stack = NSStackView(views: [iconSlot, titleLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(stack)
@@ -680,16 +1056,16 @@ private final class QuickActionTileView: NSControl {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
+            titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
         ])
 
         updateAppearance()
     }
 
     private func updateAppearance() {
-        let baseBackground = NSColor.white.withAlphaComponent(isHovering ? 0.24 : 0.18)
-        let activeBackground = NSColor.controlAccentColor.withAlphaComponent(isHovering ? 0.23 : 0.18)
+        let baseBackground = NSColor.white.withAlphaComponent(isHovering ? 0.28 : 0.20)
+        let activeBackground = NSColor.controlAccentColor.withAlphaComponent(isHovering ? 0.25 : 0.19)
         layer?.backgroundColor = (isActive ? activeBackground : baseBackground).cgColor
         layer?.borderColor = (isActive
             ? NSColor.controlAccentColor.withAlphaComponent(0.58)
@@ -710,6 +1086,7 @@ private final class QuickActionHubView: NSView {
     var onPair: (() -> Void)?
     var onIPFlag: (() -> Void)?
     var onLibrary: (() -> Void)?
+    var onFavorites: (() -> Void)?
     var onScreenPick: (() -> Void)?
 
     var activeAction: QuickActionKind? {
@@ -726,7 +1103,7 @@ private final class QuickActionHubView: NSView {
     private var tiles: [QuickActionKind: QuickActionTileView] = [:]
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 356, height: 164)
+        NSSize(width: menuSurfaceWidth, height: quickHubHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -741,7 +1118,7 @@ private final class QuickActionHubView: NSView {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 18
+        layer?.cornerRadius = 20
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.82).cgColor
         layer?.borderWidth = 1
@@ -763,8 +1140,8 @@ private final class QuickActionHubView: NSView {
 
         let bottomRow = NSStackView(views: [
             makeTile(title: "IP Flag", actionID: .ipFlag),
-            makeTile(title: "Open Library", actionID: .library),
-            makeTile(title: "Pick Color", actionID: .screenPick),
+            makeTile(title: "Library", actionID: .library),
+            makeTile(title: "Rotate Favorites", actionID: .favorites),
         ])
         bottomRow.orientation = .horizontal
         bottomRow.spacing = 12
@@ -779,9 +1156,9 @@ private final class QuickActionHubView: NSView {
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 356),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            widthAnchor.constraint(equalToConstant: menuSurfaceWidth),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
         ])
@@ -811,6 +1188,8 @@ private final class QuickActionHubView: NSView {
             return makeMenuSymbol("flag.2.crossed", description: "IP Flag")
         case .library:
             return makeMenuSymbol("photo.stack", description: "Open Library")
+        case .favorites:
+            return makeMenuSymbol("arrow.triangle.2.circlepath", description: "Rotate Favorites")
         case .screenPick:
             return makeMenuSymbol("eyedropper.halffull", description: "Pick Color")
         }
@@ -828,6 +1207,8 @@ private final class QuickActionHubView: NSView {
             return "Start or stop the live public IP country flag."
         case .library:
             return "Open the native animation library."
+        case .favorites:
+            return "Start or stop live rotation through your favorited animations."
         case .screenPick:
             return "Sample any color from the screen and beam it."
         }
@@ -852,6 +1233,8 @@ private final class QuickActionHubView: NSView {
             onIPFlag?()
         case .library:
             onLibrary?()
+        case .favorites:
+            onFavorites?()
         case .screenPick:
             onScreenPick?()
         }
@@ -2214,11 +2597,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private let menu = NSMenu()
     private let curatedAnimationsURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/assets/16x16/curated", isDirectory: true)
     private let recentAnimationDefaultsKey = "dev.kirniy.divoom.recent-library-animations"
-    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: 356, height: 106))
+    private let favoriteRotationIndexDefaultsKey = "dev.kirniy.divoom.favorite-rotation-index"
+    private let summaryCard = MenuSummaryView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: summaryCardHeight))
     private let summaryCardItem = NSMenuItem()
-    private let quickActionHub = QuickActionHubView(frame: NSRect(x: 0, y: 0, width: 356, height: 164))
+    private let quickActionHub = QuickActionHubView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: quickHubHeight))
     private let quickActionHubItem = NSMenuItem()
-    private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: 356, height: 136))
+    private let colorStudioView = ColorStudioView(frame: NSRect(x: 0, y: 0, width: menuSurfaceWidth, height: colorStudioHeight))
     private let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
@@ -2230,6 +2614,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private var autoClaudeItem = NSMenuItem()
     private var autoPairItem = NSMenuItem()
     private var autoIPFlagItem = NSMenuItem()
+    private var autoFavoritesItem = NSMenuItem()
     private var codexBarShowUsedItem = NSMenuItem()
     private var codexBarShowRemainingItem = NSMenuItem()
     private var codexMetricItems: [CodexBarMetricPreference: NSMenuItem] = [:]
@@ -2303,7 +2688,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         quickActionHub.onPair = { [weak self] in self?.toggleAutoPair() }
         quickActionHub.onIPFlag = { [weak self] in self?.toggleAutoIPFlag() }
         quickActionHub.onLibrary = { [weak self] in self?.openAnimationLibrary() }
-        quickActionHub.onScreenPick = { [weak self] in self?.pickScreenColor() }
+        quickActionHub.onFavorites = { [weak self] in self?.toggleAutoFavorites() }
         menu.addItem(quickActionHubItem)
         menu.addItem(.separator())
 
@@ -2314,8 +2699,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         colorStudioView.onSendColor = { [weak self] color in
             self?.sendSelectedSceneColor(color, source: "Color studio")
         }
+        colorStudioView.onSendMotion = { [weak self] colors, mode in
+            self?.sendColorMotion(colors, mode: mode)
+        }
         colorStudioView.onPickScreen = { [weak self] in
-            self?.pickScreenColor()
+            self?.pickScreenColorForStudio()
         }
         studioMenu.addItem(colorStudioItem)
         studioMenu.addItem(.separator())
@@ -2341,10 +2729,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         autoClaudeItem = makeItem("Claude", action: #selector(toggleAutoClaude), symbolName: "message")
         autoPairItem = makeItem("Codex + Claude", action: #selector(toggleAutoPair), symbolName: "rectangle.split.2x1")
         autoIPFlagItem = makeItem("IP Flag", action: #selector(toggleAutoIPFlag), symbolName: "flag.2.crossed")
+        autoFavoritesItem = makeItem("Rotate Favorites", action: #selector(toggleAutoFavorites), symbolName: "arrow.triangle.2.circlepath")
         liveMenu.addItem(autoCodexItem)
         liveMenu.addItem(autoClaudeItem)
         liveMenu.addItem(autoPairItem)
         liveMenu.addItem(autoIPFlagItem)
+        liveMenu.addItem(autoFavoritesItem)
         liveMenu.addItem(.separator())
         liveMenu.addItem(makeSectionHeader("CodexBar Sync"))
         let usageModeMenu = NSMenu(title: "Usage Mode")
@@ -2753,6 +3143,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         autoClaudeItem.state = autoRefreshMode == .claude ? .on : .off
         autoPairItem.state = autoRefreshMode == .pair ? .on : .off
         autoIPFlagItem.state = autoRefreshMode == .ipFlag ? .on : .off
+        autoFavoritesItem.state = autoRefreshMode == .favorites ? .on : .off
         quickActionHub.activeAction = autoRefreshMode.quickActionKind
         refreshSummaryCard()
     }
@@ -2769,6 +3160,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return "Codex + Claude every 60s"
         case .ipFlag:
             return "IP Flag every 60s"
+        case .favorites:
+            return "Rotate Favorites every 60s"
         }
     }
 
@@ -3252,7 +3645,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
     }
 
-    private func pickScreenColor() {
+    private func pickScreenColorForStudio() {
         NSApp.activate(ignoringOtherApps: true)
         let sampler = NSColorSampler()
         colorSampler = sampler
@@ -3269,9 +3662,145 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                     return
                 }
                 self.colorStudioView.setSelectedColor(color)
-                self.sendSelectedSceneColor(color, source: "Screen sampler")
+                self.updateActionStatus(
+                    summary: "Screen color sampled",
+                    success: true,
+                    details: hexString(for: color) ?? "Unknown color"
+                )
             }
         }
+    }
+
+    private func sendColorMotion(_ colors: [NSColor], mode: ColorMotionMode) {
+        let hexes = colors.compactMap { hexString(for: $0) }
+        guard !hexes.isEmpty else {
+            updateActionStatus(
+                summary: "Color motion failed",
+                success: false,
+                details: "No valid colors were selected."
+            )
+            return
+        }
+
+        if mode == .solid {
+            sendSelectedSceneColor(colors.first ?? NSColor.systemRed, source: "Color motion studio")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let process = Process()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/Users/kirniy/dev/divoom/bin/divoom-display")
+            process.arguments = ["render-palette", "--mode", mode.rawValue]
+            for hex in hexes {
+                process.arguments?.append(contentsOf: ["--color", hex])
+            }
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+                guard process.terminationStatus == 0 else {
+                    Task { @MainActor [weak self] in
+                        self?.updateActionStatus(
+                            summary: "\(mode.summaryPrefix) failed",
+                            success: false,
+                            details: stderr.isEmpty ? stdout : stderr
+                        )
+                    }
+                    return
+                }
+
+                guard
+                    let data = stdout.data(using: .utf8),
+                    let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let outputPath = payload["output"] as? String
+                else {
+                    Task { @MainActor [weak self] in
+                        self?.updateActionStatus(
+                            summary: "\(mode.summaryPrefix) failed",
+                            success: false,
+                            details: "Renderer did not return a usable output path."
+                        )
+                    }
+                    return
+                }
+
+                let renderedLabel = (payload["label"] as? String) ?? mode.summaryPrefix
+                Task { @MainActor [weak self] in
+                    self?.run(
+                        label: renderedLabel,
+                        arguments: ["native-headless", "send-gif", "--path", outputPath],
+                        successSound: .animation
+                    )
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.updateActionStatus(
+                        summary: "\(mode.summaryPrefix) failed",
+                        success: false,
+                        details: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
+    private func beamAnimationFile(
+        _ fileURL: URL,
+        label: String,
+        successSound: FeedbackSoundProfile? = .animation,
+        playErrorSound: Bool = true,
+        completion: (@MainActor (Bool, String) -> Void)? = nil
+    ) {
+        run(
+            label: label,
+            arguments: ["native-headless", "send-gif", "--path", fileURL.path],
+            successSound: successSound,
+            playErrorSound: playErrorSound,
+            completion: completion
+        )
+    }
+
+    private func currentFavoriteAnimationItems() -> [AnimationLibraryItem] {
+        let favorites = AnimationLibraryCatalog.loadFavorites()
+        guard !favorites.isEmpty else {
+            return []
+        }
+        return AnimationLibraryCatalog.loadItems().filter { favorites.contains($0.id) }
+    }
+
+    private func beamNextFavorite(
+        playActivationSound: Bool,
+        completion: (@MainActor (Bool, String) -> Void)? = nil
+    ) {
+        let items = currentFavoriteAnimationItems()
+        guard !items.isEmpty else {
+            updateActionStatus(
+                summary: "Rotate Favorites unavailable",
+                success: false,
+                details: "Favorite some animations in the library first."
+            )
+            completion?(false, "Favorite some animations in the library first.")
+            return
+        }
+
+        let currentIndex = UserDefaults.standard.integer(forKey: favoriteRotationIndexDefaultsKey)
+        let item = items[currentIndex % items.count]
+        UserDefaults.standard.set((currentIndex + 1) % items.count, forKey: favoriteRotationIndexDefaultsKey)
+        recordRecentAnimation(relativePath: item.relativePath)
+        beamAnimationFile(
+            item.fileURL,
+            label: "Favorites \(item.title)",
+            successSound: playActivationSound ? .animation : nil,
+            playErrorSound: playActivationSound,
+            completion: completion
+        )
     }
 
     @objc private func toggleAutoCodex() {
@@ -3288,6 +3817,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func toggleAutoIPFlag() {
         toggleLiveFeed(.ipFlag)
+    }
+
+    @objc private func toggleAutoFavorites() {
+        toggleLiveFeed(.favorites)
     }
 
     @objc private func setCodexBarShowUsed() {
@@ -3370,11 +3903,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         }
 
         recordRecentAnimation(relativePath: relativePath)
-        bluetoothDiagnostics.runNativeBLESendGIF(path: animationURL.path, loopCount: 0) { [weak self] result in
-            DispatchQueue.main.async {
-                self?.handleNativeActionResult(result, summary: sender.title, successSound: .animation)
-            }
-        }
+        beamAnimationFile(animationURL, label: sender.title, successSound: .animation)
     }
 
     @objc private func openResearch() {
@@ -3405,6 +3934,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return
         }
 
+        if mode == .favorites {
+            setAutoRefreshMode(.off)
+            quickActionHub.loadingAction = mode.quickActionKind
+            beamNextFavorite(playActivationSound: true) { [weak self] success, _ in
+                guard let self else { return }
+                self.quickActionHub.loadingAction = nil
+                guard success else { return }
+                self.setAutoRefreshMode(.favorites)
+            }
+            return
+        }
+
         guard let feed = mode.feedIdentifier else {
             return
         }
@@ -3425,6 +3966,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func refreshLiveFeed(_ mode: AutoRefreshMode) {
+        if mode == .favorites {
+            beamNextFavorite(playActivationSound: false)
+            return
+        }
         guard let feed = mode.feedIdentifier else {
             return
         }
@@ -3443,11 +3988,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         let controller = AnimationLibraryWindowController(
             onSend: { [weak self] item in
                 self?.recordRecentAnimation(relativePath: item.relativePath)
-                self?.run(
-                    label: "Library \(item.title)",
-                    arguments: ["native-headless", "send-gif", "--path", item.fileURL.path],
-                    successSound: .animation
-                )
+                self?.beamAnimationFile(item.fileURL, label: "Library \(item.title)", successSound: .animation)
             },
             onReveal: { [weak self] item in
                 NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
