@@ -65,10 +65,10 @@ This sync path currently covers:
 - Divoom cloud categories
 - Divoom cloud albums via `Discover/GetAlbumListV3` and `Discover/GetAlbumImageListV3`
 - Divoom cloud search via `Channel/ItemSearch`
-- Divoom cloud like / unlike via `GalleryLikeV2`
+- Divoom gallery like / unlike via `GalleryLikeV2`
 - playlist metadata via `Playlist/GetMyList` and `Playlist/GetSomeOneList`
 - store classification metadata via `Channel/StoreClockGetClassify`
-- optional raw store feed sync plumbing for `Channel/StoreClockGetList`, `Channel/StoreTop20`, and `Channel/StoreNew20` when an exact `--store-flag` is provided
+- optional raw store feed sync plumbing for `Channel/StoreClockGetList`, `Channel/StoreTop20`, and `Channel/StoreNew20`
 - 16x16 animation download and GIF export
 - native library ingestion from the synced output folder
 - native app settings for:
@@ -111,7 +111,7 @@ Working now:
 - login via the sync tool environment variables
 - app-local Keychain credential save path
 - one-time synced Passwords import path
-- sync, search, and like / unlike plumbing
+- sync, search, and gallery like / unlike plumbing
 - local manifest generation and native library ingestion
 
 Still rough:
@@ -122,10 +122,25 @@ Still rough:
 
 Still pending for full Divoom iOS parity:
 
-- exact section-to-`Flag` mapping for the iOS store/channel browser
-- popularity/collection sorting that exactly matches the iOS app
+- store/channel likes via `Channel/LikeClock` with `ClockId` and `LikeFlag`
+- exact iOS store routing:
+  - header tab `0 -> Channel/StoreTop20`
+  - header tab `1 -> Channel/StoreNew20`
+  - category rows -> `Channel/StoreClockGetList` with raw `Flag` plus `ClassifyId`
+- preserving raw store/channel fields such as `AddFlag`, `LikeCnt`, `IsMyLike`, `ClockType`, `ImagePixelId`, `ParentClockId`, and `ParentItemId`
+- generic `Channel/ItemSearch` `ItemFlag` values beyond the verified `SearchUser`
 - device-side custom channels and autonomous gallery playback
-- deeper IPA parity for channel timing and playback activation
+- the split custom-channel activation flow:
+  - `Channel/SetCustom` binds the custom asset
+  - `Channel/GetCustomGalleryTime` and `Channel/SetCustomGalleryTime` control `SingleGalleyTime`, `GalleryShowTimeFlag`, and `SoundOnOff`
+  - BLE upload / scene activation still happens separately on the device side
+
+## Verified parity notes
+
+- `Channel/StoreClockGetClassify` is not keyed by `Flag`; Android posts it with a plain `BaseLoadMoreRequest` and the response is `ClassifyList` items with `ClassifyId` and `ClassifyName`.
+- The current sync docs previously described store/channel likes as `GalleryLikeV2`. That is incorrect for the iOS store/channel surface. The IPA and Android cross-check both use `Channel/LikeClock`.
+- `AddFlag` is not the same thing as like state. On store/channel items it is the separate added/collected state, while like state lives in `LikeCnt` / `IsMyLike`.
+- Custom timing parity is not a single save step. Android applies `Channel/SetCustomGalleryTime` immediately on every timing/toggle change, and iOS `needUploadCustomTimeData:` is only a UI label-update helper, not the transport write.
 
 The native library is intentionally focused on read, sort, browse, and like flows. Write-back flows such as upload and comments remain out of scope here.
 

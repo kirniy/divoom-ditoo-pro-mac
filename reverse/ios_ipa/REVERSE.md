@@ -472,6 +472,15 @@ Additional instruction-level findings from the `Aurabox` binary:
   - `ParentClockId`
   - `ParentItemId`
   This strongly suggests gallery playback duration/loop behavior is controlled separately from raw GIF parsing/upload.
+- Android cross-check now confirms the timing write path exactly: `WifiChannelCustomFragment` calls `WifiChannelModel.h0(...)` immediately on single-time changes, gallery-show toggles, and sound toggles, and `h0(...)` posts `Channel/SetCustomGalleryTime` with `SingleGalleyTime`, `GalleryShowTimeFlag`, `SoundOnOff`, `CustomId`, `ClockId`, `ParentClockId`, and `ParentItemId`.
+- iOS correction: `WifiChannelCustomVC needUploadCustomTimeData:` at `0x1003293ec` and `BlueCustomVC needUploadCustomTimeData:` at `0x10038ceac` are controller/UI helpers, not the timing-write or BLE activation seam. The callback block at `0x10032947c` formats the selected value as `"%d s"` or `"%d min"` and updates the visible label. Future RE should not treat this selector as the upload/apply boundary.
+- The iOS reusable-view delegates remain the correct UI seam:
+  - `WifiChannelCustomVC WifiChannelReusableViewSetSingleGalleyTime:` `0x10032e9f4`
+  - `WifiChannelCustomVC WifiChannelReusableViewSoundOnOff:` `0x10032eba8`
+  - `WifiChannelCustomVC WifiChannelReusableViewSetGalleryShowTimeFlag:` `0x10032ed5c`
+  - `BlueCustomVC WifiChannelReusableViewSetSingleGalleyTime:` `0x1003903d4`
+  - `BlueCustomVC WifiChannelReusableViewSetGalleryShowTimeFlag:` `0x10039058c`
+  These methods route through a shared Objective-C stubbed helper path, so they are still the right caller anchors for picker/toggle tracing, but not yet proof of the final transport write.
 
 Practical implication:
 - The vendor app clearly has a first-class `16x16` upload/gallery path.
@@ -543,7 +552,7 @@ The iOS app exposes these cloud and channel/store paths directly:
 - `Channel/StoreTop20`
 - `Channel/StoreNew20`
 - `Channel/ItemSearch`
-- `GalleryLikeV2`
+- `Channel/LikeClock`
 - `Playlist/GetMyList`
 - `Playlist/GetSomeOneList`
 - `Discover/GetAlbumListV3`
@@ -552,8 +561,10 @@ The iOS app exposes these cloud and channel/store paths directly:
 ### Confirmed request / response keys
 
 `Channel/StoreClockGetClassify`
+- request shape: no store-specific selector fields are present in the Android cross-check; `MyClockModel` posts it with plain `BaseLoadMoreRequest`
 - response list: `ClassifyList`
 - per-item key: `ClassifyId`
+- per-item key: `ClassifyName`
 
 `Channel/StoreClockGetList`
 - request keys confirmed in disassembly:
@@ -564,6 +575,16 @@ The iOS app exposes these cloud and channel/store paths directly:
   - `StartNum`
   - `EndNum`
 - response list: `ClockList`
+- verified routing:
+  - iOS `StoreClockVC storeClockHeaderView:didSelectItemAtIndex:` `0x1001aa508` maps header index `0 -> Channel/StoreTop20 / "Top20"` and `1 -> Channel/StoreNew20 / "Newest 20"`
+  - iOS `StoreClockVC storeClockTitleView:didSelectItemAtSection:` `0x1001aa81c` uses section `0` as the special header lane and `n >= 1` as `classifyArray[n - 1]`
+  - Android `MyClockStoreGroupAdapter` passes raw launch-context `Flag` plus the clicked `ClassifyId` into `StoreClockGetList`; it does not derive top/new/category from `Flag`
+- verified item fields relevant to store state:
+  - `ClockId`
+  - `ClockName`
+  - `ClockType`
+  - `ImagePixelId`
+  - `AddFlag`
 
 `Channel/ItemSearch`
 - request keys confirmed in disassembly / strings:
@@ -576,12 +597,16 @@ The iOS app exposes these cloud and channel/store paths directly:
   - `ItemFlag`
 - response list: `SearchList`
 
-`GalleryLikeV2`
+`Channel/LikeClock`
 - request keys:
-  - `GalleryId`
-  - `IsLike`
-  - `Classify`
-  - `Type`
+  - `ClockId`
+  - `LikeFlag`
+- verified caller behavior:
+  - Android `MyClockAddFragment` flips its local liked boolean and passes that boolean directly into `MyClockModel.n(clockId, likeFlag)`, so this surface uses `1 = like`, `0 = unlike`
+- relevant item/config fields on the channel/store surface:
+  - `LikeCnt`
+  - `IsMyLike`
+  - `AddFlag`
 
 `Playlist/GetMyList`
 - request keys:
@@ -597,9 +622,16 @@ The iOS app exposes these cloud and channel/store paths directly:
   - `TargetUserId`
 - response list: `PlayList`
 
-### Remaining store unknown
+### Store / channel parity corrections
 
-The `Flag` value used by `StoreClockGetList` is still the main unresolved store/channel parameter. The app clearly passes it through the request shape, but the exact section-to-flag mapping still needs more RE before the Mac app can claim full iOS channel parity without guessing.
+- `Flag` is not the store section selector. The top/new split is endpoint-based, not `Flag`-based.
+- `Channel/StoreClockGetClassify` is the shared category metadata feed and does not need `Flag`.
+- The exact store matrix is now:
+  - header tab `0` -> `Channel/StoreTop20`
+  - header tab `1` -> `Channel/StoreNew20`
+  - category rows -> `Channel/StoreClockGetList` with raw `Flag` plus clicked `ClassifyId`
+- `ClassifyId == 100` is still special-cased in Android UI code, but its server meaning is not yet proven.
+- `AddFlag` is separate from like state. Android store cards use `AddFlag == 1` to change the add/collection icon, while `LikeCnt` and `IsMyLike` live on the detail/config side.
 
 ## Open Questions
 
@@ -611,6 +643,7 @@ These pieces still need more work:
   - `0x45` scene writes
   - `sppSetSceneGIF:`
   - or a different scene-selection command layered on top
+- the full generic `ItemFlag` table for `Channel/ItemSearch` beyond the verified author-search token `SearchUser`
 
 ## Useful Addresses
 

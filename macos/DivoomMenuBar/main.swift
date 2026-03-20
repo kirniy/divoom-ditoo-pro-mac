@@ -953,9 +953,7 @@ private final class MenuSummaryView: NSView {
         SummaryPillView(text: "Library Ready", symbolName: "photo.stack"),
     ]
     private let chipRow = NSStackView()
-    private var rotatingLines: [String] = ["Open Library for curated and cloud picks."]
-    private var rotatingLineIndex = 0
-    private var rotatingLineTimer: Timer?
+    private var supportingLines: [String] = ["Open Library for curated and cloud picks."]
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: rootMenuSurfaceWidth, height: summaryCardHeight)
@@ -969,10 +967,6 @@ private final class MenuSummaryView: NSView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
-    }
-
-    deinit {
-        rotatingLineTimer?.invalidate()
     }
 
     func update(
@@ -1099,26 +1093,8 @@ private final class MenuSummaryView: NSView {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        let resolvedLines = sanitized.isEmpty ? ["Open Library for curated and cloud picks."] : sanitized
-        if resolvedLines != rotatingLines {
-            rotatingLines = resolvedLines
-            rotatingLineIndex = 0
-        }
-
-        rotatingLabel.stringValue = rotatingLines[min(rotatingLineIndex, rotatingLines.count - 1)]
-        rotatingLineTimer?.invalidate()
-        guard rotatingLines.count > 1 else {
-            rotatingLineTimer = nil
-            return
-        }
-
-        let timer = Timer.scheduledTimer(withTimeInterval: 3.4, repeats: true) { [weak self] _ in
-            guard let self, self.rotatingLines.count > 1 else { return }
-            self.rotatingLineIndex = (self.rotatingLineIndex + 1) % self.rotatingLines.count
-            self.rotatingLabel.stringValue = self.rotatingLines[self.rotatingLineIndex]
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        rotatingLineTimer = timer
+        supportingLines = sanitized.isEmpty ? ["Open Library for curated and cloud picks."] : sanitized
+        rotatingLabel.stringValue = supportingLines.prefix(2).joined(separator: "\n")
     }
 
     private func updateChips(_ chips: [SummaryChipSpec]) {
@@ -5074,6 +5050,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         let deviceMenu = NSMenu(title: "Device")
         deviceMenu.addItem(makeSectionHeader("Connection"))
         deviceMenu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
+        deviceMenu.addItem(makeItem("Reconnect Light Link", action: #selector(reconnectLightLink), symbolName: "arrow.clockwise"))
         deviceMenu.addItem(makeItem("Run Bluetooth Diagnostics", action: #selector(runBluetoothDiagnostics), symbolName: "antenna.radiowaves.left.and.right"))
         deviceMenu.addItem(makeItem("Probe Volume", action: #selector(runNativeVolumeProbe), symbolName: "speaker.wave.2"))
         deviceMenu.addItem(.separator())
@@ -5108,10 +5085,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
         menu.addItem(makeSubmenuItem("Studio", symbolName: "wand.and.stars", submenu: studioMenu))
         menu.addItem(makeSubmenuItem("Library", symbolName: "photo.stack", submenu: libraryMenu))
-        menu.addItem(makeSubmenuItem("Live Feeds", symbolName: "brain", submenu: liveMenu))
-        menu.addItem(makeSubmenuItem("Ambient & Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
+        menu.addItem(makeSubmenuItem("Live", symbolName: "brain", submenu: liveMenu))
+        menu.addItem(makeSubmenuItem("Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
         menu.addItem(.separator())
-        menu.addItem(makeSubmenuItem("Settings & Info", symbolName: "gearshape", submenu: settingsMenu))
+        menu.addItem(makeSubmenuItem("Settings", symbolName: "gearshape", submenu: settingsMenu))
         menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
         updateAutoRefreshUI()
         refreshSummaryCard()
@@ -6510,6 +6487,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
 
     @objc private func requestBluetoothAccess() {
         bluetoothDiagnostics.requestAccessAndScan()
+    }
+
+    @objc private func reconnectLightLink() {
+        bluetoothDiagnostics.resetLightLinkAndRescan()
+        updateActionStatus(
+            summary: "Reconnect light link",
+            success: true,
+            details: "Cleared the cached DitooPro-Light session and started a fresh BLE scan."
+        )
     }
 
     @objc private func runBluetoothDiagnostics() {

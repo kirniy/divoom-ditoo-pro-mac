@@ -1183,6 +1183,25 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         refreshStatus(reason: "Requested Bluetooth access")
     }
 
+    func resetLightLinkAndRescan() {
+        AppLog.write("BluetoothDiagnostics.resetLightLinkAndRescan")
+        UserDefaults.standard.removeObject(forKey: lastDitooLightPeripheralUUIDDefaultsKey)
+        ditooLightWriteCharacteristic = nil
+        ditooLightNotifyCharacteristic = nil
+        discoveredLENames.removeAll()
+
+        if let centralManager {
+            centralManager.stopScan()
+            if let peripheral = ditooLightPeripheral, peripheral.state == .connected || peripheral.state == .connecting {
+                centralManager.cancelPeripheralConnection(peripheral)
+            }
+        }
+
+        ditooLightPeripheral = nil
+        ditooLightState = "BLE light reset requested"
+        requestAccessAndScan()
+    }
+
     func refreshStatus(reason: String? = nil) {
         let summary = reason ?? "Bluetooth status updated"
         let auth = authorizationSummary()

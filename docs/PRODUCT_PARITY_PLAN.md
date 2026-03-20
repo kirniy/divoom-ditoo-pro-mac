@@ -85,11 +85,18 @@ Reversed anchors already identified:
 - `setCustomGalleryTimeConfig:galleryShowTimeFlag:SoundOnOff:customId:callback:ClockId:ParentClockId:ParentItemId:`
 - `sppSetSceneGIF:` with command `0xB1`
 
+What is now verified:
+
+- custom timing is a separate cloud config write, not part of raw frame upload
+- the timing/config surface is `SingleGalleyTime`, `GalleryShowTimeFlag`, and `SoundOnOff`
+- Android applies that timing immediately through `Channel/SetCustomGalleryTime`
+- iOS `needUploadCustomTimeData:` is only a controller/UI helper that formats the visible time label; it is not the timing-write or BLE activation seam
+
 What remains to recover:
 
 - exact gallery message construction after frame upload
-- how timing / loop / dwell are activated
-- how channel-like playback selections are committed
+- the final BLE scene-switch / playback-selection command path after upload
+- how channel-like playback selections are committed on-device after the cloud config is already set
 
 ### 2. Custom channels / playlists
 
@@ -102,8 +109,16 @@ Needed product behavior:
 
 Needed reverse-engineering behavior:
 
-- understand vendor “gallery” / “channel” object model
-- recover timing flags and related config semantics
+- understand vendor "gallery" / "channel" object model
+- preserve the timing/config keys already confirmed in RE:
+  - `SingleGalleyTime`
+  - `GalleryShowTimeFlag`
+  - `SoundOnOff`
+  - `ParentClockId`
+  - `ParentItemId`
+  - `ChannelIndex`
+  - `StartUpClockId`
+  - `StartUpClockImageFileId`
 
 ### 3. Text / drawing / richer board control
 
