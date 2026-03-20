@@ -9,6 +9,7 @@ from .const import (
     ApiEndpoint,
     ChannelTimingInfo,
     CloudClassifyInfo,
+    FiveLCDRGBInfo,
     GalleryCategory,
     GalleryDimension,
     GalleryInfo,
@@ -212,6 +213,28 @@ class APIxoo(object):
             'KeyOnOff': key_on_off,
             'LightList': light_list,
         })
+
+    def _build_five_lcd_rgb_payload(
+        self,
+        on_off: int = None,
+        brightness: int = None,
+        select_light_index: int = None,
+        color: str = None,
+        color_cycle: int = None,
+        key_on_off: int = None,
+        light_list: list | None = None,
+    ) -> dict:
+        # The IPA pins the persisted FiveLCD RGB model to the same field names
+        # used by the ambient-light controller path.
+        return self._build_ambient_light_payload(
+            on_off=on_off,
+            brightness=brightness,
+            select_light_index=select_light_index,
+            color=color,
+            color_cycle=color_cycle,
+            key_on_off=key_on_off,
+            light_list=light_list,
+        )
 
     def log_in(self) -> bool:
         """Log in to API server"""
@@ -975,6 +998,56 @@ class APIxoo(object):
 
         try:
             return self._send_request(ApiEndpoint.PLAYLIST_SEND_DEVICE, {'PlayId': play_id})
+        except Exception:
+            return None
+
+    def get_rgb_info_response(self) -> dict:
+        """Fetch the persisted FiveLCD RGB model using Channel/GetRGBInfo."""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        try:
+            return self._send_request(ApiEndpoint.GET_RGB_INFO, {})
+        except Exception:
+            return None
+
+    def get_rgb_info(self) -> FiveLCDRGBInfo:
+        """Fetch parsed FiveLCD RGB state using Channel/GetRGBInfo."""
+        try:
+            resp_json = self.get_rgb_info_response()
+            if not resp_json or resp_json['ReturnCode'] != 0:
+                return None
+
+            return FiveLCDRGBInfo(resp_json)
+        except Exception:
+            return None
+
+    def set_rgb_info(
+        self,
+        on_off: int = None,
+        brightness: int = None,
+        select_light_index: int = None,
+        color: str = None,
+        color_cycle: int = None,
+        key_on_off: int = None,
+        light_list: list | None = None,
+    ) -> dict:
+        """Write persisted FiveLCD RGB state using Channel/SetRGBInfo."""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        payload = self._build_five_lcd_rgb_payload(
+            on_off=on_off,
+            brightness=brightness,
+            select_light_index=select_light_index,
+            color=color,
+            color_cycle=color_cycle,
+            key_on_off=key_on_off,
+            light_list=light_list,
+        )
+
+        try:
+            return self._send_request(ApiEndpoint.SET_RGB_INFO, payload)
         except Exception:
             return None
 

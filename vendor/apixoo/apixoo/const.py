@@ -96,6 +96,8 @@ class ApiEndpoint(str, Enum):
     STORE_TOP20 = '/Channel/StoreTop20'
     STORE_NEW20 = '/Channel/StoreNew20'
     LIKE_CLOCK = '/Channel/LikeClock'
+    GET_RGB_INFO = '/Channel/GetRGBInfo'
+    SET_RGB_INFO = '/Channel/SetRGBInfo'
     GET_AMBIENT_LIGHT = '/Channel/GetAmbientLight'
     SET_AMBIENT_LIGHT = '/Channel/SetAmbientLight'
     SET_BRIGHTNESS = '/Channel/SetBrightness'
@@ -258,6 +260,10 @@ class AmbientLightColorInfo(BaseDictInfo):
     }
 
 
+class FiveLCDRGBColorInfo(AmbientLightColorInfo):
+    pass
+
+
 class AmbientLightInfo(BaseDictInfo):
     _KEYS_MAP = {
         'Brightness': 'brightness',
@@ -273,6 +279,16 @@ class AmbientLightInfo(BaseDictInfo):
         super().__init__(info)
         self.__dict__['light_list'] = [
             AmbientLightColorInfo(item) if isinstance(item, dict) else item
+            for item in (info.get('LightList') or [])
+        ]
+        dict.__init__(self, **self.__dict__)
+
+
+class FiveLCDRGBInfo(AmbientLightInfo):
+    def __init__(self, info: dict):
+        super().__init__(info)
+        self.__dict__['light_list'] = [
+            FiveLCDRGBColorInfo(item) if isinstance(item, dict) else item
             for item in (info.get('LightList') or [])
         ]
         dict.__init__(self, **self.__dict__)

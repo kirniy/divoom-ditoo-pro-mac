@@ -36,6 +36,8 @@ python3 tools/divoom_cloud_sync.py --search-query nyan --search-query bunny --sk
 python3 tools/divoom_cloud_sync.py --include-store-classify --include-my-list
 python3 tools/divoom_cloud_sync.py --like-gallery-id 83312 --like-classify 4 --like-file-type 1
 python3 tools/divoom_cloud_sync.py --like-gallery-id 83312 --like-classify 4 --like-file-type 1 --unlike
+python3 tools/divoom_cloud_sync.py --print-rgb-info
+python3 tools/divoom_cloud_sync.py --set-rgb-info --rgb-on-off 1 --rgb-brightness 80 --rgb-select-light-index 0 --rgb-color '#FFFFFF'
 python3 tools/divoom_cloud_sync.py --redownload
 ```
 
@@ -70,6 +72,7 @@ This sync path currently covers:
 - playlist metadata via `Playlist/GetMyList` and `Playlist/GetSomeOneList`
 - store classification metadata via `Channel/StoreClockGetClassify`
 - optional raw store feed sync plumbing for `Channel/StoreClockGetList`, `Channel/StoreTop20`, and `Channel/StoreNew20`
+- raw FiveLCD RGB probe plumbing for `Channel/GetRGBInfo` and `Channel/SetRGBInfo`
 - 16x16 animation download and GIF export
 - native library ingestion from the synced output folder
 - native app settings for:
@@ -103,6 +106,8 @@ The vendored `apixoo` implementation surface is now covered end to end:
 - `Channel/StoreClockGetList`
 - `Channel/StoreTop20`
 - `Channel/StoreNew20`
+- `Channel/GetRGBInfo`
+- `Channel/SetRGBInfo`
 - PixelBean download and GIF decode
 
 ## Current truth
@@ -119,6 +124,7 @@ Still rough:
 
 - cloud auth UX inside the macOS app still needs more product polish
 - store/search payload parity is still incomplete even though login itself is verified
+- the raw FiveLCD RGB channel endpoints are wired in the backend and CLI now, but the March 20, 2026 live `Channel/GetRGBInfo` probe still returned `ReturnCode 1 / Failed`
 - exact parity with the iOS store/channel browser
 
 Still pending for full Divoom iOS parity:

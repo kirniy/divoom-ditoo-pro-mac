@@ -6,6 +6,10 @@
 - Replace the remaining guessed store/search payloads with IPA-backed ones. Current real-account verification is now explicit:
   - `Channel/StoreClockGetClassify` still returns `ReturnCode 12 / Request data is null` for the current guessed payloads.
   - `Channel/ItemSearch` still returns `ReturnCode 1 / Failed`, and a raw `Application/ItemSearch` probe failed too.
+- Recover the exact live request requirements for the FiveLCD persisted RGB lane:
+  - repo wrappers and CLI probes now exist for `Channel/GetRGBInfo` and `Channel/SetRGBInfo`
+  - the March 20, 2026 live `Channel/GetRGBInfo` probe returned `ReturnCode 1 / Failed`
+  - do not guess extra request keys until they are pinned from the IPA or live traffic
 - Recover the exact `StoreClockGetList.Flag` mapping used by the iOS app sections so the Mac app can browse every cloud store lane without raw low-level parameters.
 - Implement the IPA-proven store split cleanly in the native library:
   - `Channel/StoreTop20`

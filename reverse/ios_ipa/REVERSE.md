@@ -1044,6 +1044,16 @@ The IPA therefore exposes two parity lanes for ambient / backlight / RGB behavio
 - persisted state via `Channel/GetRGBInfo` and `Channel/SetRGBInfo`
 - immediate device-side control via SPP commands
 
+Backend parity status in this repo as of March 20, 2026:
+- `vendor/apixoo/apixoo/__init__.py` now exposes `get_rgb_info_response`, `get_rgb_info`, and `set_rgb_info`
+- `tools/divoom_cloud_sync.py` now exposes `--print-rgb-info` and `--set-rgb-info` plus exact model-field flags for `OnOff`, `Brightness`, `SelectLightIndex`, `Color`, `ColorCycle`, `KeyOnOff`, and `LightList`
+- live probe with the current real account reached `Channel/GetRGBInfo`, but the backend returned `ReturnCode 1 / Failed`
+
+Boundary of certainty:
+- endpoint strings and model-field names are exact from the IPA
+- the current repo wiring for those exact names is now implemented
+- the live backend still appears to require additional request context that this pass did not guess
+
 ## Focused Follow-up: Timing / Auto-Send / Ambient
 
 ### Autonomous playback state carriers

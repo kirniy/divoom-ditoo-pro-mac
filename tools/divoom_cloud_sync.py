@@ -122,6 +122,17 @@ class AmbientFields:
     light_list: list | None = None
 
 
+@dataclass
+class RGBFields:
+    on_off: int | None = None
+    brightness: int | None = None
+    select_light_index: int | None = None
+    color: str | None = None
+    color_cycle: int | None = None
+    key_on_off: int | None = None
+    light_list: list | None = None
+
+
 def slugify(value: str, *, allow_unicode: bool = False) -> str:
     if not allow_unicode:
         value = value.encode("ascii", "ignore").decode("ascii")
@@ -704,11 +715,27 @@ def ambient_fields_from_args(args) -> AmbientFields:
     )
 
 
+def rgb_fields_from_args(args) -> RGBFields:
+    return RGBFields(
+        on_off=args.rgb_on_off,
+        brightness=args.rgb_brightness,
+        select_light_index=args.rgb_select_light_index,
+        color=args.rgb_color,
+        color_cycle=args.rgb_color_cycle,
+        key_on_off=args.rgb_key_on_off,
+        light_list=args.rgb_light_list,
+    )
+
+
 def timing_fields_payload(fields: TimingFields) -> dict:
     return compact_dict(asdict(fields))
 
 
 def ambient_fields_payload(fields: AmbientFields) -> dict:
+    return compact_dict(asdict(fields))
+
+
+def rgb_fields_payload(fields: RGBFields) -> dict:
     return compact_dict(asdict(fields))
 
 
@@ -848,6 +875,10 @@ def action_flags(args) -> list[str]:
         flags.append("set-subscribe-time")
     if args.set_album_time:
         flags.append("set-album-time")
+    if args.print_rgb_info:
+        flags.append("print-rgb-info")
+    if args.set_rgb_info:
+        flags.append("set-rgb-info")
     if args.playlist_create is not None:
         flags.append("playlist-create")
     if args.playlist_hide is not None:
@@ -954,6 +985,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--playlist-add-gallery", nargs=2, metavar=("PLAY_ID", "GALLERY_ID"), help="Add a gallery to a playlist via Playlist/AddImageToList and exit.")
     parser.add_argument("--playlist-remove-gallery", nargs=2, metavar=("PLAY_ID", "GALLERY_ID"), help="Remove a gallery from a playlist via Playlist/RemoveImage and exit.")
     parser.add_argument("--playlist-send", "--playlist-send-device", dest="playlist_send", type=int, metavar="PLAY_ID", help="Send a playlist to the device via Playlist/SendDevice and exit.")
+    parser.add_argument("--print-rgb-info", action="store_true", help="Print Channel/GetRGBInfo and exit.")
+    parser.add_argument("--set-rgb-info", action="store_true", help="Call Channel/SetRGBInfo and exit.")
     parser.add_argument("--print-ambient-light", action="store_true", help="Print Channel/GetAmbientLight and exit.")
     parser.add_argument("--set-ambient-light", action="store_true", help="Call Channel/SetAmbientLight and exit.")
     parser.add_argument("--set-brightness", type=int, metavar="BRIGHTNESS", help="Call Channel/SetBrightness and exit.")
@@ -961,6 +994,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--on-off-screen", type=int, metavar="ON_OFF", help="Call Channel/OnOffScreen with OnOff and exit.")
     parser.add_argument("--print-on-off", action="store_true", help="Print Channel/GetOnOff and exit.")
     parser.add_argument("--set-on-off", type=int, metavar="ON_OFF", help="Call Channel/SetOnOff with OnOff and exit.")
+    parser.add_argument("--rgb-on-off", type=int, help="OnOff for Channel/SetRGBInfo.")
+    parser.add_argument("--rgb-brightness", type=int, help="Brightness for Channel/SetRGBInfo.")
+    parser.add_argument("--rgb-select-light-index", type=int, help="SelectLightIndex for Channel/SetRGBInfo.")
+    parser.add_argument("--rgb-color", help="Color string for Channel/SetRGBInfo.")
+    parser.add_argument("--rgb-color-cycle", type=int, help="ColorCycle for Channel/SetRGBInfo.")
+    parser.add_argument("--rgb-key-on-off", type=int, help="KeyOnOff for Channel/SetRGBInfo.")
+    parser.add_argument("--rgb-light-list-json", help="Raw JSON array/object to send as LightList for Channel/SetRGBInfo.")
     parser.add_argument("--ambient-on-off", type=int, help="OnOff for Channel/SetAmbientLight.")
     parser.add_argument("--ambient-brightness", type=int, help="Brightness for Channel/SetAmbientLight.")
     parser.add_argument("--ambient-select-light-index", type=int, help="SelectLightIndex for Channel/SetAmbientLight.")
@@ -983,6 +1023,11 @@ def main() -> int:
     search_queries = [value.strip() for value in (args.search_queries or []) if value.strip()]
     target_user_ids = args.target_user_ids or []
     selected_actions = action_flags(args)
+
+    try:
+        args.rgb_light_list = parse_json_value(args.rgb_light_list_json, label="--rgb-light-list-json")
+    except ValueError as exc:
+        return error_json("invalid_json", str(exc))
 
     try:
         args.ambient_light_list = parse_json_value(args.ambient_light_list_json, label="--ambient-light-list-json")
@@ -1318,6 +1363,49 @@ def main() -> int:
             "response": response,
         }, response)
 
+    if args.print_rgb_info:
+        response = api.get_rgb_info_response()
+        if not response:
+            return error_json("rgb_info_failed", "Channel/GetRGBInfo did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetRGBInfo",
+            "rgb": summarized_response_fields(
+                response,
+                "OnOff",
+                "Brightness",
+                "SelectLightIndex",
+                "Color",
+                "ColorCycle",
+                "KeyOnOff",
+                "LightList",
+            ),
+            "response": response,
+        }, response)
+
+    if args.set_rgb_info:
+        rgb_fields = rgb_fields_from_args(args)
+        request = rgb_fields_payload(rgb_fields)
+        if not request:
+            return error_json("missing_rgb_arguments", "Provide at least one --rgb-* field with --set-rgb-info.")
+        response = api.set_rgb_info(
+            on_off=rgb_fields.on_off,
+            brightness=rgb_fields.brightness,
+            select_light_index=rgb_fields.select_light_index,
+            color=rgb_fields.color,
+            color_cycle=rgb_fields.color_cycle,
+            key_on_off=rgb_fields.key_on_off,
+            light_list=rgb_fields.light_list,
+        )
+        if not response:
+            return error_json("set_rgb_info_failed", "Channel/SetRGBInfo did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetRGBInfo",
+            "request": request,
+            "response": response,
+        }, response)
+
     if args.playlist_create is not None:
         response = api.create_playlist(args.playlist_create)
         if not response:
@@ -1643,6 +1731,8 @@ def main() -> int:
             "Playlist/AddImageToList",
             "Playlist/RemoveImage",
             "Playlist/SendDevice",
+            "Channel/GetRGBInfo",
+            "Channel/SetRGBInfo",
             "Channel/GetAmbientLight",
             "Channel/SetAmbientLight",
             "Channel/SetBrightness",
