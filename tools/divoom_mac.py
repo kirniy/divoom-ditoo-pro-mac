@@ -1286,12 +1286,49 @@ def cmd_ios_shortcut(args: argparse.Namespace) -> int:
 def open_native_app() -> dict[str, object]:
     if not DEFAULT_NATIVE_APP_BUNDLE.exists():
         raise FileNotFoundError(f"native app bundle not found: {DEFAULT_NATIVE_APP_BUNDLE}")
-    subprocess.run(["open", "-g", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+    ensure_single_native_app_instance()
     return {
         "bundle": str(DEFAULT_NATIVE_APP_BUNDLE),
         "display": {"type": "RGB", "pixels": "16x16"},
         "status": "opened",
     }
+
+
+def running_native_app_pids() -> list[int]:
+    result = subprocess.run(
+        ["pgrep", "-f", str(DEFAULT_NATIVE_APP_BINARY)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        return []
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    return sorted(set(pids))
+
+
+def ensure_single_native_app_instance(force_restart: bool = False) -> None:
+    if not DEFAULT_NATIVE_APP_BUNDLE.exists():
+        raise FileNotFoundError(f"native app bundle not found: {DEFAULT_NATIVE_APP_BUNDLE}")
+
+    pids = running_native_app_pids()
+    should_restart = force_restart or len(pids) != 1
+    if should_restart:
+        if pids:
+            subprocess.run(["pkill", "-f", str(DEFAULT_NATIVE_APP_BINARY)], check=False)
+            time.sleep(0.8)
+        subprocess.run(["open", "-na", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+        time.sleep(1.5)
+        return
+    return
 
 
 def run_native_headless(mode: str, parameter: str | None = None) -> dict[str, object]:
@@ -1302,7 +1339,7 @@ def run_native_headless(mode: str, parameter: str | None = None) -> dict[str, ob
     DEFAULT_NATIVE_APP_LOG.parent.mkdir(parents=True, exist_ok=True)
     DEFAULT_NATIVE_APP_LOG.touch(exist_ok=True)
     start_offset = DEFAULT_NATIVE_APP_LOG.stat().st_size
-    subprocess.run(["open", "-g", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+    ensure_single_native_app_instance()
 
     def dispatch_request() -> tuple[dict[str, object] | None, str]:
         request_id = str(uuid.uuid4())
@@ -1342,6 +1379,10 @@ def run_native_headless(mode: str, parameter: str | None = None) -> dict[str, ob
         if "BLE light transport not ready" in details:
             time.sleep(6)
             result_payload, log_tail = dispatch_request()
+
+    if result_payload is None:
+        ensure_single_native_app_instance(force_restart=True)
+        result_payload, log_tail = dispatch_request()
 
     if result_payload is None:
         return {
@@ -1397,6 +1438,8 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
         "clock-face": "--headless-native-clock-face",
         "animated-clock": "--headless-native-animated-clock",
         "pomodoro-timer": "--headless-native-pomodoro-timer",
+        "read-key-config": "--headless-native-read-optional-key-config",
+        "reset-key-config": "--headless-native-reset-optional-key-config",
     }
     parameter = None
     if args.action == "light-mode":
@@ -1552,7 +1595,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     native_headless.add_argument(
         "action",
-        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animation-verify", "animation-upload-oldmode", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer"],
+        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animation-verify", "animation-upload-oldmode", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer", "read-key-config", "reset-key-config"],
     )
     native_headless.add_argument(
         "--color",

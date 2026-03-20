@@ -24,6 +24,11 @@ This repo is building a real Mac-native stack around the Ditoo Pro:
 
 No iPhone bridge is required for the core Mac control path.
 
+Install truth in one sentence:
+
+- use the one-line source installer if you want the app plus the `divoom-display` CLI
+- use the `.zip` or `.pkg` release artifact if you only want the app bundle
+
 ## Visuals
 
 <p align="center">
@@ -31,12 +36,15 @@ No iPhone bridge is required for the core Mac control path.
   <img src="docs/assets/claude-status.gif" alt="Claude status preview" width="160" height="160">
 </p>
 
+The repo currently includes only animated feed previews here. Full screenshots of the menu shell, library window, and settings window still need to be added.
+
 ## Current Product Truth
 
 ### Verified working now
 
 - direct native BLE control from macOS
 - solid color scenes
+- ambient RGB / backlight color via the IPA-confirmed `0x6f` path
 - exact `16x16` static image rendering
 - software-driven frame-streamed animations from the Mac
 - battery, system, and network telemetry panels
@@ -48,7 +56,7 @@ No iPhone bridge is required for the core Mac control path.
 ### Working, but still beta-grade
 
 - native Divoom cloud browsing, sync, search, and like / unlike
-- cloud login via app Keychain plus one-time Passwords import
+- cloud login via app Keychain plus explicit synced Passwords fallback and import
 - favorites rotation and live feed surfaces
 - branded Codex / Claude / split feed rendering
 
@@ -60,6 +68,8 @@ No iPhone bridge is required for the core Mac control path.
 - exact iOS store flag mapping for every cloud lane
 
 If a feature is in the app but still depends on reverse-engineering work, it should be treated as beta, not vendor-parity complete.
+
+For the current parity roadmap, see [`docs/PRODUCT_PARITY_PLAN.md`](docs/PRODUCT_PARITY_PLAN.md).
 
 ## How It Works
 
@@ -85,6 +95,8 @@ BLE details currently verified on this device:
 
 This matters because the CLI does not spin up a second BLE controller. The app owns the Bluetooth session and keeps macOS permissions, pairing state, and transport behavior stable.
 
+If the speaker side is visible but beams still fail, the recovery truth is the same as the app UI: the display path is `DitooPro-Light`, not `DitooPro-Audio`. Use `Device -> Connection -> Reconnect Light Link` and `Run Bluetooth Diagnostics`.
+
 ## Install
 
 ### One-line source install
@@ -98,8 +110,14 @@ What that does:
 - clones the repo into `~/Library/Application Support/DivoomDitooProMac/repo`
 - builds the app locally
 - installs `DivoomMenuBar.app` into `/Applications`
-- links `divoom-display` into `/usr/local/bin`
+- source-install path for `divoom-display` in `/usr/local/bin`
 - launches the app
+
+Choose this path if you want:
+
+- the app bundle in `/Applications`
+- a local support-repo checkout
+- the `divoom-display` CLI on your `PATH`
 
 Requirements for the one-line installer:
 
@@ -128,6 +146,14 @@ This emits:
 - `build/release/DivoomDitooProMac-<version>.zip`
 - `build/release/DivoomDitooProMac-<version>.pkg`
 
+Important: release artifacts install the app bundle only. They do not create a `divoom-display` symlink and they do not clone the support repo.
+
+Choose this path if you want:
+
+- a straightforward app install
+- no local source checkout
+- no CLI setup
+
 Current release train:
 
 - semantic versioning
@@ -150,6 +176,7 @@ Then try a few real commands:
 
 ```bash
 ./bin/divoom-display native-headless scene-color --color '#247cff'
+./bin/divoom-display native-headless purity-color --color '#19c37d'
 ./bin/divoom-display native-headless pixel-test
 ./bin/divoom-display native-headless send-gif --path input.gif
 ./bin/divoom-display native-headless battery-status
@@ -164,22 +191,32 @@ Then try a few real commands:
 
 - menu bar shell for the Ditoo Pro
 - top summary surface for device and beam state
-- quick tiles for live feeds, library, color picking, and favorites
-- color motion studio
+- quick tiles for live feeds, library, and favorites
+- color motion studio with separate ambient-light beam control
+- Device menu with Battery Dashboard, System Dashboard, Network Dashboard, Animated Monitor, Analog Clock, Animated Clock, and Pomodoro Timer
 - animation library window with previews, favorites, recents, filters, and inspector actions
-- settings window for install state, cloud login, logs, and release links
+- settings window for launch at login, live feed behavior, cloud login and sync, logs, and release/about links
 
 ### Native cloud library
 
 - source root: `assets/16x16/divoom-cloud`
 - manifest: `.cache/divoom-cloud/manifest.json`
 - native controls:
-  - `Settings -> Library`
-  - `Animation Library -> Cloud Login`
-  - `Animation Library -> Sync Cloud`
-  - `Animation Library -> Cloud Search`
+- `Help & Settings -> Cloud`
+- cloud login / manage button in the native library header
+- `Sync Cloud`
+- `Cloud Search`
 
-Important: cloud auth is still a beta surface. The intended stable path is to save credentials into the app Keychain. Synced Passwords import exists as a helper, not as the long-term product endpoint.
+Important: cloud auth is still a beta surface. The intended stable path is to save credentials into the app Keychain. Synced Passwords import is an explicit helper action, not a passive background probe.
+
+Current runtime truth:
+
+- passive UI refresh does not probe Passwords or trigger cloud auth prompts
+- explicit cloud actions try the app-local credential first
+- if the local copy is missing, explicit cloud actions can fall back to the synced `divoom-gz.com` Passwords entry for the current session
+- importing into the app-local Keychain is still available, but it is no longer the only path
+
+If you want the smoothest path today, save a local app Keychain copy in `Help & Settings -> Cloud` and treat synced Passwords access as a fallback.
 
 Guide: [`docs/DIVOOM_CLOUD_SYNC.md`](docs/DIVOOM_CLOUD_SYNC.md)
 
@@ -207,8 +244,14 @@ Common issues:
 - app opens but no menu bar icon appears
 - Bluetooth permission is denied or never granted
 - cloud login looks present but sync/search still fails
-- repeated Passwords prompts from synced credentials
-- release install succeeds but CLI is missing from `PATH`
+- repeated Keychain or Passwords prompts
+- release install is app-only, so the CLI is missing from `PATH`
+
+Important recovery truth from the latest bug:
+
+- if the menu bar app stalls during launch, the CLI will look broken too, because the CLI only talks to the running app
+- the recent startup regression was caused by launch-time cloud credential access, not by the Ditoo itself
+- current builds avoid that launch-time credential path, so the menu bar app reaches `ready` again before any beam request
 
 Start here: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 
@@ -218,7 +261,7 @@ Logs live at:
 ~/Library/Logs/DivoomMenuBar.log
 ```
 
-The app also has native log entry points in Settings.
+The app also has native log entry points in Settings. You can open, reveal, or export the current log from the app.
 
 ## Project Layout
 
