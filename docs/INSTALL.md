@@ -64,7 +64,7 @@ Use this path if you only want the app bundle and do not need the CLI.
 ## Current release truth
 
 - current version source of truth: `VERSION`
-- current version: `0.3.0-beta.3`
+- current version: `0.3.0-beta.4`
 - release stage: early beta
 
 There is no Homebrew formula in this repo yet.

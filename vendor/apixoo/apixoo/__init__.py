@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 from typing import Union
 
 import requests
@@ -44,6 +45,9 @@ class APIxoo(object):
         self._user = None
         self._request_timeout = 10
         self._is_secure = is_secure
+        self._session = requests.Session()
+        self._device_id: int | None = None
+        self._device_password: int | None = None
 
     def _full_url(self, path: str, server: Server = Server.API) -> str:
         """Generate full URL from path"""
@@ -57,6 +61,9 @@ class APIxoo(object):
         """Send request to API server"""
         payload = dict(payload or {})
         endpoint_path = endpoint.value if isinstance(endpoint, ApiEndpoint) else str(endpoint)
+        command_name = endpoint_path.lstrip('/')
+
+        payload.setdefault('Command', command_name)
 
         if endpoint != ApiEndpoint.USER_LOGIN:
             payload.update(
@@ -65,9 +72,14 @@ class APIxoo(object):
                     'UserId': self._user['user_id'],
                 }
             )
+            if self._should_include_device_context(endpoint_path):
+                if self._device_id is not None:
+                    payload['DeviceId'] = self._device_id
+                if self._device_password is not None:
+                    payload['DevicePassword'] = self._device_password
 
         full_url = self._full_url(endpoint_path, Server.API)
-        resp = requests.post(
+        resp = self._session.post(
             full_url,
             headers=self.HEADERS,
             json=payload,
@@ -92,6 +104,36 @@ class APIxoo(object):
     @staticmethod
     def _clean_payload(payload: dict) -> dict:
         return {key: value for key, value in payload.items() if value is not None}
+
+    @staticmethod
+    def _blue_device_utc_encrypt(utc: str) -> str:
+        return hmac.new(
+            b'DivoomBluetoothDevice<>?',
+            utc.encode('utf-8'),
+            hashlib.md5,
+        ).hexdigest()
+
+    @staticmethod
+    def _should_include_device_context(endpoint_path: str) -> bool:
+        if endpoint_path.startswith('/Channel/'):
+            return True
+        return endpoint_path in {
+            ApiEndpoint.PLAYLIST_SEND_DEVICE.value,
+        }
+
+    def set_device_context(self, device_id: int | None, device_password: int | None = None):
+        self._device_id = device_id
+        self._device_password = device_password
+
+    def clear_device_context(self):
+        self._device_id = None
+        self._device_password = None
+
+    def get_device_context(self) -> dict:
+        return {
+            'device_id': self._device_id,
+            'device_password': self._device_password,
+        }
 
     def _build_store_clock_classify_payload(
         self,
@@ -126,26 +168,16 @@ class APIxoo(object):
     def _build_store_rank_payload(
         self,
         type_flag: int = None,
-        page_index: int = 1,
-        clock_id: int = 0,
-        parent_clock_id: int = 0,
-        parent_item_id: str = '',
+        country_iso_code: str = '',
         language: str = '',
-        lcd_independence: int = 0,
-        lcd_index: int = 0,
     ) -> dict:
         payload = {
-            'PageIndex': page_index,
-            'ClockId': clock_id,
-            'ParentClockId': parent_clock_id,
-            'ParentItemId': parent_item_id,
+            'CountryISOCode': country_iso_code,
             'Language': language,
-            'LcdIndependence': lcd_independence,
-            'LcdIndex': lcd_index,
         }
         if type_flag is not None:
             payload['Flag'] = type_flag
-        return payload
+        return self._clean_payload(payload)
 
     def _build_item_search_payload(
         self,
@@ -257,6 +289,64 @@ class APIxoo(object):
             pass
 
         return False
+
+    def get_server_utc_response(self) -> dict:
+        """Fetch APP/GetServerUTC."""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        try:
+            return self._send_request(ApiEndpoint.APP_GET_SERVER_UTC, {})
+        except Exception:
+            return None
+
+    def register_blue_device_response(self, type_: int, subtype: int) -> dict:
+        """Register the current BLE-side device with BlueDevice/NewDevice."""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        utc_response = self.get_server_utc_response()
+        if not utc_response or int(utc_response.get('ReturnCode', 1)) != 0:
+            return utc_response
+
+        utc_value = str(utc_response.get('UTC', ''))
+        payload = {
+            'UTC': utc_value,
+            'UTCEncrypt': self._blue_device_utc_encrypt(utc_value),
+            'Type': type_,
+            'SubType': subtype,
+        }
+
+        try:
+            return self._send_request(ApiEndpoint.BLUE_DEVICE_NEW_DEVICE, payload)
+        except Exception:
+            return None
+
+    def register_blue_device(self, type_: int, subtype: int, attempts: int = 3) -> dict:
+        """Register the BLE-side device and persist the returned DeviceId/DevicePassword."""
+        last_response = None
+        for _ in range(max(1, attempts)):
+            response = self.register_blue_device_response(type_=type_, subtype=subtype)
+            last_response = response
+            if response and int(response.get('ReturnCode', 1)) == 0:
+                device_id = response.get('BluetoothDeviceId')
+                device_password = response.get('DevicePassword')
+                self.set_device_context(
+                    int(device_id) if device_id is not None else None,
+                    int(device_password) if device_password is not None else None,
+                )
+                return response
+        return last_response
+
+    def get_device_list_v2_response(self) -> dict:
+        """Fetch Device/GetListV2 for the logged-in account."""
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        try:
+            return self._send_request(ApiEndpoint.DEVICE_GET_LIST_V2, {})
+        except Exception:
+            return None
 
     def get_gallery_info(self, gallery_id: int) -> GalleryInfo:
         """Get gallery info by ID"""
@@ -453,25 +543,15 @@ class APIxoo(object):
     def get_store_top20(
         self,
         type_flag: int = None,
-        page_index: int = 1,
-        clock_id: int = 0,
-        parent_clock_id: int = 0,
-        parent_item_id: str = '',
+        country_iso_code: str = '',
         language: str = '',
-        lcd_independence: int = 0,
-        lcd_index: int = 0,
     ) -> list:
-        """Get store Top20 items using the dedicated channel endpoint."""
+        """Get store Top20 items using the IPA-confirmed StoreClockVC header payload."""
         try:
             resp_json = self.get_store_top20_response(
                 type_flag=type_flag,
-                page_index=page_index,
-                clock_id=clock_id,
-                parent_clock_id=parent_clock_id,
-                parent_item_id=parent_item_id,
+                country_iso_code=country_iso_code,
                 language=language,
-                lcd_independence=lcd_independence,
-                lcd_index=lcd_index,
             )
             if not resp_json or resp_json['ReturnCode'] != 0:
                 return None
@@ -483,27 +563,17 @@ class APIxoo(object):
     def get_store_top20_response(
         self,
         type_flag: int = None,
-        page_index: int = 1,
-        clock_id: int = 0,
-        parent_clock_id: int = 0,
-        parent_item_id: str = '',
+        country_iso_code: str = '',
         language: str = '',
-        lcd_independence: int = 0,
-        lcd_index: int = 0,
     ) -> dict:
-        """Get the raw Top20 store response using the channel request family."""
+        """Get the raw Top20 response using the IPA-confirmed StoreClockVC header payload."""
         if not self.is_logged_in():
             raise Exception('Not logged in!')
 
         payload = self._build_store_rank_payload(
             type_flag=type_flag,
-            page_index=page_index,
-            clock_id=clock_id,
-            parent_clock_id=parent_clock_id,
-            parent_item_id=parent_item_id,
+            country_iso_code=country_iso_code,
             language=language,
-            lcd_independence=lcd_independence,
-            lcd_index=lcd_index,
         )
 
         try:
@@ -514,25 +584,15 @@ class APIxoo(object):
     def get_store_new20(
         self,
         type_flag: int = None,
-        page_index: int = 1,
-        clock_id: int = 0,
-        parent_clock_id: int = 0,
-        parent_item_id: str = '',
+        country_iso_code: str = '',
         language: str = '',
-        lcd_independence: int = 0,
-        lcd_index: int = 0,
     ) -> list:
-        """Get store New20 items using the dedicated channel endpoint."""
+        """Get store New20 items using the IPA-confirmed StoreClockVC header payload."""
         try:
             resp_json = self.get_store_new20_response(
                 type_flag=type_flag,
-                page_index=page_index,
-                clock_id=clock_id,
-                parent_clock_id=parent_clock_id,
-                parent_item_id=parent_item_id,
+                country_iso_code=country_iso_code,
                 language=language,
-                lcd_independence=lcd_independence,
-                lcd_index=lcd_index,
             )
             if not resp_json or resp_json['ReturnCode'] != 0:
                 return None
@@ -544,27 +604,17 @@ class APIxoo(object):
     def get_store_new20_response(
         self,
         type_flag: int = None,
-        page_index: int = 1,
-        clock_id: int = 0,
-        parent_clock_id: int = 0,
-        parent_item_id: str = '',
+        country_iso_code: str = '',
         language: str = '',
-        lcd_independence: int = 0,
-        lcd_index: int = 0,
     ) -> dict:
-        """Get the raw New20 store response using the channel request family."""
+        """Get the raw New20 response using the IPA-confirmed StoreClockVC header payload."""
         if not self.is_logged_in():
             raise Exception('Not logged in!')
 
         payload = self._build_store_rank_payload(
             type_flag=type_flag,
-            page_index=page_index,
-            clock_id=clock_id,
-            parent_clock_id=parent_clock_id,
-            parent_item_id=parent_item_id,
+            country_iso_code=country_iso_code,
             language=language,
-            lcd_independence=lcd_independence,
-            lcd_index=lcd_index,
         )
 
         try:
@@ -1153,12 +1203,21 @@ class APIxoo(object):
 
     def download(self, gallery_info: GalleryInfo) -> PixelBean:
         """Download and decode animation"""
+        resp = self.download_response(gallery_info)
+        if resp is None:
+            return None
+
+        return PixelBeanDecoder.decode_stream(resp.raw)
+
+    def download_response(self, gallery_info: GalleryInfo):
+        """Download the raw remote asset response for a gallery/store item."""
         file_id = getattr(gallery_info, 'file_id', '') or getattr(gallery_info, 'image_pixel_id', '')
         if not file_id:
             return None
 
         url = self._full_url(file_id, server=Server.FILE)
-        resp = requests.get(
+        resp = self._session.get(
             url, headers=self.HEADERS, stream=True, timeout=self._request_timeout
         )
-        return PixelBeanDecoder.decode_stream(resp.raw)
+        resp.raise_for_status()
+        return resp

@@ -307,7 +307,6 @@ class PixelBeanDecoder(object):
             file_format = unpack('B', fp.read(1))[0]
             file_format = FileFormat(file_format)
         except Exception:
-            print(f'Unsupported file format: {file_format}')
             return None
 
         if file_format == FileFormat.ANIM_SINGLE:

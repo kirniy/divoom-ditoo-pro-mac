@@ -8,7 +8,10 @@ import re
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
+
+from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +25,9 @@ from apixoo import APIxoo, GalleryCategory, GalleryDimension, GallerySorting, Ga
 
 DEFAULT_OUTPUT_ROOT = ROOT / "assets" / "16x16" / "divoom-cloud"
 DEFAULT_MANIFEST_PATH = ROOT / ".cache" / "divoom-cloud" / "manifest.json"
+DEFAULT_STORE_FLAG = 0
+DEFAULT_BLUE_DEVICE_TYPE = 26
+DEFAULT_BLUE_DEVICE_SUBTYPE = 1
 DEFAULT_CATEGORY_NAMES = [
     "recommend",
     "top",
@@ -41,6 +47,7 @@ STORE_ENDPOINTS = {
     "top20": "Channel/StoreTop20",
     "new20": "Channel/StoreNew20",
 }
+PREVIEW_IMAGE_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg", ".bmp", ".gif"}
 
 
 @dataclass
@@ -175,10 +182,9 @@ def sync_gallery(
     output_path = output_dir / f"{safe_base}-{gallery_id}.gif"
 
     if redownload or not output_path.exists():
-        pixel_bean = api.download(info)
-        if pixel_bean is None:
+        file_token = str(getattr(info, "file_id", "") or getattr(info, "image_pixel_id", "") or "")
+        if not materialize_gallery_asset(api, info, output_path, file_token=file_token):
             return None
-        pixel_bean.save_to_gif(str(output_path), scale=1)
 
     return SyncedItem(
         source="divoom-cloud",
@@ -208,6 +214,54 @@ def sync_gallery(
         is_liked=bool(int(getattr(info, "is_like", 0) or 0)),
         relative_path=str(output_path.relative_to(output_root)),
     )
+
+
+def materialize_gallery_asset(
+    api: APIxoo,
+    info,
+    output_path: Path,
+    *,
+    file_token: str,
+) -> bool:
+    suffix = Path(file_token).suffix.lower()
+
+    if suffix in PREVIEW_IMAGE_SUFFIXES:
+        return save_preview_image_as_gif(api, info, output_path)
+
+    try:
+        pixel_bean = api.download(info)
+    except Exception as exc:
+        print(
+            f"Skipping unsupported cloud asset clock={getattr(info, 'clock_id', 0)} "
+            f"name={getattr(info, 'clock_name', '')!r}: {exc}"
+        )
+        return False
+
+    if pixel_bean is None:
+        return False
+
+    pixel_bean.save_to_gif(str(output_path), scale=1)
+    return True
+
+
+def save_preview_image_as_gif(api: APIxoo, info, output_path: Path) -> bool:
+    try:
+        response = api.download_response(info)
+        if response is None:
+            return False
+
+        content = response.content
+        image = Image.open(BytesIO(content))
+        image.load()
+        image = image.convert("RGBA")
+        image.save(output_path, format="GIF")
+        return True
+    except Exception as exc:
+        print(
+            f"Skipping unsupported preview asset clock={getattr(info, 'clock_id', 0)} "
+            f"name={getattr(info, 'clock_name', '')!r}: {exc}"
+        )
+        return False
 
 
 def sync_categories(
@@ -424,24 +478,14 @@ def fetch_store_batch(
     if endpoint_name == "top20":
         return api.get_store_top20(
             type_flag=type_flag,
-            page_index=page_index,
-            clock_id=clock_id,
-            parent_clock_id=parent_clock_id,
-            parent_item_id=parent_item_id,
+            country_iso_code=country_iso_code,
             language=language,
-            lcd_independence=lcd_independence,
-            lcd_index=lcd_index,
         )
     if endpoint_name == "new20":
         return api.get_store_new20(
             type_flag=type_flag,
-            page_index=page_index,
-            clock_id=clock_id,
-            parent_clock_id=parent_clock_id,
-            parent_item_id=parent_item_id,
+            country_iso_code=country_iso_code,
             language=language,
-            lcd_independence=lcd_independence,
-            lcd_index=lcd_index,
         )
     return api.get_store_clock_list(
         type_flag=type_flag,
@@ -469,6 +513,27 @@ def collect_store_items(
     lcd_independence: int,
     lcd_index: int,
 ):
+    if endpoint_name in {"top20", "new20"}:
+        batch = fetch_store_batch(
+            api=api,
+            endpoint_name=endpoint_name,
+            type_flag=type_flag,
+            classify_id=classify_id,
+            page=1,
+            per_page=per_page,
+            page_index=page_index,
+            clock_id=clock_id,
+            parent_clock_id=parent_clock_id,
+            parent_item_id=parent_item_id,
+            language=language,
+            country_iso_code=country_iso_code,
+            lcd_independence=lcd_independence,
+            lcd_index=lcd_index,
+        )
+        if batch is None:
+            return None
+        return batch[:max_items]
+
     items = []
     page = 1
     while len(items) < max_items:
@@ -630,6 +695,69 @@ def dedupe_synced_items(items: list[SyncedItem]) -> list[SyncedItem]:
     return unique_items
 
 
+def load_existing_manifest(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def load_existing_synced_items(path: Path) -> list[SyncedItem]:
+    manifest = load_existing_manifest(path)
+    values: list[SyncedItem] = []
+    for item in manifest.get("items", []):
+        try:
+            values.append(SyncedItem(**item))
+        except TypeError:
+            continue
+    return values
+
+
+def load_existing_store_classify(path: Path) -> list[StoreClassifyItem]:
+    manifest = load_existing_manifest(path)
+    values: list[StoreClassifyItem] = []
+    for item in manifest.get("storeClassify", []):
+        try:
+            values.append(StoreClassifyItem(**item))
+        except TypeError:
+            continue
+    return values
+
+
+def load_existing_playlists(path: Path, key: str) -> list[PlaylistManifestItem]:
+    manifest = load_existing_manifest(path)
+    values: list[PlaylistManifestItem] = []
+    for item in manifest.get(key, []):
+        try:
+            values.append(PlaylistManifestItem(**item))
+        except TypeError:
+            continue
+    return values
+
+
+def merge_synced_items(existing_items: list[SyncedItem], new_items: list[SyncedItem]) -> list[SyncedItem]:
+    merged: dict[int, SyncedItem] = {}
+    for item in existing_items:
+        merged[item.gallery_id] = item
+    for item in new_items:
+        merged[item.gallery_id] = item
+    return list(merged.values())
+
+
+def merge_string_lists(existing_values: list[str], new_values: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in existing_values + new_values:
+        cleaned = str(value).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        merged.append(cleaned)
+    return merged
+
+
 def gallery_dicts(items) -> list[dict]:
     return [dict(item) for item in items]
 
@@ -658,13 +786,8 @@ def build_store_list_request(args, page_index: int | None = None) -> dict:
         return payload
 
     payload = {
-        "PageIndex": args.store_page_index if page_index is None else page_index,
-        "ClockId": args.store_clock_id,
-        "ParentClockId": args.store_parent_clock_id,
-        "ParentItemId": args.store_parent_item_id,
+        "CountryISOCode": args.store_country_iso_code,
         "Language": args.store_language,
-        "LcdIndependence": args.store_lcd_independence,
-        "LcdIndex": args.store_lcd_index,
     }
     if args.store_flag is not None:
         payload["Flag"] = args.store_flag
@@ -687,6 +810,90 @@ def build_search_request(args, query: str, page: int = 1) -> dict:
 
 def compact_dict(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if value is not None}
+
+
+def apply_requested_device_context(api: APIxoo, args) -> dict | None:
+    if args.blue_device_id is not None:
+        api.set_device_context(args.blue_device_id, args.blue_device_password)
+        return {
+            "success": True,
+            "mode": "manual",
+            "deviceId": args.blue_device_id,
+            "devicePassword": args.blue_device_password,
+        }
+
+    if args.blue_device_type is None and args.blue_device_subtype is None:
+        if not args.auto_store_sync:
+            return None
+        response = api.register_blue_device(
+            type_=DEFAULT_BLUE_DEVICE_TYPE,
+            subtype=DEFAULT_BLUE_DEVICE_SUBTYPE,
+            attempts=5,
+        )
+        if not response_success(response):
+            cached_context = load_cached_device_context(args.manifest)
+            if cached_context is None:
+                return response
+
+            api.set_device_context(
+                cached_context["device_id"],
+                cached_context["device_password"],
+            )
+            return {
+                "success": True,
+                "mode": "cached-manifest",
+                "type": DEFAULT_BLUE_DEVICE_TYPE,
+                "subtype": DEFAULT_BLUE_DEVICE_SUBTYPE,
+                "deviceId": cached_context["device_id"],
+                "devicePassword": cached_context["device_password"],
+                "fallbackResponse": response,
+            }
+        return {
+            "success": True,
+            "mode": "registered-default",
+            "type": DEFAULT_BLUE_DEVICE_TYPE,
+            "subtype": DEFAULT_BLUE_DEVICE_SUBTYPE,
+            "deviceId": response.get("BluetoothDeviceId"),
+            "devicePassword": response.get("DevicePassword"),
+            "response": response,
+        }
+
+    if args.blue_device_type is None and args.blue_device_subtype is None:
+        return None
+
+    if args.blue_device_type is None or args.blue_device_subtype is None:
+        raise ValueError("Provide both --blue-device-type and --blue-device-subtype together.")
+
+    response = api.register_blue_device(
+        type_=args.blue_device_type,
+        subtype=args.blue_device_subtype,
+        attempts=5,
+    )
+    if not response_success(response):
+        return response
+    return {
+        "success": True,
+        "mode": "registered",
+        "type": args.blue_device_type,
+        "subtype": args.blue_device_subtype,
+        "deviceId": response.get("BluetoothDeviceId"),
+        "devicePassword": response.get("DevicePassword"),
+        "response": response,
+    }
+
+
+def load_cached_device_context(manifest_path: Path) -> dict | None:
+    manifest = load_existing_manifest(manifest_path)
+    device_context = manifest.get("deviceContext", {})
+    device_id = device_context.get("device_id")
+    device_password = device_context.get("device_password")
+    if device_id is None or device_password is None:
+        return None
+
+    return {
+        "device_id": int(device_id),
+        "device_password": int(device_password),
+    }
 
 
 def timing_fields_from_args(args) -> TimingFields:
@@ -813,26 +1020,16 @@ def execute_store_request(api: APIxoo, args, page_index: int | None = None) -> t
     if args.store_endpoint == "top20":
         response = api.get_store_top20_response(
             type_flag=args.store_flag,
-            page_index=request["PageIndex"],
-            clock_id=args.store_clock_id,
-            parent_clock_id=args.store_parent_clock_id,
-            parent_item_id=args.store_parent_item_id,
+            country_iso_code=args.store_country_iso_code,
             language=args.store_language,
-            lcd_independence=args.store_lcd_independence,
-            lcd_index=args.store_lcd_index,
         )
         return request, response
 
     if args.store_endpoint == "new20":
         response = api.get_store_new20_response(
             type_flag=args.store_flag,
-            page_index=request["PageIndex"],
-            clock_id=args.store_clock_id,
-            parent_clock_id=args.store_parent_clock_id,
-            parent_item_id=args.store_parent_item_id,
+            country_iso_code=args.store_country_iso_code,
             language=args.store_language,
-            lcd_independence=args.store_lcd_independence,
-            lcd_index=args.store_lcd_index,
         )
         return request, response
 
@@ -849,6 +1046,10 @@ def execute_store_request(api: APIxoo, args, page_index: int | None = None) -> t
 
 def action_flags(args) -> list[str]:
     flags: list[str] = []
+    if args.print_device_list:
+        flags.append("print-device-list")
+    if args.register_blue_device:
+        flags.append("register-blue-device")
     if args.print_store_classify:
         flags.append("print-store-classify")
     if args.print_store_list:
@@ -921,6 +1122,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--email", default=os.environ.get("DIVOOM_EMAIL"))
     parser.add_argument("--password", default=os.environ.get("DIVOOM_PASSWORD"))
     parser.add_argument("--md5-password", default=os.environ.get("DIVOOM_MD5_PASSWORD"))
+    parser.add_argument("--print-device-list", action="store_true", help="Print Device/GetListV2 and exit.")
+    parser.add_argument("--register-blue-device", action="store_true", help="Call APP/GetServerUTC plus BlueDevice/NewDevice and exit.")
+    parser.add_argument("--blue-device-type", type=int, help="Type for BlueDevice/NewDevice, derived from the vendor device table.")
+    parser.add_argument("--blue-device-subtype", type=int, help="SubType for BlueDevice/NewDevice.")
+    parser.add_argument("--blue-device-id", type=int, help="Manually inject DeviceId into channel/store requests.")
+    parser.add_argument("--blue-device-password", type=int, help="Manually inject DevicePassword into channel/store requests.")
+    parser.add_argument("--auto-store-sync", action="store_true", help="Register the Ditoo Pro cloud channel context and sync Top20, New20, and live store classify buckets.")
     parser.add_argument("--category", action="append", dest="categories", help="Category name such as recommend, top, emoji, animal")
     parser.add_argument("--sort", action="append", dest="sorts", choices=["most-liked", "new-upload"], help="Category sort order to sync. Default is both.")
     parser.add_argument("--gallery-id", action="append", dest="gallery_ids", type=int, help="Fetch and decode a specific gallery ID using the direct GalleryInfo endpoint.")
@@ -941,14 +1149,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--store-endpoint", choices=sorted(STORE_ENDPOINTS.keys()), default="list", help="Channel store endpoint family to sync when --store-flag is set.")
     parser.add_argument("--store-flag", type=int, help="Raw Flag value for the iOS store request shape. No guessed defaults are applied.")
     parser.add_argument("--store-classify-id", type=int)
-    parser.add_argument("--store-page-index", type=int, default=1, help="PageIndex for Channel/StoreTop20 and Channel/StoreNew20.")
-    parser.add_argument("--store-clock-id", type=int, default=0, help="ClockId for the channel-style Top20/New20 request family.")
-    parser.add_argument("--store-parent-clock-id", type=int, default=0, help="ParentClockId for the channel-style Top20/New20 request family.")
-    parser.add_argument("--store-parent-item-id", default="", help="ParentItemId for the channel-style Top20/New20 request family.")
+    parser.add_argument("--store-page-index", type=int, default=1, help="Legacy manual probe field. The current iOS Top20/New20 path does not serialize PageIndex.")
+    parser.add_argument("--store-clock-id", type=int, default=0, help="Legacy manual probe field. The current iOS Top20/New20 path does not serialize ClockId.")
+    parser.add_argument("--store-parent-clock-id", type=int, default=0, help="Legacy manual probe field. The current iOS Top20/New20 path does not serialize ParentClockId.")
+    parser.add_argument("--store-parent-item-id", default="", help="Legacy manual probe field. The current iOS Top20/New20 path does not serialize ParentItemId.")
     parser.add_argument("--store-language", default="", help="Language passed to store endpoints.")
     parser.add_argument("--store-country-iso-code", default="", help="CountryISOCode passed to Channel/StoreClockGetList and StoreClockGetClassify.")
-    parser.add_argument("--store-lcd-independence", type=int, default=0, help="LcdIndependence for the channel-style Top20/New20 request family.")
-    parser.add_argument("--store-lcd-index", type=int, default=0, help="LcdIndex for the channel-style Top20/New20 request family.")
+    parser.add_argument("--store-lcd-independence", type=int, default=0, help="Legacy manual probe field. The current iOS Top20/New20 path does not serialize LcdIndependence.")
+    parser.add_argument("--store-lcd-index", type=int, default=0, help="Legacy manual probe field. The current iOS Top20/New20 path does not serialize LcdIndex.")
     parser.add_argument("--print-store-classify", action="store_true", help="Print Channel/StoreClockGetClassify results as JSON and exit.")
     parser.add_argument("--print-store-list", action="store_true", help="Print store/channel clock results as JSON and exit.")
     parser.add_argument("--print-search-results", action="store_true", help="Print Channel/ItemSearch results as JSON and exit.")
@@ -1060,6 +1268,59 @@ def main() -> int:
     if not api.log_in():
         return error_json("login_failed", "Divoom cloud login failed. Check credentials.")
 
+    try:
+        device_context_result = apply_requested_device_context(api, args)
+    except ValueError as exc:
+        return error_json("invalid_blue_device_args", str(exc))
+
+    if (
+        (args.blue_device_type is not None or args.blue_device_subtype is not None or args.auto_store_sync)
+        and not args.register_blue_device
+        and not (isinstance(device_context_result, dict) and device_context_result.get("success"))
+    ):
+        return print_response_json(
+            {
+                "success": False,
+                "endpoint": "BlueDevice/NewDevice",
+                "type": args.blue_device_type,
+                "subtype": args.blue_device_subtype,
+                "response": device_context_result,
+            },
+            device_context_result if isinstance(device_context_result, dict) else None,
+        )
+
+    if args.print_device_list:
+        response = api.get_device_list_v2_response()
+        return print_response_json(
+            {
+                "success": response_success(response),
+                "endpoint": "Device/GetListV2",
+                "response": response,
+            },
+            response,
+        )
+
+    if args.register_blue_device:
+        if args.blue_device_type is None or args.blue_device_subtype is None:
+            return error_json(
+                "missing_blue_device_args",
+                "Provide --blue-device-type plus --blue-device-subtype with --register-blue-device.",
+            )
+        response = device_context_result
+        if isinstance(device_context_result, dict) and "response" in device_context_result:
+            response = device_context_result["response"]
+        return print_response_json(
+            {
+                "success": response_success(response),
+                "endpoint": "BlueDevice/NewDevice",
+                "type": args.blue_device_type,
+                "subtype": args.blue_device_subtype,
+                "response": response,
+                "deviceContext": api.get_device_context(),
+            },
+            response,
+        )
+
     if args.print_store_classify:
         request = build_store_classify_request(args)
         response = api.get_store_clock_classify_response(
@@ -1073,6 +1334,7 @@ def main() -> int:
                 "endpoint": "Channel/StoreClockGetClassify",
                 "request": request,
                 "response": response,
+                "deviceContext": api.get_device_context(),
                 "itemCount": len(classify_items),
                 "items": [asdict(item) for item in classify_items],
             },
@@ -1090,6 +1352,7 @@ def main() -> int:
                 "endpoint": STORE_ENDPOINTS[args.store_endpoint],
                 "request": request,
                 "response": response,
+                "deviceContext": api.get_device_context(),
                 "itemCount": len(items),
                 "items": items,
             },
@@ -1664,6 +1927,74 @@ def main() -> int:
                 redownload=args.redownload,
             )
         )
+    auto_store_classify: list[StoreClassifyItem] | None = None
+    if args.auto_store_sync:
+        auto_store_classify = fetch_store_classify(
+            api,
+            country_iso_code=args.store_country_iso_code,
+            language=args.store_language,
+        ) or []
+        synced_items.extend(
+            sync_store_list(
+                api=api,
+                endpoint_name="top20",
+                type_flag=DEFAULT_STORE_FLAG,
+                classify_id=None,
+                per_page=args.per_page,
+                max_items=args.max_per_category,
+                page_index=1,
+                clock_id=0,
+                parent_clock_id=0,
+                parent_item_id="",
+                language=args.store_language,
+                country_iso_code=args.store_country_iso_code,
+                lcd_independence=0,
+                lcd_index=0,
+                output_root=args.output_root,
+                redownload=args.redownload,
+            )
+        )
+        synced_items.extend(
+            sync_store_list(
+                api=api,
+                endpoint_name="new20",
+                type_flag=DEFAULT_STORE_FLAG,
+                classify_id=None,
+                per_page=args.per_page,
+                max_items=args.max_per_category,
+                page_index=1,
+                clock_id=0,
+                parent_clock_id=0,
+                parent_item_id="",
+                language=args.store_language,
+                country_iso_code=args.store_country_iso_code,
+                lcd_independence=0,
+                lcd_index=0,
+                output_root=args.output_root,
+                redownload=args.redownload,
+            )
+        )
+        for classify in auto_store_classify:
+            synced_items.extend(
+                sync_store_list(
+                    api=api,
+                    endpoint_name="list",
+                    type_flag=DEFAULT_STORE_FLAG,
+                    classify_id=classify.classify_id,
+                    per_page=args.per_page,
+                    max_items=args.max_per_category,
+                    page_index=1,
+                    clock_id=0,
+                    parent_clock_id=0,
+                    parent_item_id="",
+                    language=args.store_language,
+                    country_iso_code=args.store_country_iso_code,
+                    lcd_independence=0,
+                    lcd_index=0,
+                    output_root=args.output_root,
+                    redownload=args.redownload,
+                )
+            )
     if args.store_endpoint != "list" or args.store_flag is not None:
         synced_items.extend(
             sync_store_list(
@@ -1685,27 +2016,39 @@ def main() -> int:
                 redownload=args.redownload,
             )
         )
-    synced_items = dedupe_synced_items(synced_items)
-    store_classify = fetch_store_classify(
+    existing_manifest = load_existing_manifest(args.manifest)
+    existing_synced_items = load_existing_synced_items(args.manifest)
+    synced_items = merge_synced_items(existing_synced_items, dedupe_synced_items(synced_items))
+    store_classify = auto_store_classify if auto_store_classify is not None else (
+        fetch_store_classify(
         api,
         country_iso_code=args.store_country_iso_code,
         language=args.store_language,
-    ) if args.include_store_classify else []
+    ) if args.include_store_classify else [])
     my_playlists = fetch_my_playlists(
         api,
         per_page=args.per_page,
         gallery_id=args.my_list_gallery_id,
     ) if args.include_my_list else []
     someone_playlists = fetch_someone_playlists(api, target_user_ids=target_user_ids, per_page=args.per_page) if target_user_ids else []
-    store_classify = store_classify or []
-    my_playlists = my_playlists or []
-    someone_playlists = someone_playlists or []
+    store_classify = store_classify or load_existing_store_classify(args.manifest)
+    my_playlists = my_playlists or load_existing_playlists(args.manifest, "myPlaylists")
+    someone_playlists = someone_playlists or load_existing_playlists(args.manifest, "someonePlaylists")
+    previous_categories = [str(value) for value in existing_manifest.get("categories", []) if str(value).strip()]
+    previous_sorts = [str(value) for value in existing_manifest.get("sorts", []) if str(value).strip()]
+    previous_queries = [str(value) for value in existing_manifest.get("searchQueries", []) if str(value).strip()]
+    manifest_categories = merge_string_lists(previous_categories, categories)
+    manifest_sorts = merge_string_lists(previous_sorts, [value.lower().replace("_", "-") for value in sorts])
+    manifest_queries = merge_string_lists(previous_queries, search_queries)
 
     manifest = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "source": "divoom-cloud",
         "apiClient": "redphx/apixoo",
         "apiCoverage": [
+            "APP/GetServerUTC",
+            "BlueDevice/NewDevice",
+            "Device/GetListV2",
             "UserLogin",
             "Cloud/GalleryInfo",
             "GetCategoryFileListV2",
@@ -1748,14 +2091,16 @@ def main() -> int:
         ],
         "outputRoot": str(args.output_root),
         "itemCount": len(synced_items),
-        "categories": categories,
-        "sorts": [value.lower().replace("_", "-") for value in sorts],
+        "categories": manifest_categories,
+        "sorts": manifest_sorts,
         "includesAlbums": not args.skip_albums,
         "galleryIdsRequested": gallery_ids,
-        "searchQueries": search_queries,
+        "searchQueries": manifest_queries,
         "storeEndpoint": args.store_endpoint if args.store_flag is not None else "",
         "storeFlag": args.store_flag,
+        "storeAutoSync": args.auto_store_sync,
         "storeClassifyId": args.store_classify_id,
+        "deviceContext": api.get_device_context(),
         "storeClassify": [asdict(item) for item in store_classify],
         "myPlaylists": [asdict(item) for item in my_playlists],
         "someonePlaylists": [asdict(item) for item in someone_playlists],

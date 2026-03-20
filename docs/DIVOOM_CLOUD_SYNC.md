@@ -34,6 +34,7 @@ python3 tools/divoom_cloud_sync.py --sort most-liked --sort new-upload
 python3 tools/divoom_cloud_sync.py --gallery-id 83312 --gallery-id 4272387
 python3 tools/divoom_cloud_sync.py --search-query nyan --search-query bunny --skip-albums --max-per-category 0
 python3 tools/divoom_cloud_sync.py --include-store-classify --include-my-list
+python3 tools/divoom_cloud_sync.py --auto-store-sync --max-per-category 40
 python3 tools/divoom_cloud_sync.py --like-gallery-id 83312 --like-classify 4 --like-file-type 1
 python3 tools/divoom_cloud_sync.py --like-gallery-id 83312 --like-classify 4 --like-file-type 1 --unlike
 python3 tools/divoom_cloud_sync.py --print-rgb-info
@@ -53,6 +54,7 @@ Recommended product path:
 - save a local app Keychain copy if you want the smoothest in-app path
 - `Save + Verify` and `Import + Verify` now sign into Divoom first and only then persist the local Keychain copy
 - use import only when you actually want to refresh the local copy from synced Passwords
+- the macOS app now runs the sync tool with `--include-store-classify --include-my-list --auto-store-sync`
 
 Outputs:
 
@@ -64,14 +66,17 @@ Outputs:
 This sync path currently covers:
 
 - Divoom account login
+- required JSON `Command` injection on cloud/store requests
+- blue-device registration via `APP/GetServerUTC` plus `BlueDevice/NewDevice`
 - direct gallery info fetch by gallery id
 - Divoom cloud categories
 - Divoom cloud albums via `Discover/GetAlbumListV3` and `Discover/GetAlbumImageListV3`
 - Divoom cloud search via `Channel/ItemSearch`
 - Divoom gallery like / unlike via `GalleryLikeV2`
+- store/channel like / unlike via `Channel/LikeClock`
 - playlist metadata via `Playlist/GetMyList` and `Playlist/GetSomeOneList`
 - store classification metadata via `Channel/StoreClockGetClassify`
-- optional raw store feed sync plumbing for `Channel/StoreClockGetList`, `Channel/StoreTop20`, and `Channel/StoreNew20`
+- live store feed sync plumbing for `Channel/StoreClockGetList`, `Channel/StoreTop20`, and `Channel/StoreNew20`
 - raw FiveLCD RGB probe plumbing for `Channel/GetRGBInfo` and `Channel/SetRGBInfo`
 - 16x16 animation download and GIF export
 - native library ingestion from the synced output folder
@@ -94,12 +99,15 @@ This sync path currently covers:
 The vendored `apixoo` implementation surface is now covered end to end:
 
 - `UserLogin`
+- `APP/GetServerUTC`
+- `BlueDevice/NewDevice`
 - `Cloud/GalleryInfo`
 - `GetCategoryFileListV2`
 - `Discover/GetAlbumListV3`
 - `Discover/GetAlbumImageListV3`
 - `Channel/ItemSearch`
 - `GalleryLikeV2`
+- `Channel/LikeClock`
 - `Playlist/GetMyList`
 - `Playlist/GetSomeOneList`
 - `Channel/StoreClockGetClassify`
@@ -114,27 +122,39 @@ The vendored `apixoo` implementation surface is now covered end to end:
 
 Working now:
 
+- cloud auth verified against the live backend via `UserLogin`
 - login via the sync tool environment variables
 - app-local Keychain credential save path with live verification
 - one-time synced Passwords import path with live verification
+- the wrapper now injects the required JSON `Command` field for cloud/store requests
+- blue-device registration is live via `APP/GetServerUTC` + `BlueDevice/NewDevice` with `Type=26` and `SubType=1`
+- `Sync Cloud` in the macOS app now uses `--auto-store-sync`
+- `Channel/StoreClockGetClassify`, `Channel/StoreClockGetList`, `Channel/StoreTop20`, `Channel/StoreNew20`, and `Channel/LikeClock` are live-verified
 - sync, search, and gallery like / unlike plumbing
 - local manifest generation and native library ingestion
 
 Still rough:
 
 - cloud auth UX inside the macOS app still needs more product polish
-- store/search payload parity is still incomplete even though login itself is verified
+- the native library is still cache-first and does not yet expose a full live store browser
+- store flag mapping beyond the current default auto-sync lane is still incomplete
+- `Channel/StoreGetBanner` is still unresolved
 - the raw FiveLCD RGB channel endpoints are wired in the backend and CLI now, but the March 20, 2026 live `Channel/GetRGBInfo` probe still returned `ReturnCode 1 / Failed`
-- exact parity with the iOS store/channel browser
+- exact parity with the iOS store/channel browser and post-upload playback activation
 
 Still pending for full Divoom iOS parity:
 
-- store/channel likes via `Channel/LikeClock` with `ClockId` and `LikeFlag`
 - exact iOS store routing:
   - header tab `0 -> Channel/StoreTop20`
   - header tab `1 -> Channel/StoreNew20`
   - category rows -> `Channel/StoreClockGetList` with raw `Flag` plus `ClassifyId`
+- exact iOS store payloads now pinned:
+  - `Channel/StoreClockGetClassify` sends only `CountryISOCode` and `Language`
+  - `Channel/StoreTop20` and `Channel/StoreNew20` send only `CountryISOCode`, `Language`, and raw `Flag`
+  - `Channel/StoreClockGetList` sends `CountryISOCode`, `Language`, `Flag`, `ClassifyId`, `StartNum`, and `EndNum`
 - preserving raw store/channel fields such as `AddFlag`, `LikeCnt`, `IsMyLike`, `ClockType`, `ImagePixelId`, `ParentClockId`, and `ParentItemId`
+- `Channel/StoreGetBanner`, including whether it needs the same blue-device context as the live store list requests
+- wider `Flag` mapping beyond the default live auto-sync lane
 - generic `Channel/ItemSearch` `ItemFlag` values beyond the verified `SearchUser`
 - device-side custom channels and autonomous gallery playback
 - the split custom-channel activation flow:
@@ -145,7 +165,13 @@ Still pending for full Divoom iOS parity:
 ## Verified parity notes
 
 - `Channel/StoreClockGetClassify` is not keyed by `Flag`; Android posts it with a plain `BaseLoadMoreRequest` and the response is `ClassifyList` items with `ClassifyId` and `ClassifyName`.
+- The current `apixoo` fork and `tools/divoom_cloud_sync.py` now serialize the IPA-confirmed Top20/New20 request family instead of the older guessed `PageIndex` / `ClockId` branch.
+- The live backend required the JSON `Command` field. The wrapper now injects it centrally instead of relying on the path alone.
+- Store/channel requests also needed live blue-device context. The current working registration path is `APP/GetServerUTC` + `BlueDevice/NewDevice` with `Type=26` and `SubType=1`.
+- The current macOS app uses `--auto-store-sync`, which registers that blue-device context and syncs Top20, New20, and live classify buckets with default `Flag=0`.
+- `Channel/StoreClockGetClassify`, `Channel/StoreClockGetList`, `Channel/StoreTop20`, `Channel/StoreNew20`, and `Channel/LikeClock` are now live-verified through the current wrapper.
 - The current sync docs previously described store/channel likes as `GalleryLikeV2`. That is incorrect for the iOS store/channel surface. The IPA and Android cross-check both use `Channel/LikeClock`.
+- `Channel/StoreGetBanner` is still unresolved. Do not claim banner parity yet.
 - `AddFlag` is not the same thing as like state. On store/channel items it is the separate added/collected state, while like state lives in `LikeCnt` / `IsMyLike`.
 - Custom timing parity is not a single save step. Android applies `Channel/SetCustomGalleryTime` immediately on every timing/toggle change, and iOS `needUploadCustomTimeData:` is only a UI label-update helper, not the transport write.
 

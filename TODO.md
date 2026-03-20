@@ -3,19 +3,27 @@
 ## Next Protocol Parity
 
 - Reverse-engineer the iOS gallery/channel stack fully from the IPA and replace any remaining host-side approximations for playlist behavior.
-- Replace the remaining guessed store/search payloads with IPA-backed ones. Current real-account verification is now explicit:
-  - `Channel/StoreClockGetClassify` still returns `ReturnCode 12 / Request data is null` for the current guessed payloads.
-  - `Channel/ItemSearch` still returns `ReturnCode 1 / Failed`, and a raw `Application/ItemSearch` probe failed too.
+- Keep the verified live store envelope explicit in wrappers and docs:
+  - JSON `Command` in the request body is required
+  - blue-device registration is live with `Type=26` and `SubType=1`
+  - the current app store sync lane runs through `--auto-store-sync`
+- Recover the remaining unknowns around the live store surface instead of re-guessing the now-verified endpoints:
+  - `Channel/StoreGetBanner`
+  - wider non-default `StoreClockGetList.Flag` mapping
+  - whether any store routes need additional device context beyond the current verified lane
+- Recover additional live `Channel/ItemSearch` requirements and flags:
+  - `Channel/ItemSearch` still returns `ReturnCode 1 / Failed` for the broader manual probes
+  - a raw `Application/ItemSearch` probe also failed
 - Recover the exact live request requirements for the FiveLCD persisted RGB lane:
   - repo wrappers and CLI probes now exist for `Channel/GetRGBInfo` and `Channel/SetRGBInfo`
   - the March 20, 2026 live `Channel/GetRGBInfo` probe returned `ReturnCode 1 / Failed`
   - do not guess extra request keys until they are pinned from the IPA or live traffic
-- Recover the exact `StoreClockGetList.Flag` mapping used by the iOS app sections so the Mac app can browse every cloud store lane without raw low-level parameters.
+- Recover the exact `StoreClockGetList.Flag` mapping used by the iOS app sections so the Mac app can browse every cloud store lane beyond the current verified default lane without raw low-level parameters.
 - Implement the IPA-proven store split cleanly in the native library:
   - `Channel/StoreTop20`
   - `Channel/StoreNew20`
   - `Channel/StoreClockGetList` for category lanes
-- Recover the live request shape for `Channel/StoreClockGetClassify`, `Channel/StoreTop20`, and `Channel/StoreNew20` on today’s backend so the RE-backed wrappers can be verified against a real account, not just disassembly.
+- Recover `Channel/StoreGetBanner` and any remaining store bootstrap routes on today’s backend so the RE-backed wrappers can cover the full iOS store shell, not just the list/detail feeds.
 - Recover the exact activation flow around `sendAllFrameToDevice:galleryModel:`, `sendAnimateSpeed`, `setCustomGalleryTimeConfig`, and `sppSetSceneGIF:` so uploaded channels can play autonomously on-device.
 - Implement custom animation channels/playlists in the macOS app with per-item timing, repeat rules, and persistent device-side playback where supported.
 - Recover the text/drawing pipeline behind the `0x87` path and add native text/frame tools in the menu bar app.
@@ -27,8 +35,8 @@
 
 - Keep tightening the menu bar information architecture so only working actions are visible in the primary menu.
 - Expand the native animation library with better favorites management, playlists, scheduling, and channel editing.
-- Add a fully native Divoom cloud store browser with section parity to the iOS app, not just synced files plus metadata.
-- Add native sort lanes that mirror the IPA findings: top, newest, category rows, likes, views, and cloud playlist surfaces where the backend supports them.
+- Add a fully native Divoom cloud store browser with section parity to the iOS app, not just the current auto-synced cache plus metadata.
+- Add native store lanes that mirror the verified IPA/live findings: Top20, New20, category rows, likes, views, and cloud playlist surfaces where the backend supports them.
 - Add retention controls and richer source browsing for Divoom cloud so the library can keep downloading fresh material without bloating forever.
 - Continue polishing the quick-tile surface, the solid/color motion studio, and the library inspector interactions.
 - Add more high-quality built-in animation sets and curate stronger defaults for menu actions and live feeds.

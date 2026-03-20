@@ -593,7 +593,13 @@ The iOS app exposes these cloud and channel/store paths directly:
 ### Confirmed request / response keys
 
 `Channel/StoreClockGetClassify`
-- request shape: no store-specific selector fields are present in the Android cross-check; `MyClockModel` posts it with plain `BaseLoadMoreRequest`
+- request shape now pinned from iOS disassembly:
+  - `CountryISOCode`
+  - `Language`
+- exact iOS evidence:
+  - `StoreClockModel -getStoreClockClassifyWithCallback:` `0x1002742d0`
+  - keyed field loads at `0x100274304` and `0x100274330`
+  - field count `2` passed at `0x100274360`
 - response list: `ClassifyList`
 - per-item key: `ClassifyId`
 - per-item key: `ClassifyName`
@@ -614,12 +620,38 @@ The iOS app exposes these cloud and channel/store paths directly:
     - branch `index == 1` loads `0x10138ac58 -> "Newest 20"` and `0x10138ac78 -> "Channel/StoreNew20"`
   - iOS `StoreClockVC storeClockTitleView:didSelectItemAtSection:` `0x1001aa81c` uses section `0` as the special header lane and `n >= 1` as `classifyArray[n - 1]`
   - Android `MyClockStoreGroupAdapter` passes raw launch-context `Flag` plus the clicked `ClassifyId` into `StoreClockGetList`; it does not derive top/new/category from `Flag`
+- exact iOS request-builder evidence:
+  - `StoreClockModel -getStoreClockListWithTypeFlag:ClassifyId:StartNum:EndNum:Callback:` `0x100274504` always serializes:
+    - `CountryISOCode`
+    - `Language`
+    - `Flag`
+    - `ClassifyId`
+    - `StartNum`
+    - `EndNum`
+  - field count `6` passed at `0x100274628`
+  - `StoreListVC pullDownRefresh` seeds `StartNum = 1`, `EndNum = 30`
+  - `StoreListVC pullUpLoading` increments both bounds by `30`
+- category rows therefore use the exact payload:
+  - `{"CountryISOCode": "...", "Language": "...", "Flag": <raw typeFlag>, "ClassifyId": <raw classify id>, "StartNum": 1, "EndNum": 30}`
 - verified item fields relevant to store state:
   - `ClockId`
   - `ClockName`
   - `ClockType`
   - `ImagePixelId`
   - `AddFlag`
+
+`Channel/StoreTop20` and `Channel/StoreNew20`
+- exact iOS request-builder evidence:
+  - `StoreClockModel -getStoreClockListWithTypeFlag:UrlPath:ClassifyId:StartNum:EndNum:Callback:` `0x1002747f8`
+  - the real `StoreClockVC` header path never sets `ClassifyId`
+  - that forces the `ClassifyId == nil` branch, which serializes only:
+    - `CountryISOCode`
+    - `Language`
+    - `Flag`
+  - field count `3` passed at `0x100274a04`
+- exact header payload shape:
+  - `{"CountryISOCode": "...", "Language": "...", "Flag": <raw typeFlag>}`
+- `StartNum` / `EndNum` exist in `StoreListVC` state, but they are not serialized in the real iOS Top20/New20 branch while `ClassifyId` stays nil
 
 Exact store sort/filter strings in the IPA:
 - `Channel/StoreTop20` `17824863`
@@ -673,6 +705,29 @@ Exact store sort/filter strings in the IPA:
   - `WifiChannelAPPSettingTopCell showAddedClockState` `0x100217a70`
   - `WifiChannelAPPSettingTopCell updateLikeCnt:isMyLike:` `0x1002182b8`
   That is additional evidence that `AddFlag` is not just a synonym for like state.
+
+### Live wrapper verification state
+
+The current macOS/Python wrapper state, cross-checked against a live account on March 20, 2026:
+
+- `UserLogin` is live-verified through the current `APIxoo` wrapper path.
+- The backend required the JSON `Command` field in the posted body. The wrapper now injects `Command = <endpoint path without leading slash>` centrally in `_send_request(...)`.
+- The working store/channel context also required live blue-device registration. The current verified path is:
+  - `APP/GetServerUTC`
+  - `BlueDevice/NewDevice`
+  - default working registration values: `Type = 26`, `SubType = 1`
+- The current app/tool default is `--auto-store-sync`, which registers that blue-device context and then syncs:
+  - `Channel/StoreClockGetClassify`
+  - `Channel/StoreTop20`
+  - `Channel/StoreNew20`
+  - `Channel/StoreClockGetList` buckets for the returned classify ids
+- The following cloud/store/channel endpoints are now live-verified through the wrapper:
+  - `Channel/StoreClockGetClassify`
+  - `Channel/StoreClockGetList`
+  - `Channel/StoreTop20`
+  - `Channel/StoreNew20`
+  - `Channel/LikeClock`
+- `Channel/StoreGetBanner` remains unresolved. Do not claim banner parity or banner-backed store sections yet.
 
 `Playlist/GetMyList`
 - request keys:
@@ -761,6 +816,15 @@ This is stronger evidence that the vendor app tracks not just one global gallery
   - header tab `0` -> `Channel/StoreTop20`
   - header tab `1` -> `Channel/StoreNew20`
   - category rows -> `Channel/StoreClockGetList` with raw `Flag` plus clicked `ClassifyId`
+- The March 20, 2026 wrapper correction was not new request keys, but the live envelope/context requirements:
+  - JSON `Command` in the body
+  - blue-device registration via `APP/GetServerUTC` + `BlueDevice/NewDevice`
+  - default verified Ditoo Pro registration values `Type = 26`, `SubType = 1`
+- With that envelope/context in place, `StoreClockGetClassify`, `StoreClockGetList`, `StoreTop20`, `StoreNew20`, and `LikeClock` all became live-verifiable through the wrapper.
+- Remaining live blockers are now narrower:
+  - `StoreGetBanner`
+  - wider non-default `Flag` mapping beyond the current verified default lane
+  - full native browser/playback parity above the verified request layer
 - `ClassifyId == 100` is still special-cased in Android UI code, but its server meaning is not yet proven.
 - `AddFlag` is separate from like state. Android store cards use `AddFlag == 1` to change the add/collection icon, while `LikeCnt` and `IsMyLike` live on the detail/config side.
 

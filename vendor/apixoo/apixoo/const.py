@@ -65,6 +65,9 @@ class Server(str, Enum):
 
 
 class ApiEndpoint(str, Enum):
+    APP_GET_SERVER_UTC = '/APP/GetServerUTC'
+    BLUE_DEVICE_NEW_DEVICE = '/BlueDevice/NewDevice'
+    DEVICE_GET_LIST_V2 = '/Device/GetListV2'
     GET_ALBUM_LIST = '/Discover/GetAlbumList'
     GET_ALBUM_LIST_V3 = '/Discover/GetAlbumListV3'
     GET_ALBUM_FILES = '/Discover/GetAlbumImageList'
@@ -93,6 +96,7 @@ class ApiEndpoint(str, Enum):
     ITEM_SEARCH = '/Channel/ItemSearch'
     STORE_CLOCK_GET_CLASSIFY = '/Channel/StoreClockGetClassify'
     STORE_CLOCK_GET_LIST = '/Channel/StoreClockGetList'
+    STORE_GET_BANNER = '/Channel/StoreGetBanner'
     STORE_TOP20 = '/Channel/StoreTop20'
     STORE_NEW20 = '/Channel/StoreNew20'
     LIKE_CLOCK = '/Channel/LikeClock'

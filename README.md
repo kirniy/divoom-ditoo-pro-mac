@@ -9,14 +9,14 @@
   <img alt="Display" src="https://img.shields.io/badge/display-16x16%20RGB-0f766e">
   <img alt="Transport" src="https://img.shields.io/badge/transport-CoreBluetooth-1d4ed8">
   <img alt="CLI" src="https://img.shields.io/badge/CLI-local%20IPC-7c3aed">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0--beta.3-f97316">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0--beta.4-f97316">
 </p>
 
 Native macOS control for the Divoom Ditoo Pro display path.
 
 This project is not a web wrapper and not an iPhone relay. The running menu bar app owns Bluetooth, the CLI talks to that app over local IPC, and the Mac pushes pixels, clocks, telemetry, and live status surfaces straight to the `DitooPro-Light` endpoint.
 
-Current release line: `0.3.0-beta.3`. Version source of truth: [`VERSION`](VERSION). Treat this repo as a fast-moving beta with real native transport and incomplete vendor-parity work above it.
+Current release line: `0.3.0-beta.4`. Version source of truth: [`VERSION`](VERSION). Treat this repo as a fast-moving beta with real native transport and incomplete vendor-parity work above it.
 
 ## Product Overview
 
@@ -49,9 +49,9 @@ What this is trying to be:
 | Native animation library | Shipped, active polish | Favorites, recents, filtering, previews, and inspector actions are live. |
 | Device dashboards | Shipped | Battery, system, network, animated monitor, analog clock, animated clock, and Pomodoro timer are present. |
 | CodexBar / Claude live feeds | Shipped, beta-grade | Native live surfaces are present and configurable. |
-| Divoom cloud login + sync | Working beta | Save or import now verifies against the live Divoom account before the app persists the local Keychain copy. |
-| Cloud search + like / unlike | Working beta | Present, but still part of the broader cloud parity lane. |
-| Store/classify parity | In progress | `Channel/StoreClockGetClassify` is not claimed as finished. |
+| Divoom cloud login + sync | Verified beta | Save or import verifies against the live Divoom account before the app persists the local Keychain copy, and the app now syncs store lanes through `--auto-store-sync`. |
+| Cloud search + like / unlike | Working beta | Gallery like / unlike is live, and `Channel/LikeClock` is live-verified in tooling, but the native store browser still needs more UI wiring. |
+| Store/classify parity | Partial, live-verified | `Channel/StoreClockGetClassify`, `Channel/StoreClockGetList`, `Channel/StoreTop20`, and `Channel/StoreNew20` are live-verified once blue-device context is registered with `Type=26` / `SubType=1`. `Channel/StoreGetBanner` is still unresolved. |
 | Search payload parity | In progress | `Channel/ItemSearch` still needs exact payload parity work. |
 | Vendor-style autonomous gallery/channel playback | Not finished | Upload is not the hard part; post-upload activation parity is still under reverse engineering. |
 
@@ -82,8 +82,8 @@ Current packaging commands:
 
 Release artifacts generated locally:
 
-- `build/release/DivoomDitooProMac-0.3.0-beta.3.zip`
-- `build/release/DivoomDitooProMac-0.3.0-beta.3.pkg`
+- `build/release/DivoomDitooProMac-0.3.0-beta.4.zip`
+- `build/release/DivoomDitooProMac-0.3.0-beta.4.pkg`
 
 Install detail and first-launch steps live in [`docs/INSTALL.md`](docs/INSTALL.md).
 
@@ -116,8 +116,8 @@ Verified BLE anchors on this device:
 | --- | --- | --- |
 | Native transport | Verified | Real macOS BLE control is the default path. |
 | Native library UX | Usable, not settled | The library window is live but still under active redesign and refinement. |
-| Cloud library | Beta | Login, sync, search, and like flows exist; stable enough to use, not parity-grade. |
-| Vendor channel/store parity | Partial | Exact classify/search payload behavior is still being recovered. |
+| Cloud library | Beta, verified auth | Login is verified against the live backend, and the app now shells into the sync tool with `--auto-store-sync` for store-backed cache refreshes. |
+| Vendor channel/store parity | Partial, live-verified | The JSON `Command` field is required, blue-device registration is live, and the core store endpoints work. `StoreGetBanner`, wider flag mapping, and full live browser parity remain open. |
 | Upload-to-playback parity | Incomplete | Autonomous playlist/channel behavior after upload is not claimed as solved. |
 | Integrations | Mixed | CodexBar and Claude live surfaces are real; OpenClaw is present as a scaffold/integration lane, not a finished app surface. |
 
@@ -167,7 +167,7 @@ Once static screenshots land under `docs/screenshots/`, this section should poin
 
 The repo is using semantic versioning with a prerelease label right now.
 
-- current version: `0.3.0-beta.3`
+- current version: `0.3.0-beta.4`
 - source of truth: [`VERSION`](VERSION)
 - release stage: early beta
 
@@ -181,6 +181,7 @@ Fast truth before you debug:
 - if `DitooPro-Audio` appears but colors and animations fail, the real display path is still missing; recover `DitooPro-Light`
 - if you installed from `.pkg` or `.zip`, missing `divoom-display` is expected because those installs are app-only
 - if cloud UI is visible but cloud actions fail, confirm the app has a local saved Keychain copy of the credentials
+- if cloud auth works but store lanes still look thin, remember the app browses the local cache; Sync Cloud now uses `--auto-store-sync`, but banner recovery and full live store parity are still not finished
 
 Start here:
 
