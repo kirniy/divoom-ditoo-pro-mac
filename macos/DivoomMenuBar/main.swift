@@ -6590,6 +6590,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         refreshStatusIconState()
         refreshSummaryCard()
         updateStatusItemButton(summary: "\(prefix) \(summary) at \(time)", details: details)
+        if shouldRefreshDisplayLinkStatus(afterActionSummary: summary, success: success, details: details) {
+            let reason = success ? "Display link active" : "Display link needs reconnection"
+            bluetoothDiagnostics.refreshStatus(reason: reason)
+        }
     }
 
     private func updateConnectionStatus(summary: String, details: String?) {
@@ -6891,6 +6895,22 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return SummaryChipSpec(text: text, symbolName: "icloud", accentColor: .systemTeal)
         }
         return SummaryChipSpec(text: "Connect Cloud", symbolName: "icloud", accentColor: nil)
+    }
+
+    private func shouldRefreshDisplayLinkStatus(afterActionSummary summary: String, success: Bool, details: String?) -> Bool {
+        let combined = [summary, details ?? ""]
+            .joined(separator: "\n")
+            .lowercased()
+
+        if combined.contains("peripheral=") && combined.contains("characteristic=") {
+            return true
+        }
+
+        if !success && combined.contains("ble light transport not ready") {
+            return true
+        }
+
+        return false
     }
 
     private func cleanedActionSummary() -> String {

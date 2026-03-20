@@ -33,6 +33,47 @@ private func hexString(_ data: Data) -> String {
     data.map { String(format: "%02x", $0) }.joined()
 }
 
+private func recoveredLastDitooLightPeripheralUUIDFromLog() -> String? {
+    guard FileManager.default.fileExists(atPath: AppLog.fileURL.path) else {
+        return nil
+    }
+
+    do {
+        let handle = try FileHandle(forReadingFrom: AppLog.fileURL)
+        defer { try? handle.close() }
+
+        let fileSize = try handle.seekToEnd()
+        let tailLength = min(fileSize, UInt64(512 * 1024))
+        if tailLength > 0 {
+            try handle.seek(toOffset: fileSize - tailLength)
+        }
+
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+            return nil
+        }
+
+        let lines = text.split(separator: "\n").reversed()
+        for line in lines {
+            let stringLine = String(line)
+            guard stringLine.localizedCaseInsensitiveContains("DitooPro-Light") else {
+                continue
+            }
+
+            if let range = stringLine.range(
+                of: #"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"#,
+                options: .regularExpression
+            ) {
+                return String(stringLine[range]).uppercased()
+            }
+        }
+    } catch {
+        AppLog.write("recoveredLastDitooLightPeripheralUUIDFromLog failed error=\(error.localizedDescription)")
+    }
+
+    return nil
+}
+
 private func buildDivoomPacket(command: UInt8, payload: Data = Data()) -> Data {
     let length = UInt16(payload.count + 3)
     let checksumBytes = [UInt8(length & 0x00ff), UInt8(length >> 8), command] + payload
@@ -1387,7 +1428,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         let summary = reason ?? "Bluetooth status updated"
         let auth = authorizationSummary()
         let inquiryStatus = lastInquiryStatus
-        let lightState = ditooLightState
+        let lightState = effectiveDitooLightState()
         let leNames = discoveredLENames.sorted()
         let inquirySnapshot = Array(inquiryCandidatesByAddress.values)
 
@@ -1424,6 +1465,33 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             AppLog.write("BluetoothDiagnostics.refreshStatus\nsummary=\(summary)\n\(details)")
             self.notifyStatus(summary: summary, details: details)
         }
+    }
+
+    private func effectiveDitooLightState() -> String {
+        if let peripheral = ditooLightPeripheral {
+            if let characteristic = ditooLightWriteCharacteristic {
+                return "BLE light write characteristic ready \(characteristic.uuid.uuidString) peripheral=\(peripheral.identifier.uuidString)"
+            }
+
+            switch peripheral.state {
+            case .connected:
+                return "BLE light connected \(peripheral.identifier.uuidString)"
+            case .connecting:
+                return "BLE light connecting \(peripheral.identifier.uuidString)"
+            case .disconnecting:
+                return "BLE light disconnecting \(peripheral.identifier.uuidString)"
+            case .disconnected:
+                break
+            @unknown default:
+                return "BLE light state unknown \(peripheral.identifier.uuidString)"
+            }
+        }
+
+        if let characteristic = ditooLightWriteCharacteristic {
+            return "BLE light write characteristic ready \(characteristic.uuid.uuidString)"
+        }
+
+        return ditooLightState
     }
 
     func runNativeVolumeProbe(completion: @escaping (NativeActionResult) -> Void) {
@@ -2868,8 +2936,22 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
     }
 
     private func retrieveCachedDitooLight(using centralManager: CBCentralManager) -> CBPeripheral? {
+        let defaults = UserDefaults.standard
+        let storedUUIDString = defaults.string(forKey: lastDitooLightPeripheralUUIDDefaultsKey)
+        let resolvedUUIDString: String?
+
+        if let storedUUIDString, !storedUUIDString.isEmpty {
+            resolvedUUIDString = storedUUIDString
+        } else if let recoveredUUIDString = recoveredLastDitooLightPeripheralUUIDFromLog() {
+            defaults.set(recoveredUUIDString, forKey: lastDitooLightPeripheralUUIDDefaultsKey)
+            AppLog.write("Recovered DitooPro-Light peripheral UUID from log uuid=\(recoveredUUIDString)")
+            resolvedUUIDString = recoveredUUIDString
+        } else {
+            resolvedUUIDString = nil
+        }
+
         guard
-            let uuidString = UserDefaults.standard.string(forKey: lastDitooLightPeripheralUUIDDefaultsKey),
+            let uuidString = resolvedUUIDString,
             let uuid = UUID(uuidString: uuidString)
         else {
             return nil

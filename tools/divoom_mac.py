@@ -1325,7 +1325,7 @@ def ensure_single_native_app_instance(force_restart: bool = False) -> None:
         if pids:
             subprocess.run(["pkill", "-f", str(DEFAULT_NATIVE_APP_BINARY)], check=False)
             time.sleep(0.8)
-        subprocess.run(["open", "-na", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
+        subprocess.run(["open", "-a", str(DEFAULT_NATIVE_APP_BUNDLE)], check=True)
         time.sleep(1.5)
         return
     return
