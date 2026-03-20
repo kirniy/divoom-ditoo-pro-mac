@@ -33,7 +33,7 @@ enum AppLog {
     }
 }
 
-private let rootMenuSurfaceWidth: CGFloat = 352
+private let rootMenuSurfaceWidth: CGFloat = 344
 private let studioMenuSurfaceWidth: CGFloat = 368
 private let summaryCardHeight: CGFloat = 132
 private let quickHubHeight: CGFloat = 228
@@ -42,6 +42,9 @@ private let cloudLibraryEnabledDefaultsKey = "dev.kirniy.divoom.cloud-library-en
 private let cloudSyncOnLaunchDefaultsKey = "dev.kirniy.divoom.cloud-sync-on-launch"
 private let cloudAutoSyncEnabledDefaultsKey = "dev.kirniy.divoom.cloud-auto-sync-enabled"
 private let cloudEmailHintDefaultsKey = "dev.kirniy.divoom.cloud-email-hint"
+private let cloudVerifiedEmailDefaultsKey = "dev.kirniy.divoom.cloud-verified-email"
+private let cloudVerifiedAtDefaultsKey = "dev.kirniy.divoom.cloud-verified-at"
+private let cloudVerifiedMyListCountDefaultsKey = "dev.kirniy.divoom.cloud-verified-my-list-count"
 private let cloudManifestURL = divoomRepoURL(".cache/divoom-cloud/manifest.json")
 private let divoomCloudKeychainService = "dev.kirniy.divoom.ditoo-pro-mac.cloud"
 private let divoomCloudEmailAccount = "email"
@@ -61,42 +64,6 @@ private enum DivoomCloudKeychain {
             kSecAttrService as String: divoomCloudKeychainService,
             kSecAttrAccount as String: account,
         ]
-    }
-
-    private static func trustedApplicationList() -> [SecTrustedApplication] {
-        var trusted: [SecTrustedApplication] = []
-
-        func appendTrustedApplication(for path: String?) {
-            var app: SecTrustedApplication?
-            let status = path.map { SecTrustedApplicationCreateFromPath($0, &app) }
-                ?? SecTrustedApplicationCreateFromPath(nil, &app)
-            guard status == errSecSuccess, let app else {
-                return
-            }
-            trusted.append(app)
-        }
-
-        appendTrustedApplication(for: Bundle.main.bundlePath)
-        appendTrustedApplication(for: nil)
-        return trusted
-    }
-
-    private static func trustedAccess(account: String) -> SecAccess? {
-        let trustedApplications = trustedApplicationList()
-        guard !trustedApplications.isEmpty else {
-            return nil
-        }
-
-        var access: SecAccess?
-        let status = SecAccessCreate(
-            "Divoom Cloud \(account)" as CFString,
-            trustedApplications as CFArray,
-            &access
-        )
-        guard status == errSecSuccess else {
-            return nil
-        }
-        return access
     }
 
     static func read(account: String, allowInteraction: Bool = false) -> String? {
@@ -128,11 +95,10 @@ private enum DivoomCloudKeychain {
         var addQuery = query
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrLabel as String] = "Divoom Cloud \(account)"
-        if let access = trustedAccess(account: account) {
-            addQuery[kSecAttrAccess as String] = access
-        } else {
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        }
+        // Avoid ad-hoc bundle ACL churn that can trigger repeated login-keychain prompts
+        // across local rebuilds. The app keeps the secret in Keychain, but uses stable
+        // accessibility instead of a per-build trusted-application list.
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         return addStatus == errSecSuccess
     }
@@ -152,6 +118,17 @@ private struct DivoomCloudCredentials {
     let email: String
     let password: String
     let source: Source
+}
+
+private struct DivoomCloudVerificationState {
+    let email: String
+    let verifiedAt: Date
+    let myListCount: Int
+}
+
+private enum CloudCredentialVerificationResult {
+    case success(Int)
+    case failure(String)
 }
 
 @discardableResult
@@ -1036,6 +1013,7 @@ private final class MenuSummaryView: NSView {
     private let chipViews: [SummaryPillView] = [
         SummaryPillView(text: "Ready", symbolName: "dot.radiowaves.left.and.right"),
         SummaryPillView(text: "Manual", symbolName: "hand.tap"),
+        SummaryPillView(text: "Cloud", symbolName: "icloud"),
     ]
     private let chipRow = NSStackView()
     private var supportingLines: [String] = ["Open Library for curated picks, cloud search, playlists, and favorites."]
@@ -1138,14 +1116,14 @@ private final class MenuSummaryView: NSView {
         headlineLabel.maximumNumberOfLines = 1
 
         supportTopLabel.translatesAutoresizingMaskIntoConstraints = false
-        supportTopLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        supportTopLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         supportTopLabel.textColor = .secondaryLabelColor
         supportTopLabel.lineBreakMode = .byWordWrapping
-        supportTopLabel.maximumNumberOfLines = 1
+        supportTopLabel.maximumNumberOfLines = 2
 
         supportBottomLabel.translatesAutoresizingMaskIntoConstraints = false
-        supportBottomLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
-        supportBottomLabel.textColor = .secondaryLabelColor
+        supportBottomLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
+        supportBottomLabel.textColor = .tertiaryLabelColor
         supportBottomLabel.lineBreakMode = .byWordWrapping
         supportBottomLabel.maximumNumberOfLines = 1
 
@@ -1181,10 +1159,10 @@ private final class MenuSummaryView: NSView {
 
         supportBottomLabel.isHidden = true
 
-        let contentStack = NSStackView(views: [topRow, headlineLabel, supportTopLabel])
+        let contentStack = NSStackView(views: [topRow, headlineLabel, supportTopLabel, supportBottomLabel])
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
-        contentStack.spacing = 6
+        contentStack.spacing = 5
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(glassView)
@@ -2905,7 +2883,7 @@ private final class HoverActionPreviewView: NSView {
     }
 
     private func updateOverlay(animated: Bool) {
-        let targetAlpha: CGFloat = hasContent && isHovering ? (style == .hero ? 0.82 : 0.72) : 0.0
+        let targetAlpha: CGFloat = hasContent && isHovering ? (style == .hero ? 0.48 : 0.36) : 0.0
         let updates = { self.overlayView.animator().alphaValue = targetAlpha }
         if animated {
             NSAnimationContext.runAnimationGroup { context in
@@ -3351,7 +3329,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         self.onToggleCloudLike = onToggleCloudLike
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 1188, height: 764),
+            contentRect: NSRect(x: 0, y: 0, width: 1128, height: 744),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -3362,7 +3340,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        panel.minSize = NSSize(width: 980, height: 680)
+        panel.minSize = NSSize(width: 960, height: 680)
 
         super.init(window: panel)
         panel.delegate = self
@@ -3628,7 +3606,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         cloudSaveButton.translatesAutoresizingMaskIntoConstraints = false
         cloudSaveButton.bezelStyle = .rounded
-        cloudSaveButton.title = "Save Local Login"
+        cloudSaveButton.title = "Save + Verify"
         cloudSaveButton.image = makeMenuSymbol("lock.shield", description: "Save Cloud Credentials")
         cloudSaveButton.imagePosition = .imageLeading
         cloudSaveButton.target = self
@@ -3637,7 +3615,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         cloudImportButton.translatesAutoresizingMaskIntoConstraints = false
         cloudImportButton.bezelStyle = .rounded
-        cloudImportButton.title = "Import from Passwords"
+        cloudImportButton.title = "Import + Verify"
         cloudImportButton.image = makeMenuSymbol("square.and.arrow.down.on.square", description: "Import from Passwords")
         cloudImportButton.imagePosition = .imageLeading
         cloudImportButton.target = self
@@ -3679,13 +3657,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         headerTopRow.spacing = 12
         headerTopRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let searchRow = NSStackView(views: [searchField, displayModeControl, favoritesOnlyButton, refreshButton])
+        let searchRow = NSStackView(views: [searchField, displayModeControl, favoritesOnlyButton])
         searchRow.orientation = .horizontal
         searchRow.alignment = .centerY
         searchRow.spacing = 10
         searchRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let utilityRow = NSStackView(views: [sourcePopUp, sortPopUp, cloudLoginButton, syncCloudButton, searchCloudButton, filterDisclosureButton])
+        let utilityRow = NSStackView(views: [sourcePopUp, sortPopUp, syncCloudButton, searchCloudButton, cloudLoginButton, refreshButton, filterDisclosureButton])
         utilityRow.orientation = .horizontal
         utilityRow.alignment = .centerY
         utilityRow.spacing = 10
@@ -3731,11 +3709,12 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         advancedFilterRow.isHidden = !advancedFiltersVisible
         advancedFilterRow.detachesHiddenViews = true
 
-        let heroStack = NSStackView(views: [headerTopRow, searchRow, utilityRow, advancedFilterRow])
+        let heroStack = NSStackView(views: [headerTopRow, headerMetricsRow, searchRow, utilityRow, cloudAccessCard, advancedFilterRow])
         heroStack.orientation = .vertical
         heroStack.alignment = .leading
         heroStack.spacing = 6
         heroStack.translatesAutoresizingMaskIntoConstraints = false
+        heroStack.detachesHiddenViews = true
         heroCard.addSubview(heroStack)
 
         let splitView = NSSplitView()
@@ -4284,7 +4263,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         updateCloudLoginButton()
         updateLibrarySummary(visibleSourceCount: visibleSourceCount)
         updateHeaderChips()
-        resultsLabel.stringValue = filteredItems.count == 1 ? "1 match" : "\(filteredItems.count) matches"
+        resultsLabel.stringValue = filteredItems.count == 1 ? "1 visible" : "\(filteredItems.count) visible"
 
         if let preservedSelectionID, let index = filteredItems.firstIndex(where: { $0.id == preservedSelectionID }) {
             selectItem(at: index)
@@ -4301,6 +4280,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         let credentialState = resolvedCloudCredentialUIState()
         let hasAnyCredentials = credentialState.usesLocalKeychain
         let hasLocalCredentials = credentialState.usesLocalKeychain
+        let shouldShowInlineCloudCard = !hasLocalCredentials || selectedSource == "divoom-cloud"
 
         syncCloudButton.isEnabled = hasAnyCredentials
         searchCloudButton.isEnabled = hasAnyCredentials && selectedSource == "divoom-cloud"
@@ -4319,39 +4299,60 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         }
         cloudPasswordField.placeholderString = credentialState.passwordPlaceholder
 
-        cloudEmailField.isHidden = true
-        cloudPasswordField.isHidden = true
-        cloudSaveButton.isHidden = true
-        cloudImportButton.isHidden = true
+        cloudEmailField.isHidden = hasLocalCredentials
+        cloudPasswordField.isHidden = hasLocalCredentials
+        cloudSaveButton.isHidden = hasLocalCredentials
+        cloudImportButton.isHidden = !credentialState.canImportSyncedCredentials
         updateCloudAccessCardVisibility(
             hasAnyCredentials: hasAnyCredentials,
             hasLocalCredentials: hasLocalCredentials,
-            selectedCloudSource: selectedSource == "divoom-cloud"
+            selectedCloudSource: selectedSource == "divoom-cloud",
+            shouldShowInlineCloudCard: shouldShowInlineCloudCard
         )
 
         if hasLocalCredentials {
-            cloudLoginButton.title = "Cloud Account…"
+            cloudLoginButton.title = "Cloud Settings…"
             cloudLoginButton.toolTip = "Review saved credentials, sync cadence, and cloud cache settings."
             cloudLoginButton.image = makeMenuSymbol("lock.icloud", description: "Manage Cloud")
             syncCloudButton.title = "Sync Cloud"
         } else {
             cloudLoginButton.title = "Connect Cloud…"
-            cloudLoginButton.toolTip = "Save Divoom credentials here or import them from Passwords."
+            cloudLoginButton.toolTip = "Save Divoom credentials inline here or import them from Passwords."
             cloudLoginButton.image = makeMenuSymbol("person.crop.circle.badge.plus", description: "Connect Cloud")
-            syncCloudButton.title = "Sync Locked"
+            syncCloudButton.title = "Connect First"
         }
     }
 
     private func updateCloudAccessCardVisibility(
         hasAnyCredentials: Bool,
         hasLocalCredentials: Bool,
-        selectedCloudSource: Bool
+        selectedCloudSource: Bool,
+        shouldShowInlineCloudCard: Bool
     ) {
-        _ = hasAnyCredentials
-        _ = hasLocalCredentials
-        _ = selectedCloudSource
-        cloudAccessCard.isHidden = true
-        cloudAccessCard.alphaValue = 0.0
+        let shouldShow = shouldShowInlineCloudCard
+        cloudAccessCard.isHidden = !shouldShow
+        cloudAccessCard.alphaValue = shouldShow ? 1.0 : 0.0
+        cloudEmailField.isEnabled = true
+        cloudPasswordField.isEnabled = true
+        cloudSaveButton.isEnabled = true
+        cloudImportButton.alphaValue = cloudImportButton.isEnabled ? 1.0 : 0.72
+
+        if !shouldShow {
+            return
+        }
+
+        if hasLocalCredentials {
+            cloudAccessStatusLabel.stringValue = selectedCloudSource
+                ? "Cloud is linked for live search, likes, playlists, and store browsing. Leave the password blank unless you want to replace the saved login."
+                : "Cloud is linked. Open the Cloud source for live search, likes, playlists, and store browsing."
+            cloudTipLabel.stringValue = "Cloud Search uses the current query and sync refreshes the local cloud cache for this browser."
+        } else if hasAnyCredentials {
+            cloudAccessStatusLabel.stringValue = "Cloud credentials are available, but this app still needs a local saved login for stable sync and search."
+            cloudTipLabel.stringValue = "Import the synced Passwords entry once, then the app will keep using its local Keychain copy."
+        } else {
+            cloudAccessStatusLabel.stringValue = "Save the Divoom login here or import it once from Passwords. The app will use the local Keychain copy after that."
+            cloudTipLabel.stringValue = "Once saved, Sync Cloud and Search Cloud become live immediately inside this browser."
+        }
     }
 
     private func updateLibrarySummary(visibleSourceCount: Int) {
@@ -4622,7 +4623,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
     private func updateHeaderChips() {
         let sourceCount = Set(allItems.map(\.source)).count
         let visibleCollections = Set(filteredItems.map(\.collection)).count
-        assetChip.update(text: filteredItems.count == 1 ? "1 match" : "\(filteredItems.count) matches", symbolName: filteredItems.isEmpty ? "square.grid.3x3" : "sparkles")
+        assetChip.update(text: filteredItems.count == 1 ? "1 visible" : "\(filteredItems.count) visible", symbolName: filteredItems.isEmpty ? "square.grid.3x3" : "sparkles")
         categoryChip.update(text: "\(Set(filteredItems.map(\.category)).count) topics · \(visibleCollections) sets")
         sourceChip.update(text: "\(sourceCount) source\(sourceCount == 1 ? "" : "s")", symbolName: sourceCount > 1 ? "shippingbox.circle" : "shippingbox")
         favoriteChip.update(text: "\(favorites.count) starred", symbolName: favorites.isEmpty ? "star" : "star.fill")
@@ -4680,15 +4681,68 @@ private enum AppSettingsTab: Int, CaseIterable {
     }
 }
 
+private func resolvedCloudVerificationState() -> DivoomCloudVerificationState? {
+    guard
+        let email = UserDefaults.standard.string(forKey: cloudVerifiedEmailDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+        !email.isEmpty,
+        let verifiedAt = UserDefaults.standard.object(forKey: cloudVerifiedAtDefaultsKey) as? Date
+    else {
+        return nil
+    }
+
+    let myListCount = UserDefaults.standard.integer(forKey: cloudVerifiedMyListCountDefaultsKey)
+    return DivoomCloudVerificationState(email: email, verifiedAt: verifiedAt, myListCount: myListCount)
+}
+
+private func persistCloudVerificationState(email: String, myListCount: Int) {
+    let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedEmail.isEmpty else {
+        return
+    }
+
+    UserDefaults.standard.set(trimmedEmail, forKey: cloudVerifiedEmailDefaultsKey)
+    UserDefaults.standard.set(Date(), forKey: cloudVerifiedAtDefaultsKey)
+    UserDefaults.standard.set(max(0, myListCount), forKey: cloudVerifiedMyListCountDefaultsKey)
+}
+
+private func clearCloudVerificationState() {
+    UserDefaults.standard.removeObject(forKey: cloudVerifiedEmailDefaultsKey)
+    UserDefaults.standard.removeObject(forKey: cloudVerifiedAtDefaultsKey)
+    UserDefaults.standard.removeObject(forKey: cloudVerifiedMyListCountDefaultsKey)
+}
+
 private func resolvedCloudCredentialUIState() -> DivoomCloudCredentialUIState {
     if let localEmailHint = DivoomCloudCredentialResolver.passiveLocalCredentialHint() {
+        let verificationState = resolvedCloudVerificationState()
+        let isVerified = verificationState?.email.caseInsensitiveCompare(localEmailHint) == .orderedSame
+        let status: String
+        if let verificationState, isVerified {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+            status = "Verified for \(localEmailHint) at \(formatter.string(from: verificationState.verifiedAt)). Playlist access is live with \(verificationState.myListCount) list\(verificationState.myListCount == 1 ? "" : "s")."
+        } else {
+            status = "A local Divoom cloud login is saved in this app Keychain. Verify it once here, then sync, search, likes, and playlists stay available everywhere."
+        }
         return DivoomCloudCredentialUIState(
             email: localEmailHint,
             passwordPlaceholder: "Saved in this app Keychain",
-            status: "A local Divoom cloud login is saved in this app Keychain and is ready for sync, search, likes, and playlists.",
+            status: status,
             canImportSyncedCredentials: true,
             usesLocalKeychain: true,
             usesSyncedPasswords: false
+        )
+    }
+
+    if let syncedHint = DivoomCloudCredentialResolver.syncedInternetPasswordHint() {
+        return DivoomCloudCredentialUIState(
+            email: syncedHint.email,
+            passwordPlaceholder: "Available in Passwords",
+            status: "A synced Passwords entry exists for \(syncedHint.email) on \(syncedHint.server). Import it once into this app Keychain to unlock sync, search, likes, and playlists without repeated prompts.",
+            canImportSyncedCredentials: true,
+            usesLocalKeychain: false,
+            usesSyncedPasswords: true
         )
     }
 
@@ -5083,7 +5137,7 @@ private final class AppSettingsWindowController: NSWindowController {
         credentialsCard.addSubview(credentialsGrid)
 
         let credentialsButtons = NSStackView(views: [
-            makeActionButton(title: "Save Credentials", symbolName: "lock.shield", action: #selector(saveCloudCredentials)),
+            makeActionButton(title: "Save + Verify", symbolName: "lock.shield", action: #selector(saveCloudCredentials)),
             importSyncedCloudButton,
             makeActionButton(title: "Clear Saved", symbolName: "trash", action: #selector(clearCloudCredentials)),
         ])
@@ -5091,6 +5145,7 @@ private final class AppSettingsWindowController: NSWindowController {
         importSyncedCloudButton.target = self
         importSyncedCloudButton.action = #selector(importSyncedCloudCredentials)
         importSyncedCloudButton.bezelStyle = .rounded
+        importSyncedCloudButton.title = "Import + Verify"
         importSyncedCloudButton.image = NSImage(systemSymbolName: "square.and.arrow.down.on.square", accessibilityDescription: "Import from Passwords")
         importSyncedCloudButton.imagePosition = .imageLeading
         credentialsButtons.orientation = .horizontal
@@ -5617,7 +5672,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         libraryMenu.addItem(makeItem("Reveal Divoom Cloud Folder", action: #selector(revealDivoomCloudFolder), symbolName: "shippingbox"))
         libraryMenu.addItem(makeItem("Open Cloud Guide", action: #selector(openDivoomCloudGuide), symbolName: "book"))
 
-        let liveMenu = NSMenu(title: "Now")
+        let liveMenu = NSMenu(title: "Live")
         liveMenu.addItem(makeSectionHeader("Live Now"))
         autoCodexItem = makeItem("Codex Live", action: #selector(toggleAutoCodex), symbolName: "brain")
         autoClaudeItem = makeItem("Claude Live", action: #selector(toggleAutoClaude), symbolName: "message")
@@ -5632,7 +5687,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         liveMenu.addItem(.separator())
         liveMenu.addItem(makeItem("Open Live Settings…", action: #selector(openLiveSettings), symbolName: "slider.horizontal.3"))
 
-        let deviceMenu = NSMenu(title: "Device")
+        let deviceMenu = NSMenu(title: "Ambient & Device")
         deviceMenu.addItem(makeSectionHeader("Connection"))
         deviceMenu.addItem(makeItem("Request Bluetooth Access", action: #selector(requestBluetoothAccess), symbolName: "dot.radiowaves.left.and.right"))
         deviceMenu.addItem(makeItem("Reconnect Light Link", action: #selector(reconnectLightLink), symbolName: "arrow.clockwise"))
@@ -5665,10 +5720,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         settingsMenu.addItem(makeItem("Export Logs…", action: #selector(exportLogFile), symbolName: "square.and.arrow.up"))
         menu.addItem(makeSubmenuItem("Studio", symbolName: "wand.and.stars", submenu: studioMenu))
         menu.addItem(makeSubmenuItem("Library", symbolName: "photo.stack", submenu: libraryMenu))
-        menu.addItem(makeSubmenuItem("Now", symbolName: "waveform", submenu: liveMenu))
-        menu.addItem(makeSubmenuItem("Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
+        menu.addItem(makeSubmenuItem("Live", symbolName: "waveform", submenu: liveMenu))
+        menu.addItem(makeSubmenuItem("Ambient & Device", symbolName: "dot.radiowaves.left.and.right", submenu: deviceMenu))
         menu.addItem(.separator())
-        menu.addItem(makeSubmenuItem("Settings", symbolName: "gearshape", submenu: settingsMenu))
+        menu.addItem(makeSubmenuItem("Settings & Info", symbolName: "gearshape", submenu: settingsMenu))
         menu.addItem(makeItem("Quit", action: #selector(quitApp), keyEquivalent: "q", symbolName: "power"))
         updateAutoRefreshUI()
         refreshSummaryCard()
@@ -5857,22 +5912,57 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     }
 
     private func saveCloudCredentials(email: String, password: String) {
-        guard persistDivoomCloudCredentials(email: email, password: password) else {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedEmail.isEmpty, !password.isEmpty else {
             settingsController?.refresh()
             updateActionStatus(
-                summary: "Cloud credentials not saved",
+                summary: "Cloud login incomplete",
                 success: false,
                 details: "Enter both the Divoom account email and password."
             )
             return
         }
 
-        settingsController?.refresh()
         updateActionStatus(
-            summary: "Cloud credentials saved",
+            summary: "Verifying Divoom cloud login",
             success: true,
-            details: "Stored securely in Keychain for native Divoom cloud sync."
+            details: "Signing into Divoom Cloud for \(trimmedEmail) and checking playlist access."
         )
+
+        verifyCloudCredentials(email: trimmedEmail, password: password) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let myListCount):
+                guard persistDivoomCloudCredentials(email: trimmedEmail, password: password) else {
+                    self.settingsController?.refresh()
+                    self.updateActionStatus(
+                        summary: "Cloud login verified but not saved",
+                        success: false,
+                        details: "The account works, but the app could not store it in Keychain."
+                    )
+                    return
+                }
+                persistCloudVerificationState(email: trimmedEmail, myListCount: myListCount)
+                self.animationLibraryController?.reloadFromExternalSync()
+                self.refreshSummaryMetadataAsync()
+                self.settingsController?.refresh()
+                self.updateActionStatus(
+                    summary: "Cloud login verified",
+                    success: true,
+                    details: "Verified \(trimmedEmail). Playlist access is live with \(myListCount) list\(myListCount == 1 ? "" : "s")."
+                )
+            case .failure(let details):
+                if resolvedCloudVerificationState()?.email.caseInsensitiveCompare(trimmedEmail) == .orderedSame {
+                    clearCloudVerificationState()
+                }
+                self.settingsController?.refresh()
+                self.updateActionStatus(
+                    summary: "Cloud login failed",
+                    success: false,
+                    details: details
+                )
+            }
+        }
     }
 
     private func importSyncedCloudCredentials() {
@@ -5901,22 +5991,46 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 return
             }
 
-            let saved = persistDivoomCloudCredentials(email: syncedCredentials.email, password: syncedCredentials.password)
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.settingsController?.refresh()
-                if saved {
-                    self.updateActionStatus(
-                        summary: "Imported synced Divoom password",
-                        success: true,
-                        details: "The synced Passwords entry for \(syncedCredentials.email) is now stored in the app Keychain."
-                    )
-                } else {
-                    self.updateActionStatus(
-                        summary: "Synced Divoom password not saved",
-                        success: false,
-                        details: "The synced Passwords entry could not be copied into the app Keychain."
-                    )
+                self.updateActionStatus(
+                    summary: "Verifying imported Divoom login",
+                    success: true,
+                    details: "Testing the synced Passwords entry for \(syncedCredentials.email) against Divoom Cloud."
+                )
+                self.verifyCloudCredentials(email: syncedCredentials.email, password: syncedCredentials.password) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success(let myListCount):
+                        guard persistDivoomCloudCredentials(email: syncedCredentials.email, password: syncedCredentials.password) else {
+                            self.settingsController?.refresh()
+                            self.updateActionStatus(
+                                summary: "Imported login verified but not saved",
+                                success: false,
+                                details: "The synced Passwords entry works, but the app could not store it in Keychain."
+                            )
+                            return
+                        }
+                        persistCloudVerificationState(email: syncedCredentials.email, myListCount: myListCount)
+                        self.animationLibraryController?.reloadFromExternalSync()
+                        self.refreshSummaryMetadataAsync()
+                        self.settingsController?.refresh()
+                        self.updateActionStatus(
+                            summary: "Imported Divoom login verified",
+                            success: true,
+                            details: "Imported \(syncedCredentials.email) from Passwords. Playlist access is live with \(myListCount) list\(myListCount == 1 ? "" : "s")."
+                        )
+                    case .failure(let details):
+                        if resolvedCloudVerificationState()?.email.caseInsensitiveCompare(syncedCredentials.email) == .orderedSame {
+                            clearCloudVerificationState()
+                        }
+                        self.settingsController?.refresh()
+                        self.updateActionStatus(
+                            summary: "Imported Divoom login failed",
+                            success: false,
+                            details: details
+                        )
+                    }
                 }
             }
         }
@@ -5927,12 +6041,109 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         DivoomCloudKeychain.delete(account: divoomCloudPasswordAccount)
         DivoomCloudCredentialResolver.setPassiveLocalCredentialHint(nil)
         DivoomCloudCredentialResolver.resetPassiveCaches()
+        clearCloudVerificationState()
+        animationLibraryController?.reloadFromExternalSync()
+        refreshSummaryMetadataAsync()
         settingsController?.refresh()
         updateActionStatus(
             summary: "Cleared saved cloud credentials",
             success: true,
             details: "The app-local cloud login was removed. You can still import a synced Passwords entry again later."
         )
+    }
+
+    private func verifyCloudCredentials(
+        email: String,
+        password: String,
+        completion: @escaping @MainActor (CloudCredentialVerificationResult) -> Void
+    ) {
+        let pythonURL = divoomRepoURL(".venv/bin/python")
+        let executableURL = FileManager.default.isExecutableFile(atPath: pythonURL.path)
+            ? pythonURL
+            : URL(fileURLWithPath: "/usr/bin/env")
+
+        DispatchQueue.global(qos: .userInitiated).async(execute: {
+            let process = Process()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            var environment = ProcessInfo.processInfo.environment
+            environment["DIVOOM_EMAIL"] = email
+            environment["DIVOOM_PASSWORD"] = password
+            process.executableURL = executableURL
+            process.arguments = executableURL == pythonURL
+                ? [divoomRepoURL("tools/divoom_cloud_sync.py").path, "--print-my-list"]
+                : ["python3", divoomRepoURL("tools/divoom_cloud_sync.py").path, "--print-my-list"]
+            process.environment = environment
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+                Task { @MainActor in
+                    if process.terminationStatus != 0 {
+                        completion(.failure(self.parseCloudCommandDetail(stdout: stdout, stderr: stderr)))
+                        return
+                    }
+
+                    guard let myListCount = self.parseVerifiedMyListCount(from: stdout) else {
+                        completion(.failure("Divoom Cloud responded, but the app could not parse the verification result."))
+                        return
+                    }
+                    completion(.success(myListCount))
+                }
+            } catch {
+                Task { @MainActor in
+                    completion(.failure(error.localizedDescription))
+                }
+            }
+        })
+    }
+
+    private func parseVerifiedMyListCount(from output: String) -> Int? {
+        guard
+            let data = output.data(using: .utf8),
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            (payload["success"] as? Bool) == true,
+            let itemCount = payload["itemCount"] as? Int
+        else {
+            return nil
+        }
+        return itemCount
+    }
+
+    private func parseCloudCommandDetail(stdout: String, stderr: String) -> String {
+        for raw in [stderr, stdout] {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                continue
+            }
+
+            if
+                let data = trimmed.data(using: .utf8),
+                let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            {
+                if let message = payload["message"] as? String, !message.isEmpty {
+                    return message
+                }
+                if let response = payload["response"] as? [String: Any],
+                   let message = response["ReturnMessage"] as? String,
+                   !message.isEmpty
+                {
+                    return message
+                }
+                if let error = payload["error"] as? String, !error.isEmpty {
+                    return error
+                }
+            }
+
+            return trimmed
+        }
+
+        return "Divoom Cloud verification failed."
     }
 
     private func isLaunchAtLoginEnabled() -> Bool {
@@ -6487,7 +6698,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         if facts.lightReady {
             switch autoRefreshMode {
             case .off:
-                return "16x16 Light Link online"
+                return "Display link online"
             case .favorites:
                 return "Favorites rotation active"
             case .codex, .claude, .pair, .ipFlag:
@@ -6515,13 +6726,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     private func currentSummaryHeadline(favoritesCount: Int, cloudItemCount: Int) -> String {
         let facts = currentConnectionFacts()
         if facts.authorizationPending || facts.authorizationDenied {
-            return "Grant Bluetooth so the hidden DitooPro-Light display endpoint can beam again."
+            return "Grant Bluetooth so the Ditoo display endpoint can beam again."
         }
         if facts.audioOnly {
-            return "The audio speaker is present, but the display endpoint is missing."
+            return "The speaker is visible, but the 16x16 display endpoint is missing."
         }
         if facts.lightConnecting {
-            return "Rebuilding the Light Link and restoring the beam path."
+            return "Rebuilding the display link and restoring the beam path."
         }
         if facts.scanInProgress {
             return "Scanning for DitooPro-Light so color, image, and live beams can resume."
@@ -6548,11 +6759,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 break
             }
         }
-        if let lastActionDate {
+        if let lastActionDate, !lastActionSuccess {
             let cleaned = cleanedActionSummary()
-            if lastActionSuccess {
-                return cleaned.isEmpty ? "Ready for the next beam." : "Last beam: \(cleaned) • \(timestampFormatter.string(from: lastActionDate))"
-            }
             return cleaned.isEmpty
                 ? "Something needs attention."
                 : "Needs attention: \(cleaned) • \(timestampFormatter.string(from: lastActionDate))"
@@ -6560,12 +6768,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         if favoritesCount > 0 || cloudItemCount > 0 {
             return "\(favoritesCount) favorites ready • \(cloudItemCount) cloud picks cached."
         }
+        if facts.lightReady {
+            return "Ready for colors, feeds, library beams, and ambient light."
+        }
         return "Open the Library, beam a color, or start a live feed."
     }
 
     private func currentSummaryRotatingLines(favoritesCount: Int, cloudItemCount: Int) -> [String] {
         let facts = currentConnectionFacts()
         let cloudLinked = resolvedCloudCredentialUIState().usesLocalKeychain
+        let lastBeamLine: String? = {
+            guard let lastActionDate, lastActionSuccess else { return nil }
+            let cleaned = cleanedActionSummary()
+            guard !cleaned.isEmpty else { return nil }
+            return "Last beam: \(cleaned) at \(timestampFormatter.string(from: lastActionDate))."
+        }()
 
         if facts.authorizationPending {
             return ["If the Bluetooth prompt stays hidden, open Device → Request Bluetooth Access."]
@@ -6580,31 +6797,43 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return ["Device holds diagnostics and reconnection tools when the Light Link disappears."]
         }
         if autoRefreshMode == .favorites {
-            return ["\(favoritesCount) starred animations are queued. Open Library to tune the rotation."]
+            return [lastBeamLine, "\(favoritesCount) starred animations are queued. Open Library to tune the rotation."]
+                .compactMap { $0 }
         }
         if autoRefreshMode != .off {
             if cloudLinked {
-                return ["\(cloudItemCount) cloud picks are cached. Open Library for playlists, likes, search, and store channels."]
+                return [lastBeamLine, "\(cloudItemCount) cloud picks are cached. Open Library for playlists, likes, search, and store channels."]
+                    .compactMap { $0 }
             }
-            return ["Open Library for curated picks now, then connect Cloud in Settings for playlists, search, and likes."]
+            return [lastBeamLine, "Open Library for curated picks now, then connect Cloud in Settings for playlists, search, and likes."]
+                .compactMap { $0 }
         }
         if favoritesCount > 0 && cloudLinked {
-            return ["\(favoritesCount) starred · \(cloudItemCount) cloud picks cached. Open Library for playlists, likes, and search."]
+            return [lastBeamLine, "\(favoritesCount) starred · \(cloudItemCount) cloud picks cached. Open Library for playlists, likes, and search."]
+                .compactMap { $0 }
         }
         if favoritesCount > 0 {
-            return ["\(favoritesCount) starred animations are ready. Open Library to build a stronger rotation."]
+            return [lastBeamLine, "\(favoritesCount) starred animations are ready. Open Library to build a stronger rotation."]
+                .compactMap { $0 }
         }
         if cloudLinked {
-            return ["\(cloudItemCount) cloud picks are cached. Start in Library for search, playlists, likes, and store channels."]
+            return [lastBeamLine, "\(cloudItemCount) cloud picks are cached. Start in Library for search, playlists, likes, and store channels."]
+                .compactMap { $0 }
         }
-        return ["Open Library for curated picks now, then connect Cloud in Settings to unlock search, likes, playlists, and store browsing."]
+        return [lastBeamLine, "Open Library for curated picks now, then connect Cloud in Settings to unlock search, likes, playlists, and store browsing."]
+            .compactMap { $0 }
     }
 
     private func currentSummaryChips(favoritesCount: Int, cloudItemCount: Int) -> [SummaryChipSpec] {
-        _ = cloudItemCount
+        let secondaryChip: SummaryChipSpec
+        if autoRefreshMode == .off && favoritesCount == 0 {
+            secondaryChip = currentCloudChip(cloudItemCount: cloudItemCount)
+        } else {
+            secondaryChip = currentActivityChip(favoritesCount: favoritesCount)
+        }
         return [
             currentLinkChip(),
-            currentActivityChip(favoritesCount: favoritesCount),
+            secondaryChip,
         ]
     }
 
@@ -6640,13 +6869,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             if favoritesCount > 0 {
                 return SummaryChipSpec(text: "\(favoritesCount) Favorites", symbolName: "star.fill", accentColor: .systemYellow)
             }
-            if lastActionDate != nil {
-                if lastActionSuccess {
-                    return SummaryChipSpec(text: "Last Beam OK", symbolName: "checkmark.circle.fill", accentColor: .systemGreen)
-                }
+            if lastActionDate != nil, !lastActionSuccess {
                 return SummaryChipSpec(text: "Needs Attention", symbolName: "exclamationmark.triangle.fill", accentColor: .systemOrange)
             }
-            return SummaryChipSpec(text: "Create & Library", symbolName: "sparkles")
+            return SummaryChipSpec(text: "Library Ready", symbolName: "photo.stack")
         case .favorites:
             return SummaryChipSpec(text: "Favorites Queue", symbolName: "arrow.triangle.2.circlepath", accentColor: .systemPink)
         case .codex, .claude, .pair, .ipFlag:

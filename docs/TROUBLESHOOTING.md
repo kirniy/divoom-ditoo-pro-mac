@@ -113,23 +113,47 @@ The concrete bug we hit before this fix:
 - once the shell stalled, the CLI looked broken too, because it talks to the running app over IPC
 - the device itself was fine, and the BLE transport was fine once the app launched cleanly
 
+## BLE light path disappears after rebuild or relaunch
+
+The important distinction is:
+
+- `DitooPro-Audio` is not the 16x16 display transport
+- the real display path is the hidden `DitooPro-Light` BLE peripheral
+
+The app now persists the last known `DitooPro-Light` peripheral UUID and, if that defaults key is missing, tries to recover it from the app log before scanning again. That keeps the known-good `retrievePeripherals(withIdentifiers:)` path alive across rebuilds and crashes.
+
+If the app still comes up as `BLE light idle` or `BLE light connecting` for too long:
+
+1. make sure the Ditoo is awake
+2. open `Ambient & Device -> Reconnect Light Link`
+3. if needed, restart the Ditoo once so `DitooPro-Light` starts advertising again
+4. re-open the app and watch `~/Library/Logs/DivoomMenuBar.log`
+
+Expected healthy log lines:
+
+- `retrievePeripherals cached id=... name=DitooPro-Light`
+- `didConnect BLE peripheral name=DitooPro-Light`
+- `BLE light write characteristic ready`
+
+If you only see `DitooPro-Audio`, the speaker is visible but the display endpoint is not.
+
 What changed:
 
 - ordinary menu and library refresh no longer need an interactive credential read
 - explicit cloud actions are the only place that should try to use secrets
-- saving credentials now rewrites the app-local Keychain items cleanly instead of preserving an older broken ACL shape
+- saving credentials now verifies the Divoom account first and then rewrites the app-local Keychain items in a stable shape that survives local rebuilds better
 
 Current intended flow:
 
 1. open `Settings -> Cloud`
-2. either save the Divoom login directly, or click `Import from Passwords` once
+2. either click `Save + Verify` with the Divoom login directly, or click `Import + Verify` once
 3. after that, use the saved local copy for the smoothest path
 
 If prompts still continue:
 
 1. open `Settings -> Cloud`
 2. click `Clear Saved`
-3. save the credentials directly into the app Keychain
+3. save the credentials directly into the app Keychain again with `Save + Verify`
 4. turn off `Sync Divoom Cloud on app launch` and `Auto-sync Divoom Cloud every 6 hours` until the next manual cloud action succeeds cleanly
 5. avoid repeated re-import attempts unless you actually need to refresh the local copy
 
