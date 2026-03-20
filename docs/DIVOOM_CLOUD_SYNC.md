@@ -1,9 +1,11 @@
 # Divoom Cloud Sync
 
-The native library can now ingest a second source root:
+The native animation library can ingest a second source root:
 
 - local curated assets: `assets/16x16/curated`
 - Divoom cloud assets: `assets/16x16/divoom-cloud`
+
+This is a real working surface, but it is still early beta from a product and parity standpoint.
 
 ## Sync Tool
 
@@ -43,6 +45,12 @@ The native app and the sync tool share the same Divoom account model, but they d
 - the macOS app can import a synced Passwords entry for `divoom-gz.com` once, then reuse the local Keychain copy
 - the CLI sync tool still uses `DIVOOM_EMAIL` plus `DIVOOM_PASSWORD` or `DIVOOM_MD5_PASSWORD`
 
+Recommended product path:
+
+- use the synced Passwords entry only as an import helper
+- save a local app Keychain copy
+- run cloud sync from there
+
 Outputs:
 
 - downloaded GIFs: `assets/16x16/divoom-cloud/`
@@ -65,7 +73,7 @@ This sync path currently covers:
 - native library ingestion from the synced output folder
 - native app settings for:
   - secure email and password entry in the native Settings window
-  - local-Keychain-first credentials so the app does not keep reopening Passwords prompts for passive UI state
+  - app-local Keychain storage for stable runtime auth
   - enabling or disabling the cloud source in the library
   - syncing on launch
   - background sync every 6 hours
@@ -96,6 +104,22 @@ The vendored `apixoo` implementation surface is now covered end to end:
 - `Channel/StoreNew20`
 - PixelBean download and GIF decode
 
+## Current truth
+
+Working now:
+
+- login via the sync tool environment variables
+- app-local Keychain credential save path
+- one-time synced Passwords import path
+- sync, search, and like / unlike plumbing
+- local manifest generation and native library ingestion
+
+Still rough:
+
+- cloud auth UX inside the macOS app
+- the distinction between Passwords import and stable local auth
+- exact parity with the iOS store/channel browser
+
 Still pending for full Divoom iOS parity:
 
 - exact section-to-`Flag` mapping for the iOS store/channel browser
@@ -104,3 +128,5 @@ Still pending for full Divoom iOS parity:
 - deeper IPA parity for channel timing and playback activation
 
 The native library is intentionally focused on read, sort, browse, and like flows. Write-back flows such as upload and comments remain out of scope here.
+
+For user-facing install and recovery steps, see [`INSTALL.md`](./INSTALL.md) and [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md).

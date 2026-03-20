@@ -20,3 +20,19 @@ This repo vendors `apixoo` for the Divoom cloud sync path:
 - GIF export for the native animation library
 
 The vendored code remains attributed to its upstream author and license. Any future changes to this surface should keep the upstream credit intact.
+
+## Product Sounds
+
+- Source: OpenPeon
+- Pack: `cute-minimal`
+- Site: <https://openpeon.com/packs/cute-minimal>
+
+This app uses sounds from the OpenPeon `cute-minimal` pack for beam and feedback cues.
+
+## Provider Art
+
+The app bundle also carries provider icon resources for Codex and Claude display surfaces.
+
+- bundled app resources: `macos/DivoomMenuBar/Resources/*.svg`
+
+These should remain attributed to their respective upstream product brands.
