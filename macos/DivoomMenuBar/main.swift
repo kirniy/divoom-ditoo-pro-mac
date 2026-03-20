@@ -3503,13 +3503,13 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         headerIconView.contentTintColor = .systemOrange
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 24, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 21, weight: .bold)
 
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        summaryLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
         summaryLabel.textColor = .secondaryLabelColor
-        summaryLabel.maximumNumberOfLines = 2
-        summaryLabel.lineBreakMode = .byWordWrapping
+        summaryLabel.maximumNumberOfLines = 1
+        summaryLabel.lineBreakMode = .byTruncatingTail
 
         resultsLabel.translatesAutoresizingMaskIntoConstraints = false
         resultsLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -3731,10 +3731,10 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         advancedFilterRow.isHidden = !advancedFiltersVisible
         advancedFilterRow.detachesHiddenViews = true
 
-        let heroStack = NSStackView(views: [headerTopRow, headerMetricsRow, searchRow, utilityRow, advancedFilterRow])
+        let heroStack = NSStackView(views: [headerTopRow, searchRow, utilityRow, advancedFilterRow])
         heroStack.orientation = .vertical
         heroStack.alignment = .leading
-        heroStack.spacing = 8
+        heroStack.spacing = 6
         heroStack.translatesAutoresizingMaskIntoConstraints = false
         heroCard.addSubview(heroStack)
 
@@ -3745,16 +3745,6 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
 
         let browserPane = NSVisualEffectView()
         configureCard(browserPane, material: .hudWindow, radius: 24)
-
-        let browserSectionLabel = NSTextField(labelWithString: "Catalog")
-        configureSectionEyebrow(browserSectionLabel)
-
-        let browserSectionSummaryLabel = NSTextField(labelWithString: "Large previews, fast filtering, and one-click beam across curated and cloud picks.")
-        browserSectionSummaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        browserSectionSummaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        browserSectionSummaryLabel.textColor = .secondaryLabelColor
-        browserSectionSummaryLabel.maximumNumberOfLines = 2
-        browserSectionSummaryLabel.lineBreakMode = .byWordWrapping
 
         collectionScrollView.translatesAutoresizingMaskIntoConstraints = false
         collectionScrollView.hasVerticalScroller = true
@@ -3800,20 +3790,12 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         emptyStateStack.addArrangedSubview(emptyDetailLabel)
         emptyStateStack.isHidden = true
 
-        browserPane.addSubview(browserSectionLabel)
-        browserPane.addSubview(browserSectionSummaryLabel)
         browserPane.addSubview(collectionScrollView)
         browserPane.addSubview(emptyStateStack)
 
         configureCard(inspectorView, material: .hudWindow, radius: 24)
 
         configureSectionEyebrow(inspectorSectionLabel)
-
-        inspectorSectionSummaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        inspectorSectionSummaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        inspectorSectionSummaryLabel.textColor = .secondaryLabelColor
-        inspectorSectionSummaryLabel.maximumNumberOfLines = 2
-        inspectorSectionSummaryLabel.lineBreakMode = .byWordWrapping
 
         detailPreviewView.translatesAutoresizingMaskIntoConstraints = false
         detailPreviewView.onPrimaryAction = { [weak self] in
@@ -3923,7 +3905,6 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
         inspectorText.translatesAutoresizingMaskIntoConstraints = false
 
         inspectorView.addSubview(inspectorSectionLabel)
-        inspectorView.addSubview(inspectorSectionSummaryLabel)
         inspectorView.addSubview(detailPreviewView)
         inspectorView.addSubview(inspectorText)
 
@@ -3973,17 +3954,9 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             splitView.topAnchor.constraint(equalTo: heroCard.bottomAnchor, constant: 14),
             splitView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -18),
 
-            browserSectionLabel.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor, constant: 16),
-            browserSectionLabel.trailingAnchor.constraint(equalTo: browserPane.trailingAnchor, constant: -16),
-            browserSectionLabel.topAnchor.constraint(equalTo: browserPane.topAnchor, constant: 14),
-
-            browserSectionSummaryLabel.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor, constant: 16),
-            browserSectionSummaryLabel.trailingAnchor.constraint(equalTo: browserPane.trailingAnchor, constant: -16),
-            browserSectionSummaryLabel.topAnchor.constraint(equalTo: browserSectionLabel.bottomAnchor, constant: 2),
-
             collectionScrollView.leadingAnchor.constraint(equalTo: browserPane.leadingAnchor, constant: 8),
             collectionScrollView.trailingAnchor.constraint(equalTo: browserPane.trailingAnchor, constant: -8),
-            collectionScrollView.topAnchor.constraint(equalTo: browserSectionSummaryLabel.bottomAnchor, constant: 10),
+            collectionScrollView.topAnchor.constraint(equalTo: browserPane.topAnchor, constant: 8),
             collectionScrollView.bottomAnchor.constraint(equalTo: browserPane.bottomAnchor, constant: -8),
 
             emptyStateStack.centerXAnchor.constraint(equalTo: browserPane.centerXAnchor),
@@ -3996,11 +3969,7 @@ private final class AnimationLibraryWindowController: NSWindowController, NSColl
             inspectorSectionLabel.trailingAnchor.constraint(equalTo: inspectorView.trailingAnchor, constant: -18),
             inspectorSectionLabel.topAnchor.constraint(equalTo: inspectorView.topAnchor, constant: 14),
 
-            inspectorSectionSummaryLabel.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
-            inspectorSectionSummaryLabel.trailingAnchor.constraint(equalTo: inspectorView.trailingAnchor, constant: -18),
-            inspectorSectionSummaryLabel.topAnchor.constraint(equalTo: inspectorSectionLabel.bottomAnchor, constant: 2),
-
-            detailPreviewView.topAnchor.constraint(equalTo: inspectorSectionSummaryLabel.bottomAnchor, constant: 12),
+            detailPreviewView.topAnchor.constraint(equalTo: inspectorSectionLabel.bottomAnchor, constant: 10),
             detailPreviewView.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
             detailPreviewView.trailingAnchor.constraint(equalTo: inspectorView.trailingAnchor, constant: -18),
             detailPreviewView.heightAnchor.constraint(equalToConstant: 232),
