@@ -50,6 +50,25 @@ How the app now recovers:
 - `Reconnect Light Link` clears stale light-link state and triggers a fresh BLE scan
 - readiness is only real when `DitooPro-Light` is back and the writable light characteristic is ready
 
+The macOS-specific failure mode that bit us:
+
+- ad-hoc rebuilt app bundles can fall back to `Bluetooth auth=denied` or `Bluetooth auth=notDetermined`
+- when that happens, the app can still look alive, but every beam path fails before transport discovery
+- this is a permissions/TCC problem first, not a Divoom packet problem
+
+Fast recovery:
+
+```bash
+tccutil reset BluetoothAlways dev.kirniy.divoom.menubar
+open -na /Users/kirniy/dev/divoom/build/DivoomMenuBar.app
+```
+
+Then:
+
+1. accept the Bluetooth prompt from the relaunched bundle
+2. if the prompt does not appear, use `Device -> Connection -> Request Bluetooth Access`
+3. once permission is back, use `Reconnect Light Link` only if the app still sees `DitooPro-Audio` but not `DitooPro-Light`
+
 Useful recovery commands from a repo checkout:
 
 ```bash
@@ -63,23 +82,24 @@ This is a current beta pain point.
 
 The best path is:
 
-1. open `Help & Settings -> Cloud`
-2. save Divoom credentials into the app Keychain, or keep using the synced `divoom-gz.com` Passwords entry
+1. open `Settings -> Cloud`
+2. save Divoom credentials into the app Keychain, or import the synced `divoom-gz.com` Passwords entry once
 3. run `Sync Cloud`
 
 Current runtime truth:
 
 - passive UI refresh should not probe Passwords anymore
-- explicit cloud actions use the app-local Keychain copy first
-- if that local copy is missing, explicit cloud actions can fall back to the synced `divoom-gz.com` Passwords entry for the current session
-- importing from Passwords into the app-local Keychain is still available, but it is not the only path
+- explicit cloud actions use the app-local Keychain copy
+- direct cloud sync is working with valid credentials
+- `Channel/StoreClockGetClassify` and `Channel/ItemSearch` are still blocked by payload-parity work
+- importing from Passwords into the app-local Keychain is still available, but it is now an explicit copy step rather than a passive fallback
 
 If cloud actions still fail:
 
 - open Settings and confirm the app has locally saved credentials
 - if needed, clear saved credentials and save them again
 - if the native library header still shows `Connect Cloud…`, the app does not see a local saved copy yet
-- if the local copy is awkward, try the synced Passwords route directly from an explicit cloud action
+- if the local copy was originally created outside the app, re-save it from the app to rewrite the Keychain item cleanly
 - then run a new sync
 
 ## Repeated Keychain or Passwords prompts
@@ -101,13 +121,13 @@ What changed:
 
 Current intended flow:
 
-1. open `Help & Settings -> Cloud`
+1. open `Settings -> Cloud`
 2. either save the Divoom login directly, or click `Import from Passwords` once
-3. after that, use the saved local copy for the smoothest path, or let an explicit cloud action unlock the synced Passwords fallback for the current session
+3. after that, use the saved local copy for the smoothest path
 
 If prompts still continue:
 
-1. open `Help & Settings -> Cloud`
+1. open `Settings -> Cloud`
 2. click `Clear Saved`
 3. save the credentials directly into the app Keychain
 4. turn off `Sync Divoom Cloud on app launch` and `Auto-sync Divoom Cloud every 6 hours` until the next manual cloud action succeeds cleanly

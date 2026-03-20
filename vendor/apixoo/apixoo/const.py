@@ -71,8 +71,24 @@ class ApiEndpoint(str, Enum):
     GET_ALBUM_FILES_V3 = '/Discover/GetAlbumImageListV3'
     GET_CATEGORY_FILES = '/GetCategoryFileListV2'
     GET_GALLERY_INFO = '/Cloud/GalleryInfo'
+    GET_CUSTOM_GALLERY_TIME = '/Channel/GetCustomGalleryTime'
+    GET_SUBSCRIBE_TIME = '/Channel/GetSubscribeTime'
+    GET_SUBSCRIBE_GALLERY_TIME = '/Channel/GetSubscribeTime'
+    GET_ALBUM_TIME = '/Channel/GetAlbumTime'
+    SET_CUSTOM_GALLERY_TIME = '/Channel/SetCustomGalleryTime'
+    SET_SUBSCRIBE_TIME = '/Channel/SetSubscribeTime'
+    SET_ALBUM_TIME = '/Channel/SetAlbumTime'
     GET_MY_LIST = '/Playlist/GetMyList'
     GET_SOMEONE_LIST = '/Playlist/GetSomeOneList'
+    PLAYLIST_NEW_LIST = '/Playlist/NewList'
+    PLAYLIST_HIDE = '/Playlist/Hide'
+    PLAYLIST_RENAME = '/Playlist/Rename'
+    PLAYLIST_SET_DESCRIBE = '/Playlist/SetDescribe'
+    PLAYLIST_SET_COVER = '/Playlist/SetCover'
+    PLAYLIST_DELETE_LIST = '/Playlist/DeleteList'
+    PLAYLIST_ADD_IMAGE = '/Playlist/AddImageToList'
+    PLAYLIST_REMOVE_IMAGE = '/Playlist/RemoveImage'
+    PLAYLIST_SEND_DEVICE = '/Playlist/SendDevice'
     GALLERY_LIKE = '/GalleryLikeV2'
     ITEM_SEARCH = '/Channel/ItemSearch'
     STORE_CLOCK_GET_CLASSIFY = '/Channel/StoreClockGetClassify'
@@ -80,6 +96,13 @@ class ApiEndpoint(str, Enum):
     STORE_TOP20 = '/Channel/StoreTop20'
     STORE_NEW20 = '/Channel/StoreNew20'
     LIKE_CLOCK = '/Channel/LikeClock'
+    GET_AMBIENT_LIGHT = '/Channel/GetAmbientLight'
+    SET_AMBIENT_LIGHT = '/Channel/SetAmbientLight'
+    SET_BRIGHTNESS = '/Channel/SetBrightness'
+    GET_ON_OFF_SCREEN = '/Channel/GetOnOffScreen'
+    ON_OFF_SCREEN = '/Channel/OnOffScreen'
+    GET_ON_OFF = '/Channel/GetOnOff'
+    SET_ON_OFF = '/Channel/SetOnOff'
     USER_LOGIN = '/UserLogin'
 
 
@@ -117,8 +140,12 @@ class UserInfo(BaseDictInfo):
 
 class GalleryInfo(BaseDictInfo):
     _KEYS_MAP = {
+        'AddFlag': 'add_flag',
         'ClockId': 'clock_id',
+        'ClockName': 'clock_name',
+        'ClockType': 'clock_type',
         'Classify': 'category',
+        'ClassifyId': 'classify_id',
         'CommentCnt': 'total_comments',
         'Content': 'content',
         'CopyrightFlag': 'copyright_flag',
@@ -131,7 +158,9 @@ class GalleryInfo(BaseDictInfo):
         'FileURL': 'file_url',
         'Flag': 'flag',
         'GalleryId': 'gallery_id',
+        'ImagePixelId': 'image_pixel_id',
         'IsLike': 'is_like',
+        'IsMyLike': 'is_my_like',
         'ItemId': 'item_id',
         'LikeCnt': 'total_likes',
         'ShareCnt': 'total_shares',
@@ -184,10 +213,13 @@ class CloudClassifyInfo(BaseDictInfo):
 
 class PlaylistInfo(BaseDictInfo):
     _KEYS_MAP = {
+        'AddFlag': 'add_flag',
+        'Count': 'file_count',
         'CoverFileId': 'cover_file_id',
         'Describe': 'describe',
         'FileCnt': 'file_count',
         'GalleryId': 'gallery_id',
+        'HideFlag': 'hide_flag',
         'ImageFileId': 'image_file_id',
         'LikeCnt': 'total_likes',
         'Name': 'name',
@@ -195,3 +227,52 @@ class PlaylistInfo(BaseDictInfo):
         'PlayName': 'play_name',
         'WatchCnt': 'total_views',
     }
+
+
+class ChannelTimingInfo(BaseDictInfo):
+    _KEYS_MAP = {
+        'AlbumId': 'album_id',
+        'AlbumName': 'album_name',
+        'AuthorType': 'author_type',
+        'ClockId': 'clock_id',
+        'CustomId': 'custom_id',
+        'GalleryShowTimeFlag': 'gallery_show_time_flag',
+        'LcdIndex': 'lcd_index',
+        'LcdIndependence': 'lcd_independence',
+        'LcdIndependenceList': 'lcd_independence_list',
+        'ParentClockId': 'parent_clock_id',
+        'ParentItemId': 'parent_item_id',
+        'PlayId': 'play_id',
+        'PlayName': 'play_name',
+        'SingleGalleyTime': 'single_gallery_time',
+        'SoundOnOff': 'sound_on_off',
+        'StartUpClockId': 'startup_clock_id',
+        'SubscribeType': 'subscribe_type',
+        'UserList': 'user_list',
+    }
+
+
+class AmbientLightColorInfo(BaseDictInfo):
+    _KEYS_MAP = {
+        'SelectEffect': 'select_effect',
+    }
+
+
+class AmbientLightInfo(BaseDictInfo):
+    _KEYS_MAP = {
+        'Brightness': 'brightness',
+        'Color': 'color',
+        'ColorCycle': 'color_cycle',
+        'KeyOnOff': 'key_on_off',
+        'LightList': 'light_list',
+        'OnOff': 'on_off',
+        'SelectLightIndex': 'select_light_index',
+    }
+
+    def __init__(self, info: dict):
+        super().__init__(info)
+        self.__dict__['light_list'] = [
+            AmbientLightColorInfo(item) if isinstance(item, dict) else item
+            for item in (info.get('LightList') or [])
+        ]
+        dict.__init__(self, **self.__dict__)

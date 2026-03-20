@@ -19,7 +19,18 @@ This repo vendors `apixoo` for the Divoom cloud sync path:
 - Divoom PixelBean decoding
 - GIF export for the native animation library
 
-The vendored code remains attributed to its upstream author and license. Any future changes to this surface should keep the upstream credit intact.
+The vendored code remains attributed to its upstream author and license.
+
+Current repo truth:
+
+- `vendor/apixoo` is a vendored dependency, not original work from this repo
+- this repo carries local compatibility fixes for the current native cloud sync and library-ingestion path
+- upstream credit and the MIT license must stay intact when this surface changes
+
+Relevant files:
+
+- upstream license copy: [vendor/apixoo/LICENSE.md](/Users/kirniy/dev/divoom/vendor/apixoo/LICENSE.md)
+- vendored source: [vendor/apixoo](/Users/kirniy/dev/divoom/vendor/apixoo)
 
 ## Product Sounds
 

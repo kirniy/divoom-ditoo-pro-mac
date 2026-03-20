@@ -1,3 +1,4 @@
+import AppKit
 import CoreBluetooth
 import Darwin
 import Foundation
@@ -119,6 +120,183 @@ private func buildExtendedCommandPacket(type: UInt8, params: [UInt8] = []) -> Da
     var payload = Data([type])
     payload.append(contentsOf: params)
     return buildOldModeDivoomPacket(command: 0xBD, payload: payload)
+}
+
+private struct DecodedDivoomTransportPacket {
+    let framing: String
+    let command: UInt8
+    let payload: Data
+    let checksumValid: Bool
+}
+
+private func decodeEscapedOldModePacket(_ raw: Data) -> Data? {
+    guard raw.count >= 7, raw.first == 0x01, raw.last == 0x02 else {
+        return nil
+    }
+
+    var decoded = Data([0x01])
+    let middle = Array(raw.dropFirst().dropLast())
+    var index = 0
+    while index < middle.count {
+        let byte = middle[index]
+        if byte == 0x03, index + 1 < middle.count {
+            switch middle[index + 1] {
+            case 0x04:
+                decoded.append(0x01)
+                index += 2
+                continue
+            case 0x05:
+                decoded.append(0x02)
+                index += 2
+                continue
+            case 0x06:
+                decoded.append(0x03)
+                index += 2
+                continue
+            default:
+                break
+            }
+        }
+        decoded.append(byte)
+        index += 1
+    }
+    decoded.append(0x02)
+    return decoded
+}
+
+private func decodeOldModeTransportPacket(_ raw: Data, framing: String) -> DecodedDivoomTransportPacket? {
+    guard raw.count >= 7, raw.first == 0x01, raw.last == 0x02 else {
+        return nil
+    }
+    let length = Int(UInt16(raw[1]) | (UInt16(raw[2]) << 8))
+    let expectedCount = length + 4
+    guard raw.count >= expectedCount, length >= 3 else {
+        return nil
+    }
+
+    let payloadCount = length - 3
+    let payloadStart = 4
+    let payloadEnd = payloadStart + payloadCount
+    guard payloadEnd + 2 < raw.count else {
+        return nil
+    }
+
+    let payload = raw.subdata(in: payloadStart..<payloadEnd)
+    let expectedChecksum = UInt16(raw[payloadEnd]) | (UInt16(raw[payloadEnd + 1]) << 8)
+    let checksumBody = Data(raw[1..<payloadEnd])
+    let calculatedChecksum = checksumBody.reduce(UInt16.zero) { partial, byte in
+        partial &+ UInt16(byte)
+    }
+
+    return DecodedDivoomTransportPacket(
+        framing: framing,
+        command: raw[3],
+        payload: payload,
+        checksumValid: calculatedChecksum == expectedChecksum
+    )
+}
+
+private func decodeNewModeTransportPacket(_ raw: Data) -> DecodedDivoomTransportPacket? {
+    guard raw.count >= 10,
+          raw.starts(with: [0xFE, 0xEF, 0xAA, 0x55]) else {
+        return nil
+    }
+
+    let length = Int(UInt16(raw[4]) | (UInt16(raw[5]) << 8))
+    let bodyStart = 4
+    let bodyEnd = bodyStart + length
+    guard bodyEnd + 2 <= raw.count, length >= 3 else {
+        return nil
+    }
+
+    let transmitMode = raw[6]
+    let packetIDLength = transmitMode == 1 ? 4 : 0
+    let commandIndex = 7 + packetIDLength
+    guard commandIndex < bodyEnd else {
+        return nil
+    }
+
+    let payload = raw.subdata(in: (commandIndex + 1)..<bodyEnd)
+    let expectedChecksum = UInt16(raw[bodyEnd]) | (UInt16(raw[bodyEnd + 1]) << 8)
+    let checksumBody = Data(raw[bodyStart..<bodyEnd])
+    let calculatedChecksum = checksumBody.reduce(UInt16.zero) { partial, byte in
+        partial &+ UInt16(byte)
+    }
+
+    return DecodedDivoomTransportPacket(
+        framing: "new-mode",
+        command: raw[commandIndex],
+        payload: payload,
+        checksumValid: calculatedChecksum == expectedChecksum
+    )
+}
+
+private func decodeDivoomTransportPacket(_ raw: Data) -> DecodedDivoomTransportPacket? {
+    if let packet = decodeNewModeTransportPacket(raw) {
+        return packet
+    }
+    if let packet = decodeOldModeTransportPacket(raw, framing: "old-mode") {
+        return packet
+    }
+    if let decoded = decodeEscapedOldModePacket(raw) {
+        return decodeOldModeTransportPacket(decoded, framing: "old-mode-escaped")
+    }
+    return nil
+}
+
+private func describeDivoomTransportPacket(_ packet: DecodedDivoomTransportPacket) -> String {
+    var summary = String(format: "framing=%@ command=0x%02x payload=%@", packet.framing, packet.command, hexString(packet.payload))
+    if !packet.checksumValid {
+        summary += " checksum=bad"
+    }
+
+    switch packet.command {
+    case 0x6f:
+        if packet.payload.count >= 3 {
+            summary += String(format: " ambientRGB=%02x%02x%02x", packet.payload[0], packet.payload[1], packet.payload[2])
+        }
+    case 0x74:
+        if let value = packet.payload.first {
+            summary += " brightness=\(value)"
+        }
+    case 0x45:
+        if let sceneMode = packet.payload.first {
+            summary += String(format: " sceneMode=0x%02x", sceneMode)
+        }
+    case 0xBD:
+        if let ext = packet.payload.first {
+            summary += String(format: " ext=0x%02x", ext)
+        }
+    default:
+        break
+    }
+
+    return summary
+}
+
+private func decodeOptionalKeyConfigBlob(from payload: Data) -> Data? {
+    guard payload.first == 0x12 else {
+        return nil
+    }
+    guard payload.count >= 13 else {
+        return nil
+    }
+    return Data(payload.suffix(12))
+}
+
+private func describeOptionalKeyConfig(_ blob: Data) -> String {
+    guard blob.count == 12 else {
+        return "unexpectedKeyConfigBlob=\(hexString(blob))"
+    }
+
+    let bytes = [UInt8](blob)
+    return [
+        "blob=\(hexString(blob))",
+        "slot1 singleIndex=\(bytes[0]) singleOn=\(bytes[1] != 0) longIndex=\(bytes[2]) longOn=\(bytes[3] != 0)",
+        "slot2 singleIndex=\(bytes[4]) singleOn=\(bytes[5] != 0) longIndex=\(bytes[6]) longOn=\(bytes[7] != 0)",
+        "slot3 singleIndex=\(bytes[8]) singleOn=\(bytes[9] != 0)",
+        "slot4 singleIndex=\(bytes[10]) singleOn=\(bytes[11] != 0)",
+    ].joined(separator: "\n")
 }
 
 private func buildDateTimePayload(date: Date = Date()) -> Data {
@@ -1168,6 +1346,9 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
 
     func requestAccessAndScan() {
         AppLog.write("BluetoothDiagnostics.requestAccessAndScan")
+        if CBManager.authorization == .notDetermined {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         if centralManager == nil {
             centralManager = CBCentralManager(delegate: self, queue: nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -1509,7 +1690,13 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             return
         }
         let value = characteristic.value ?? Data()
-        AppLog.write("didUpdateValue uuid=\(characteristic.uuid.uuidString) rx=\(hexString(value))")
+        if let decoded = decodeDivoomTransportPacket(value) {
+            AppLog.write(
+                "didUpdateValue uuid=\(characteristic.uuid.uuidString) rx=\(hexString(value)) \(describeDivoomTransportPacket(decoded))"
+            )
+        } else {
+            AppLog.write("didUpdateValue uuid=\(characteristic.uuid.uuidString) rx=\(hexString(value))")
+        }
         recordDeviceResponse(value)
     }
 
@@ -1525,6 +1712,195 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
 
     func drainRecentResponses(since: Date) -> [Data] {
         recentDeviceResponses.filter { $0.timestamp >= since }.map(\.data)
+    }
+
+    func runNativeBLEReadOptionalKeyConfig(completion: @escaping (NativeActionResult) -> Void) {
+        cancelActiveFrameStream()
+        guard let peripheral = ditooLightPeripheral else {
+            let details = [
+                "BLE light transport not ready.",
+                authorizationSummary(),
+                "State: \(ditooLightState)",
+            ].joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Optional key config read failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let discoveredCandidates = availableWriteCharacteristics(for: peripheral)
+        let candidates = discoveredCandidates.isEmpty
+            ? (ditooLightWriteCharacteristic.map { [$0] } ?? [])
+            : discoveredCandidates
+
+        guard !candidates.isEmpty else {
+            let details = [
+                "No BLE write characteristic candidates were discovered.",
+                authorizationSummary(),
+                "State: \(ditooLightState)",
+            ].joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Optional key config read failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        var probeSummaries: [String] = []
+
+        func finishFailure() {
+            let details = ([
+                "No optional key config response arrived on any discovered BLE write characteristic.",
+                "candidateCount=\(candidates.count)",
+            ] + probeSummaries).joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Optional key config read failed",
+                    details: details
+                )
+            )
+            AppLog.write("runNativeBLEReadOptionalKeyConfig completion success=false")
+        }
+
+        func probe(_ candidateIndex: Int) {
+            guard candidateIndex < candidates.count else {
+                finishFailure()
+                return
+            }
+
+            let characteristic = candidates[candidateIndex]
+            let writeType = preferredBLEWriteType(for: characteristic)
+            let (packet, packetMode) = buildBLETransportPacket(
+                characteristic: characteristic,
+                command: 0xBD,
+                payload: Data([0x12, 0x00])
+            )
+            let requestStartedAt = Date()
+            AppLog.write(
+                "runNativeBLEReadOptionalKeyConfig peripheral=\(peripheral.identifier.uuidString) candidateIndex=\(candidateIndex) characteristic=\(characteristic.uuid.uuidString) packetMode=\(packetMode) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse") tx=\(hexString(packet))"
+            )
+
+            writeBLEPackets(
+                [packet],
+                packetIndex: 0,
+                peripheral: peripheral,
+                characteristic: characteristic,
+                writeType: writeType
+            ) { [weak self] in
+                guard let self else { return }
+                AppLog.write(
+                    "runNativeBLEReadOptionalKeyConfig write-complete candidateIndex=\(candidateIndex) characteristic=\(characteristic.uuid.uuidString) packetMode=\(packetMode)"
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                    AppLog.write("runNativeBLEReadOptionalKeyConfig collecting responses since=\(requestStartedAt.timeIntervalSince1970)")
+                    let responses = self.drainRecentResponses(since: requestStartedAt)
+                    let decodedResponses = responses.compactMap(decodeDivoomTransportPacket)
+                    let keyResponse = decodedResponses.first(where: { packet in
+                        packet.command == 0xBD && decodeOptionalKeyConfigBlob(from: packet.payload) != nil
+                    })
+
+                    if
+                        let keyResponse,
+                        let blob = decodeOptionalKeyConfigBlob(from: keyResponse.payload)
+                    {
+                        let details = [
+                            "candidateIndex=\(candidateIndex)",
+                            "characteristic=\(characteristic.uuid.uuidString)",
+                            "packetMode=\(packetMode)",
+                            "request=\(hexString(packet))",
+                            "response=\(responses.map(hexString).joined(separator: ","))",
+                            describeDivoomTransportPacket(keyResponse),
+                            describeOptionalKeyConfig(blob),
+                        ].joined(separator: "\n")
+                        completion(
+                            NativeActionResult(
+                                success: true,
+                                summary: "Optional key config read",
+                                details: details
+                            )
+                        )
+                        AppLog.write("runNativeBLEReadOptionalKeyConfig completion success=true")
+                        return
+                    }
+
+                    let decodedSummary = decodedResponses.isEmpty
+                        ? "(none)"
+                        : decodedResponses.map(describeDivoomTransportPacket).joined(separator: " | ")
+                    probeSummaries.append(
+                        [
+                            "candidate[\(candidateIndex)] characteristic=\(characteristic.uuid.uuidString)",
+                            "packetMode=\(packetMode)",
+                            "request=\(hexString(packet))",
+                            "responseCount=\(responses.count)",
+                            "responses=\(responses.map(hexString).joined(separator: ","))",
+                            "decoded=\(decodedSummary)",
+                        ].joined(separator: "\n")
+                    )
+                    probe(candidateIndex + 1)
+                }
+            }
+        }
+
+        probe(0)
+    }
+
+    func runNativeBLEResetOptionalKeyConfig(completion: @escaping (NativeActionResult) -> Void) {
+        cancelActiveFrameStream()
+        guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
+            let details = [
+                "BLE light transport not ready.",
+                authorizationSummary(),
+                "State: \(ditooLightState)",
+            ].joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: false,
+                    summary: "Optional key config reset failed",
+                    details: details
+                )
+            )
+            return
+        }
+
+        let writeType = preferredBLEWriteType(for: characteristic)
+        let (packet, packetMode) = buildBLETransportPacket(
+            characteristic: characteristic,
+            command: 0xBD,
+            payload: Data([0x12, 0x02])
+        )
+        AppLog.write(
+            "runNativeBLEResetOptionalKeyConfig peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) packetMode=\(packetMode) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse") tx=\(hexString(packet))"
+        )
+
+        writeBLEPackets(
+            [packet],
+            packetIndex: 0,
+            peripheral: peripheral,
+            characteristic: characteristic,
+            writeType: writeType
+        ) {
+            let details = [
+                "packetMode=\(packetMode)",
+                "request=\(hexString(packet))",
+                "peripheral=\(peripheral.identifier.uuidString)",
+                "characteristic=\(characteristic.uuid.uuidString)",
+            ].joined(separator: "\n")
+            completion(
+                NativeActionResult(
+                    success: true,
+                    summary: "Optional key config reset sent",
+                    details: details
+                )
+            )
+        }
     }
 
     func deviceInquiryStarted(_ sender: IOBluetoothDeviceInquiry) {
@@ -1564,6 +1940,10 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
     }
 
     func runNativeBLEPurityRed(completion: @escaping (NativeActionResult) -> Void) {
+        runNativeBLEAmbientRed(completion: completion)
+    }
+
+    func runNativeBLEAmbientRed(completion: @escaping (NativeActionResult) -> Void) {
         runNativeBLEPurityColor(
             red: 0xff,
             green: 0x00,
@@ -1648,6 +2028,20 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         blue: UInt8,
         completion: @escaping (NativeActionResult) -> Void
     ) {
+        runNativeBLEAmbientColor(
+            red: red,
+            green: green,
+            blue: blue,
+            completion: completion
+        )
+    }
+
+    func runNativeBLEAmbientColor(
+        red: UInt8,
+        green: UInt8,
+        blue: UInt8,
+        completion: @escaping (NativeActionResult) -> Void
+    ) {
         cancelActiveFrameStream()
         guard let peripheral = ditooLightPeripheral, let characteristic = ditooLightWriteCharacteristic else {
             let details = [
@@ -1655,11 +2049,11 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
                 authorizationSummary(),
                 "State: \(ditooLightState)",
             ].joined(separator: "\n")
-            AppLog.write("runNativeBLEPurityColor unavailable \(details)")
+            AppLog.write("runNativeBLEAmbientColor unavailable \(details)")
             completion(
                 NativeActionResult(
                     success: false,
-                    summary: "Native BLE purity color failed",
+                    summary: "Native BLE ambient light failed",
                     details: details
                 )
             )
@@ -1676,7 +2070,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         let packetHex = hexString(packet)
 
         AppLog.write(
-            "runNativeBLEPurityColor peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) packetMode=\(packetMode) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse") tx=\(packetHex)"
+            "runNativeBLEAmbientColor peripheral=\(peripheral.identifier.uuidString) characteristic=\(characteristic.uuid.uuidString) packetMode=\(packetMode) writeType=\(writeType == .withoutResponse ? "withoutResponse" : "withResponse") tx=\(packetHex)"
         )
 
         writeBLEPackets(
@@ -1699,7 +2093,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             completion(
                 NativeActionResult(
                     success: true,
-                    summary: "Native BLE purity color sent",
+                    summary: "Native BLE ambient light sent",
                     details: details
                 )
             )
@@ -2827,6 +3221,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         completion: @escaping () -> Void
     ) {
         guard index < chunks.count else {
+            AppLog.write("writeBLEChunks complete packetIndex=\(packetIndex) chunks=\(chunks.count)")
             completion()
             return
         }
@@ -2846,6 +3241,9 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         let delay = bleChunkDelay(characteristic: characteristic, writeType: chunkWriteType)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard self != nil else { return }
+            AppLog.write(
+                "writeBLEChunks advance packetIndex=\(packetIndex) nextIndex=\(index + 1) totalChunks=\(chunks.count)"
+            )
             self?.writeBLEChunks(
                 chunks,
                 index: index + 1,
@@ -2867,6 +3265,7 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         completion: @escaping () -> Void
     ) {
         guard packetIndex < packets.count else {
+            AppLog.write("writeBLEPackets complete packets=\(packets.count)")
             completion()
             return
         }
@@ -2890,7 +3289,9 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
             defaultWriteType: writeType
         ) { [weak self] in
             guard let self else { return }
+            AppLog.write("writeBLEPacket complete packetIndex=\(packetIndex) schedulingNext=\(packetIndex + 1)")
             DispatchQueue.main.asyncAfter(deadline: .now() + self.blePacketDelay(characteristic: characteristic)) {
+                AppLog.write("writeBLEPacket advance nextPacketIndex=\(packetIndex + 1) totalPackets=\(packets.count)")
                 self.writeBLEPackets(
                     packets,
                     packetIndex: packetIndex + 1,

@@ -32,10 +32,8 @@ if [[ -e "$APP_DEST" ]]; then
 fi
 sudo cp -R "$APP_SRC" "$APP_DEST"
 
-if [[ -d "$LINK_DIR" ]]; then
-  sudo mkdir -p "$LINK_DIR"
-  sudo ln -sf "$CLI_SRC" "$CLI_DEST"
-fi
+sudo mkdir -p "$LINK_DIR"
+sudo ln -sf "$CLI_SRC" "$CLI_DEST"
 
 open -na "$APP_DEST"
 

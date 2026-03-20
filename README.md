@@ -9,7 +9,7 @@
   <img alt="Display" src="https://img.shields.io/badge/display-16x16%20RGB-0f766e">
   <img alt="Transport" src="https://img.shields.io/badge/transport-hidden%20inside%20app-1d4ed8">
   <img alt="CLI" src="https://img.shields.io/badge/CLI-IPC%20bridge-7c3aed">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0--beta.1-f97316">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0--beta.2-f97316">
 </p>
 
 Native macOS menu bar control for the Divoom Ditoo Pro `16x16` RGB display.
@@ -20,6 +20,7 @@ This repo is building a real Mac-native stack around the Ditoo Pro:
 - a CLI that forwards into the running app over IPC
 - a native animation library window
 - a native cloud-backed Divoom source
+- a compact status shell with a native live-mode control deck
 - direct pixel rendering, clocks, telemetry, timers, and live feed surfaces
 
 No iPhone bridge is required for the core Mac control path.
@@ -55,14 +56,17 @@ The repo currently includes only animated feed previews here. Full screenshots o
 
 ### Working, but still beta-grade
 
-- native Divoom cloud browsing, sync, search, and like / unlike
-- cloud login via app Keychain plus explicit synced Passwords fallback and import
+- native Divoom cloud login, sync, and like / unlike
+- one-time import from synced Passwords into the app Keychain
 - favorites rotation and live feed surfaces
 - branded Codex / Claude / split feed rendering
+- the new native menu shell and library chrome are still being iterated aggressively
 
 ### Not claimed as finished yet
 
 - full iOS-equivalent Divoom store/channel browsing parity
+- exact payload parity for `Channel/StoreClockGetClassify`
+- exact payload parity for `Channel/ItemSearch`
 - exact vendor custom channel / gallery playback activation after upload
 - fully recovered device-side autonomous playlist behavior
 - exact iOS store flag mapping for every cloud lane
@@ -157,7 +161,7 @@ Choose this path if you want:
 Current release train:
 
 - semantic versioning
-- current version: `0.2.0-beta.1`
+- current version: `0.3.0-beta.2`
 - release channel: early beta
 
 More detail: [`docs/INSTALL.md`](docs/INSTALL.md)
@@ -190,8 +194,8 @@ Then try a few real commands:
 ### Native app
 
 - menu bar shell for the Ditoo Pro
-- top summary surface for device and beam state
-- quick tiles for live feeds, library, and favorites
+- compact status strip for link, live-mode, and beam state
+- native live-mode deck for Codex, Claude, split, IP flag, favorites, library, and color pick
 - color motion studio with separate ambient-light beam control
 - Device menu with Battery Dashboard, System Dashboard, Network Dashboard, Animated Monitor, Analog Clock, Animated Clock, and Pomodoro Timer
 - animation library window with previews, favorites, recents, filters, and inspector actions
@@ -202,21 +206,22 @@ Then try a few real commands:
 - source root: `assets/16x16/divoom-cloud`
 - manifest: `.cache/divoom-cloud/manifest.json`
 - native controls:
-- `Help & Settings -> Cloud`
-- cloud login / manage button in the native library header
+- `Settings -> Cloud`
+- cloud account button in the native library header
 - `Sync Cloud`
 - `Cloud Search`
 
-Important: cloud auth is still a beta surface. The intended stable path is to save credentials into the app Keychain. Synced Passwords import is an explicit helper action, not a passive background probe.
+Important: cloud auth is still a beta surface. The intended stable path is to save credentials into the app Keychain. Passwords import is a one-time helper action that copies the synced `divoom-gz.com` entry into the app-local Keychain.
 
 Current runtime truth:
 
 - passive UI refresh does not probe Passwords or trigger cloud auth prompts
-- explicit cloud actions try the app-local credential first
-- if the local copy is missing, explicit cloud actions can fall back to the synced `divoom-gz.com` Passwords entry for the current session
-- importing into the app-local Keychain is still available, but it is no longer the only path
+- explicit cloud actions use the app-local credential path
+- direct cloud sync is working with valid credentials and produces a real native manifest
+- store classify and cloud search still need more IPA parity work before they can be called finished
+- importing into the app-local Keychain is the supported way to reuse the synced `divoom-gz.com` Passwords entry
 
-If you want the smoothest path today, save a local app Keychain copy in `Help & Settings -> Cloud` and treat synced Passwords access as a fallback.
+If you want the smoothest path today, save a local app Keychain copy in `Settings -> Cloud` and use Passwords import only as a one-time copy helper.
 
 Guide: [`docs/DIVOOM_CLOUD_SYNC.md`](docs/DIVOOM_CLOUD_SYNC.md)
 

@@ -227,17 +227,9 @@ def draw_background(draw: ImageDraw.ImageDraw, theme: dict[str, tuple[int, int, 
         for x in range(SIZE):
             draw.point((x, y), fill=row)
 
-    edge = mix(theme["base"], theme["ring"], 0.25)
-    for x in range(1, 15):
-        draw.point((x, 1), fill=edge)
-        draw.point((x, 14), fill=theme["shadow"])
-    for y in range(2, 14):
-        draw.point((1, y), fill=edge)
-        draw.point((14, y), fill=theme["shadow"])
-
     sweep_x = (frame_index * 2) % 18 - 2
-    for x in range(max(2, sweep_x), min(14, sweep_x + 4)):
-        draw.point((x, 2), fill=mix(theme["accent"], theme["glow"], 0.2))
+    for x in range(max(1, sweep_x), min(15, sweep_x + 4)):
+        draw.point((x, 1), fill=mix(theme["accent"], theme["glow"], 0.16))
 
 
 def draw_text(
@@ -343,10 +335,11 @@ def draw_single_frame(snapshot: UsageSnapshot, frame_index: int) -> Image.Image:
     percent = display_percent(snapshot)
     label = str(percent)
     scale = 1
-    text_x = (SIZE - text_width(label, scale=scale)) // 2
-    text_y = (SIZE - 5 * scale) // 2
+    inner_width = 14
+    text_x = 1 + (inner_width - text_width(label, scale=scale)) // 2
+    text_y = 6
 
-    draw_perimeter_meter(draw, theme, percent, x=1, y=1, width=14, height=14)
+    draw_perimeter_meter(draw, theme, percent, x=0, y=0, width=16, height=16)
     draw_text(
         draw,
         label,
@@ -390,13 +383,19 @@ def draw_pair_frame(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapsho
         for x in range(SIZE):
             draw.point((x, y), fill=row)
 
-    draw_vertical_meter(draw, claude_snapshot, x=1, y=1, width=3, height=14)
-    draw_vertical_meter(draw, codex_snapshot, x=12, y=1, width=3, height=14)
+    for y in range(1, 15):
+        draw.point((7, y), fill=(40, 44, 58))
+        draw.point((8, y), fill=(30, 34, 46))
+
+    draw_vertical_meter(draw, claude_snapshot, x=0, y=0, width=3, height=16)
+    draw_vertical_meter(draw, codex_snapshot, x=13, y=0, width=3, height=16)
 
     codex_label = str(display_percent(codex_snapshot))
     claude_label = str(display_percent(claude_snapshot))
-    codex_x = (SIZE - text_width(codex_label, scale=1)) // 2
-    claude_x = (SIZE - text_width(claude_label, scale=1)) // 2
+    center_lane_x = 3
+    center_lane_width = 10
+    codex_x = center_lane_x + (center_lane_width - text_width(codex_label, scale=1)) // 2
+    claude_x = center_lane_x + (center_lane_width - text_width(claude_label, scale=1)) // 2
 
     draw_text(
         draw,
@@ -428,7 +427,7 @@ def shift_canvas_right(img: Image.Image, pixels: int = 1) -> Image.Image:
 
 
 def render(snapshot: UsageSnapshot, output_path: Path) -> None:
-    frames = [shift_canvas_right(draw_single_frame(snapshot, i)) for i in range(FRAME_COUNT)]
+    frames = [draw_single_frame(snapshot, i) for i in range(FRAME_COUNT)]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         output_path,
@@ -441,7 +440,7 @@ def render(snapshot: UsageSnapshot, output_path: Path) -> None:
 
 
 def render_pair(codex_snapshot: UsageSnapshot, claude_snapshot: UsageSnapshot, output_path: Path) -> None:
-    frames = [shift_canvas_right(draw_pair_frame(codex_snapshot, claude_snapshot, i)) for i in range(FRAME_COUNT)]
+    frames = [draw_pair_frame(codex_snapshot, claude_snapshot, i) for i in range(FRAME_COUNT)]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         output_path,

@@ -66,7 +66,7 @@ class SyncedItem:
     user_id: int | None
     album_id: int | None
     clock_id: int | None
-    item_id: int | None
+    item_id: str | None
     date: str
     file_type: int
     is_liked: bool
@@ -98,6 +98,30 @@ class PlaylistManifestItem:
     file_count: int
 
 
+@dataclass
+class TimingFields:
+    clock_id: int | None = None
+    parent_clock_id: int | None = None
+    parent_item_id: str | None = None
+    lcd_index: int | None = None
+    lcd_independence: int | None = None
+    lcd_independence_list: list[int] | None = None
+    single_gallery_time: int | None = None
+    gallery_show_time_flag: int | None = None
+    sound_on_off: int | None = None
+
+
+@dataclass
+class AmbientFields:
+    on_off: int | None = None
+    brightness: int | None = None
+    select_light_index: int | None = None
+    color: str | None = None
+    color_cycle: int | None = None
+    key_on_off: int | None = None
+    light_list: list | None = None
+
+
 def slugify(value: str, *, allow_unicode: bool = False) -> str:
     if not allow_unicode:
         value = value.encode("ascii", "ignore").decode("ascii")
@@ -127,8 +151,13 @@ def sync_gallery(
     redownload: bool,
     album_id: int | None = None,
 ) -> SyncedItem | None:
-    file_name = getattr(info, "file_name", "") or str(getattr(info, "gallery_id", "unknown"))
-    gallery_id = int(getattr(info, "gallery_id", 0) or 0)
+    stable_id = int(getattr(info, "gallery_id", 0) or 0) or int(getattr(info, "clock_id", 0) or 0)
+    file_name = (
+        getattr(info, "file_name", "")
+        or getattr(info, "clock_name", "")
+        or str(stable_id or "unknown")
+    )
+    gallery_id = stable_id
     safe_base = slugify(file_name)
     output_dir = output_root / category_name / collection_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +177,7 @@ def sync_gallery(
         cloud_classify=int(getattr(info, "category", 0) or 0),
         collection=collection_name,
         gallery_id=gallery_id,
-        file_id=str(getattr(info, "file_id", "")),
+        file_id=str(getattr(info, "file_id", "") or getattr(info, "image_pixel_id", "") or ""),
         file_name=file_name,
         file_url=str(getattr(info, "file_url", "") or ""),
         content=str(getattr(info, "content", "") or ""),
@@ -162,7 +191,7 @@ def sync_gallery(
         user_id=int(getattr(getattr(info, "user", None), "user_id", 0) or 0) or None,
         album_id=album_id,
         clock_id=int(getattr(info, "clock_id", 0) or 0) or None,
-        item_id=int(getattr(info, "item_id", 0) or 0) or None,
+        item_id=str(getattr(info, "item_id", "") or "") or None,
         date=str(getattr(info, "date", "") or ""),
         file_type=int(getattr(info, "file_type", 0) or 0),
         is_liked=bool(int(getattr(info, "is_like", 0) or 0)),
@@ -292,7 +321,7 @@ def sync_search_queries(
     api: APIxoo,
     queries: list[str],
     item_flag: str,
-    item_id: int,
+    item_id: str,
     clock_id: int,
     language: str,
     per_page: int,
@@ -303,95 +332,227 @@ def sync_search_queries(
     synced_items: list[SyncedItem] = []
 
     for query in queries:
-        page = 1
-        synced_for_query = 0
         collection_name = slugify(query, allow_unicode=True)
-        while synced_for_query < max_per_query:
-            batch = api.search_items(
-                key=query,
-                item_flag=item_flag,
-                item_id=item_id or None,
-                clock_id=clock_id or None,
-                language=language,
-                page=page,
-                per_page=per_page,
-            ) or []
-            if not batch:
-                break
-
-            for info in batch:
-                if synced_for_query >= max_per_query:
-                    break
-                synced = sync_gallery(
-                    api=api,
-                    info=info,
-                    source_scope="search",
-                    sort_name="search",
-                    category_name="search",
-                    collection_name=collection_name,
-                    output_root=output_root,
-                    redownload=redownload,
-                )
-                if synced is not None:
-                    synced_items.append(synced)
-                    synced_for_query += 1
-
-            page += 1
-
-    return synced_items
-
-
-def sync_store_list(
-    api: APIxoo,
-    endpoint_name: str,
-    type_flag: int,
-    classify_id: int | None,
-    per_page: int,
-    max_items: int,
-    output_root: Path,
-    redownload: bool,
-) -> list[SyncedItem]:
-    synced_items: list[SyncedItem] = []
-    endpoint = STORE_ENDPOINTS[endpoint_name]
-    page = 1
-    synced_total = 0
-    collection_name = endpoint_name if classify_id is None else f"{endpoint_name}-classify-{classify_id}"
-
-    while synced_total < max_items:
-        batch = api.get_store_clock_list(
-            type_flag=type_flag,
-            classify_id=classify_id,
-            page=page,
+        batch = collect_search_items(
+            api=api,
+            query=query,
+            item_flag=item_flag,
+            item_id=item_id,
+            clock_id=clock_id,
+            language=language,
             per_page=per_page,
-            endpoint=endpoint,
-        ) or []
-        if not batch:
-            break
+            max_items=max_per_query,
+        )
+        if batch is None:
+            continue
 
         for info in batch:
-            if synced_total >= max_items:
-                break
             synced = sync_gallery(
                 api=api,
                 info=info,
-                source_scope="store-channel",
-                sort_name=endpoint_name,
-                category_name="store",
+                source_scope="search",
+                sort_name="search",
+                category_name="search",
                 collection_name=collection_name,
                 output_root=output_root,
                 redownload=redownload,
             )
             if synced is not None:
                 synced_items.append(synced)
-                synced_total += 1
-
-        page += 1
 
     return synced_items
 
 
-def fetch_store_classify(api: APIxoo) -> list[StoreClassifyItem]:
-    classify_items = api.get_store_clock_classify() or []
+def collect_search_items(
+    api: APIxoo,
+    query: str,
+    item_flag: str,
+    item_id: str,
+    clock_id: int,
+    language: str,
+    per_page: int,
+    max_items: int,
+):
+    items = []
+    page = 1
+    while len(items) < max_items:
+        batch = api.search_items(
+            key=query,
+            item_flag=item_flag,
+            item_id=item_id,
+            clock_id=clock_id or None,
+            language=language,
+            page=page,
+            per_page=per_page,
+        )
+        if batch is None:
+            return None if page == 1 else items[:max_items]
+        if not batch:
+            break
+        items.extend(batch)
+        page += 1
+    return items[:max_items]
+
+
+def fetch_store_batch(
+    api: APIxoo,
+    endpoint_name: str,
+    type_flag: int | None,
+    classify_id: int | None,
+    page: int,
+    per_page: int,
+    page_index: int,
+    clock_id: int,
+    parent_clock_id: int,
+    parent_item_id: str,
+    language: str,
+    country_iso_code: str,
+    lcd_independence: int,
+    lcd_index: int,
+):
+    if endpoint_name == "top20":
+        return api.get_store_top20(
+            type_flag=type_flag,
+            page_index=page_index,
+            clock_id=clock_id,
+            parent_clock_id=parent_clock_id,
+            parent_item_id=parent_item_id,
+            language=language,
+            lcd_independence=lcd_independence,
+            lcd_index=lcd_index,
+        )
+    if endpoint_name == "new20":
+        return api.get_store_new20(
+            type_flag=type_flag,
+            page_index=page_index,
+            clock_id=clock_id,
+            parent_clock_id=parent_clock_id,
+            parent_item_id=parent_item_id,
+            language=language,
+            lcd_independence=lcd_independence,
+            lcd_index=lcd_index,
+        )
+    return api.get_store_clock_list(
+        type_flag=type_flag,
+        classify_id=classify_id,
+        page=page,
+        per_page=per_page,
+        country_iso_code=country_iso_code,
+        language=language,
+    )
+
+
+def collect_store_items(
+    api: APIxoo,
+    endpoint_name: str,
+    type_flag: int | None,
+    classify_id: int | None,
+    per_page: int,
+    max_items: int,
+    page_index: int,
+    clock_id: int,
+    parent_clock_id: int,
+    parent_item_id: str,
+    language: str,
+    country_iso_code: str,
+    lcd_independence: int,
+    lcd_index: int,
+):
+    items = []
+    page = 1
+    while len(items) < max_items:
+        batch = fetch_store_batch(
+            api=api,
+            endpoint_name=endpoint_name,
+            type_flag=type_flag,
+            classify_id=classify_id,
+            page=page,
+            per_page=per_page,
+            page_index=page_index + (page - 1),
+            clock_id=clock_id,
+            parent_clock_id=parent_clock_id,
+            parent_item_id=parent_item_id,
+            language=language,
+            country_iso_code=country_iso_code,
+            lcd_independence=lcd_independence,
+            lcd_index=lcd_index,
+        )
+        if batch is None:
+            return None if page == 1 else items[:max_items]
+        if not batch:
+            break
+        items.extend(batch)
+        page += 1
+    return items[:max_items]
+
+
+def sync_store_list(
+    api: APIxoo,
+    endpoint_name: str,
+    type_flag: int | None,
+    classify_id: int | None,
+    per_page: int,
+    max_items: int,
+    page_index: int,
+    clock_id: int,
+    parent_clock_id: int,
+    parent_item_id: str,
+    language: str,
+    country_iso_code: str,
+    lcd_independence: int,
+    lcd_index: int,
+    output_root: Path,
+    redownload: bool,
+) -> list[SyncedItem]:
+    synced_items: list[SyncedItem] = []
+    collection_name = endpoint_name if classify_id is None else f"{endpoint_name}-classify-{classify_id}"
+    batch = collect_store_items(
+        api=api,
+        endpoint_name=endpoint_name,
+        type_flag=type_flag,
+        classify_id=classify_id,
+        per_page=per_page,
+        max_items=max_items,
+        page_index=page_index,
+        clock_id=clock_id,
+        parent_clock_id=parent_clock_id,
+        parent_item_id=parent_item_id,
+        language=language,
+        country_iso_code=country_iso_code,
+        lcd_independence=lcd_independence,
+        lcd_index=lcd_index,
+    )
+    if batch is None:
+        return synced_items
+    for info in batch:
+        synced = sync_gallery(
+            api=api,
+            info=info,
+            source_scope="store-channel",
+            sort_name=endpoint_name,
+            category_name="store",
+            collection_name=collection_name,
+            output_root=output_root,
+            redownload=redownload,
+        )
+        if synced is not None:
+            synced_items.append(synced)
+
+    return synced_items
+
+
+def fetch_store_classify(
+    api: APIxoo,
+    *,
+    country_iso_code: str = "",
+    language: str = "",
+) -> list[StoreClassifyItem] | None:
+    classify_items = api.get_store_clock_classify(
+        country_iso_code=country_iso_code,
+        language=language,
+    )
+    if classify_items is None:
+        return None
     values: list[StoreClassifyItem] = []
     for item in classify_items:
         values.append(
@@ -407,15 +568,19 @@ def fetch_store_classify(api: APIxoo) -> list[StoreClassifyItem]:
     return values
 
 
-def fetch_my_playlists(api: APIxoo, per_page: int) -> list[PlaylistManifestItem]:
-    playlists = api.get_my_list(page=1, per_page=per_page) or []
+def fetch_my_playlists(api: APIxoo, per_page: int, gallery_id: int | None = None) -> list[PlaylistManifestItem] | None:
+    playlists = api.get_my_list(page=1, per_page=per_page, gallery_id=gallery_id)
+    if playlists is None:
+        return None
     return build_playlist_manifest_items(playlists, owner="me", target_user_id=None)
 
 
-def fetch_someone_playlists(api: APIxoo, target_user_ids: list[int], per_page: int) -> list[PlaylistManifestItem]:
+def fetch_someone_playlists(api: APIxoo, target_user_ids: list[int], per_page: int) -> list[PlaylistManifestItem] | None:
     items: list[PlaylistManifestItem] = []
     for target_user_id in target_user_ids:
-        playlists = api.get_someone_list(target_user_id=target_user_id, page=1, per_page=per_page) or []
+        playlists = api.get_someone_list(target_user_id=target_user_id, page=1, per_page=per_page)
+        if playlists is None:
+            return None
         items.extend(build_playlist_manifest_items(playlists, owner="someone", target_user_id=target_user_id))
     return items
 
@@ -454,6 +619,272 @@ def dedupe_synced_items(items: list[SyncedItem]) -> list[SyncedItem]:
     return unique_items
 
 
+def gallery_dicts(items) -> list[dict]:
+    return [dict(item) for item in items]
+
+
+def build_store_classify_request(args) -> dict:
+    return {
+        "CountryISOCode": args.store_country_iso_code,
+        "Language": args.store_language,
+    }
+
+
+def build_store_list_request(args, page_index: int | None = None) -> dict:
+    if args.store_endpoint == "list":
+        page = args.store_page_index if page_index is None else page_index
+        start_num = ((page - 1) * args.per_page) + 1
+        end_num = start_num + args.per_page - 1
+        payload = {
+            "CountryISOCode": args.store_country_iso_code,
+            "Language": args.store_language,
+            "Flag": args.store_flag,
+            "StartNum": start_num,
+            "EndNum": end_num,
+        }
+        if args.store_classify_id is not None:
+            payload["ClassifyId"] = args.store_classify_id
+        return payload
+
+    payload = {
+        "PageIndex": args.store_page_index if page_index is None else page_index,
+        "ClockId": args.store_clock_id,
+        "ParentClockId": args.store_parent_clock_id,
+        "ParentItemId": args.store_parent_item_id,
+        "Language": args.store_language,
+        "LcdIndependence": args.store_lcd_independence,
+        "LcdIndex": args.store_lcd_index,
+    }
+    if args.store_flag is not None:
+        payload["Flag"] = args.store_flag
+    return payload
+
+
+def build_search_request(args, query: str, page: int = 1) -> dict:
+    start_num = ((page - 1) * args.per_page) + 1
+    end_num = start_num + args.per_page - 1
+    return {
+        "Language": args.search_language,
+        "ClockId": args.search_clock_id or 0,
+        "ItemId": args.search_item_id,
+        "Key": query,
+        "StartNum": start_num,
+        "EndNum": end_num,
+        "ItemFlag": args.search_item_flag,
+    }
+
+
+def compact_dict(payload: dict) -> dict:
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def timing_fields_from_args(args) -> TimingFields:
+    return TimingFields(
+        clock_id=args.clock_id,
+        parent_clock_id=args.parent_clock_id,
+        parent_item_id=args.parent_item_id,
+        lcd_index=args.lcd_index,
+        lcd_independence=args.lcd_independence,
+        lcd_independence_list=args.lcd_independence_list or None,
+        single_gallery_time=args.single_gallery_time,
+        gallery_show_time_flag=args.gallery_show_time_flag,
+        sound_on_off=args.sound_on_off,
+    )
+
+
+def ambient_fields_from_args(args) -> AmbientFields:
+    return AmbientFields(
+        on_off=args.ambient_on_off,
+        brightness=args.ambient_brightness,
+        select_light_index=args.ambient_select_light_index,
+        color=args.ambient_color,
+        color_cycle=args.ambient_color_cycle,
+        key_on_off=args.ambient_key_on_off,
+        light_list=args.ambient_light_list,
+    )
+
+
+def timing_fields_payload(fields: TimingFields) -> dict:
+    return compact_dict(asdict(fields))
+
+
+def ambient_fields_payload(fields: AmbientFields) -> dict:
+    return compact_dict(asdict(fields))
+
+
+def parse_json_value(raw: str | None, *, label: str):
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} must be valid JSON: {exc}") from exc
+
+
+def summarized_response_fields(response: dict | None, *keys: str) -> dict:
+    if not response:
+        return {}
+    return {key: response.get(key) for key in keys if key in response}
+
+
+def print_json(payload: dict) -> int:
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def print_status_json(payload: dict, success: bool) -> int:
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0 if success else 1
+
+
+def error_json(code: str, message: str) -> int:
+    print(json.dumps({"error": code, "message": message}, indent=2, ensure_ascii=False), file=sys.stderr)
+    return 2
+
+
+def response_success(response: dict | None) -> bool:
+    if not response:
+        return False
+    try:
+        return int(response.get("ReturnCode", 1)) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def print_response_json(payload: dict, response: dict | None) -> int:
+    return print_status_json(payload, response_success(response))
+
+
+def build_store_classify_items(response: dict | None) -> list[StoreClassifyItem]:
+    if not response_success(response):
+        return []
+
+    values: list[StoreClassifyItem] = []
+    for item in response.get("ClassifyList", []) or []:
+        values.append(
+            StoreClassifyItem(
+                classify_id=int(item.get("ClassifyId", 0) or 0),
+                classify_name=str(item.get("ClassifyName", "") or ""),
+                name=str(item.get("Name", "") or ""),
+                title=str(item.get("Title", "") or ""),
+                image_id=str(item.get("ImageId", "") or ""),
+                sort_order=int(item.get("Sort", 0) or 0),
+            )
+        )
+    return values
+
+
+def response_items(response: dict | None, key: str) -> list[dict]:
+    if not response_success(response):
+        return []
+    return list(response.get(key, []) or [])
+
+
+def execute_store_request(api: APIxoo, args, page_index: int | None = None) -> tuple[dict, dict | None]:
+    request = build_store_list_request(args, page_index=page_index)
+
+    if args.store_endpoint == "top20":
+        response = api.get_store_top20_response(
+            type_flag=args.store_flag,
+            page_index=request["PageIndex"],
+            clock_id=args.store_clock_id,
+            parent_clock_id=args.store_parent_clock_id,
+            parent_item_id=args.store_parent_item_id,
+            language=args.store_language,
+            lcd_independence=args.store_lcd_independence,
+            lcd_index=args.store_lcd_index,
+        )
+        return request, response
+
+    if args.store_endpoint == "new20":
+        response = api.get_store_new20_response(
+            type_flag=args.store_flag,
+            page_index=request["PageIndex"],
+            clock_id=args.store_clock_id,
+            parent_clock_id=args.store_parent_clock_id,
+            parent_item_id=args.store_parent_item_id,
+            language=args.store_language,
+            lcd_independence=args.store_lcd_independence,
+            lcd_index=args.store_lcd_index,
+        )
+        return request, response
+
+    response = api.get_store_clock_list_response(
+        type_flag=args.store_flag,
+        classify_id=args.store_classify_id,
+        page=args.store_page_index if page_index is None else page_index,
+        per_page=args.per_page,
+        country_iso_code=args.store_country_iso_code,
+        language=args.store_language,
+    )
+    return request, response
+
+
+def action_flags(args) -> list[str]:
+    flags: list[str] = []
+    if args.print_store_classify:
+        flags.append("print-store-classify")
+    if args.print_store_list:
+        flags.append("print-store-list")
+    if args.print_search_results:
+        flags.append("print-search-results")
+    if args.print_my_list:
+        flags.append("print-my-list")
+    if args.print_someone_list:
+        flags.append("print-someone-list")
+    if args.like_gallery_id is not None:
+        flags.append("gallery-like")
+    if args.like_clock_id is not None:
+        flags.append("clock-like")
+    if args.print_custom_gallery_time is not None:
+        flags.append("print-custom-gallery-time")
+    if args.print_subscribe_time is not None:
+        flags.append("print-subscribe-time")
+    if args.print_album_time is not None:
+        flags.append("print-album-time")
+    if args.set_custom_gallery_time is not None:
+        flags.append("set-custom-gallery-time")
+    if args.set_subscribe_time:
+        flags.append("set-subscribe-time")
+    if args.set_album_time:
+        flags.append("set-album-time")
+    if args.playlist_create is not None:
+        flags.append("playlist-create")
+    if args.playlist_hide is not None:
+        flags.append("playlist-hide")
+    if args.playlist_unhide is not None:
+        flags.append("playlist-unhide")
+    if args.playlist_rename is not None:
+        flags.append("playlist-rename")
+    if args.playlist_set_describe is not None:
+        flags.append("playlist-set-describe")
+    if args.playlist_set_cover is not None:
+        flags.append("playlist-set-cover")
+    if args.playlist_delete is not None:
+        flags.append("playlist-delete")
+    if args.playlist_add_gallery is not None:
+        flags.append("playlist-add-gallery")
+    if args.playlist_remove_gallery is not None:
+        flags.append("playlist-remove-gallery")
+    if args.playlist_send is not None:
+        flags.append("playlist-send")
+    if args.print_ambient_light:
+        flags.append("print-ambient-light")
+    if args.set_ambient_light:
+        flags.append("set-ambient-light")
+    if args.set_brightness is not None:
+        flags.append("set-brightness")
+    if args.print_on_off_screen:
+        flags.append("print-on-off-screen")
+    if args.on_off_screen is not None:
+        flags.append("on-off-screen")
+    if args.print_on_off:
+        flags.append("print-on-off")
+    if args.set_on_off is not None:
+        flags.append("set-on-off")
+    return flags
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sync 16x16 animations from Divoom's cloud into the native library.")
     parser.add_argument("--email", default=os.environ.get("DIVOOM_EMAIL"))
@@ -467,21 +898,76 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-albums", type=int, default=8)
     parser.add_argument("--per-album", type=int, default=24)
     parser.add_argument("--search-query", action="append", dest="search_queries", help="Run an iOS ItemSearch query and sync the returned 16x16 items.")
-    parser.add_argument("--search-item-flag", default="0", help="Raw ItemFlag value for Channel/ItemSearch. Uses the exact iOS request key, not a guessed enum.")
-    parser.add_argument("--search-item-id", type=int, default=0)
+    parser.add_argument("--search-item-flag", default="", help="Raw ItemFlag value for Channel/ItemSearch. Empty matches the nil-to-empty-string iOS default.")
+    parser.add_argument("--search-item-id", default="", help="ItemId is a string in the native channel search request.")
     parser.add_argument("--search-clock-id", type=int, default=0)
     parser.add_argument("--search-language", default="")
     parser.add_argument("--max-per-search", type=int, default=60)
     parser.add_argument("--include-my-list", action="store_true", help="Fetch Playlist/GetMyList metadata into the manifest.")
+    parser.add_argument("--my-list-gallery-id", type=int, help="Optional GalleryId filter for Playlist/GetMyList.")
     parser.add_argument("--target-user-id", action="append", dest="target_user_ids", type=int, help="Fetch Playlist/GetSomeOneList metadata for a specific user ID.")
     parser.add_argument("--include-store-classify", action="store_true", help="Fetch Channel/StoreClockGetClassify metadata into the manifest.")
     parser.add_argument("--store-endpoint", choices=sorted(STORE_ENDPOINTS.keys()), default="list", help="Channel store endpoint family to sync when --store-flag is set.")
     parser.add_argument("--store-flag", type=int, help="Raw Flag value for the iOS store request shape. No guessed defaults are applied.")
     parser.add_argument("--store-classify-id", type=int)
+    parser.add_argument("--store-page-index", type=int, default=1, help="PageIndex for Channel/StoreTop20 and Channel/StoreNew20.")
+    parser.add_argument("--store-clock-id", type=int, default=0, help="ClockId for the channel-style Top20/New20 request family.")
+    parser.add_argument("--store-parent-clock-id", type=int, default=0, help="ParentClockId for the channel-style Top20/New20 request family.")
+    parser.add_argument("--store-parent-item-id", default="", help="ParentItemId for the channel-style Top20/New20 request family.")
+    parser.add_argument("--store-language", default="", help="Language passed to store endpoints.")
+    parser.add_argument("--store-country-iso-code", default="", help="CountryISOCode passed to Channel/StoreClockGetList and StoreClockGetClassify.")
+    parser.add_argument("--store-lcd-independence", type=int, default=0, help="LcdIndependence for the channel-style Top20/New20 request family.")
+    parser.add_argument("--store-lcd-index", type=int, default=0, help="LcdIndex for the channel-style Top20/New20 request family.")
+    parser.add_argument("--print-store-classify", action="store_true", help="Print Channel/StoreClockGetClassify results as JSON and exit.")
+    parser.add_argument("--print-store-list", action="store_true", help="Print store/channel clock results as JSON and exit.")
+    parser.add_argument("--print-search-results", action="store_true", help="Print Channel/ItemSearch results as JSON and exit.")
+    parser.add_argument("--print-my-list", action="store_true", help="Print Playlist/GetMyList results as JSON and exit.")
+    parser.add_argument("--print-someone-list", action="store_true", help="Print Playlist/GetSomeOneList results for --target-user-id values as JSON and exit.")
     parser.add_argument("--like-gallery-id", type=int, help="Like or unlike a gallery via GalleryLikeV2 and exit.")
+    parser.add_argument("--like-clock-id", type=int, help="Like or unlike a clock via Channel/LikeClock and exit.")
     parser.add_argument("--like-classify", type=int)
     parser.add_argument("--like-file-type", type=int)
     parser.add_argument("--unlike", action="store_true")
+    parser.add_argument("--print-custom-gallery-time", type=int, metavar="CLOCK_ID", help="Print Channel/GetCustomGalleryTime for a ClockId and exit.")
+    parser.add_argument("--print-subscribe-time", "--print-subscribe-gallery-time", dest="print_subscribe_time", type=int, metavar="CLOCK_ID", help="Print Channel/GetSubscribeTime for a ClockId and exit.")
+    parser.add_argument("--print-album-time", type=int, metavar="CLOCK_ID", help="Print Channel/GetAlbumTime for a ClockId and exit.")
+    parser.add_argument("--set-custom-gallery-time", type=int, metavar="CLOCK_ID", help="Call Channel/SetCustomGalleryTime for a ClockId and exit.")
+    parser.add_argument("--set-subscribe-time", action="store_true", help="Call Channel/SetSubscribeTime using the IPA-proven timing fields and exit.")
+    parser.add_argument("--set-album-time", action="store_true", help="Call Channel/SetAlbumTime using the IPA-proven timing fields and exit.")
+    parser.add_argument("--custom-id", type=int, help="CustomId for Channel/SetCustomGalleryTime.")
+    parser.add_argument("--single-gallery-time", type=int, help="SingleGalleyTime for Channel/SetCustomGalleryTime.")
+    parser.add_argument("--gallery-show-time-flag", type=int, help="GalleryShowTimeFlag for Channel/SetCustomGalleryTime.")
+    parser.add_argument("--sound-on-off", type=int, help="SoundOnOff for Channel/SetCustomGalleryTime.")
+    parser.add_argument("--clock-id", type=int, help="ClockId for timing actions when the endpoint is not already encoded by the primary flag.")
+    parser.add_argument("--parent-clock-id", type=int, help="ParentClockId for custom gallery calls when needed.")
+    parser.add_argument("--parent-item-id", help="ParentItemId for custom gallery calls when needed.")
+    parser.add_argument("--lcd-index", type=int, help="LcdIndex for Channel/SetCustomGalleryTime when present.")
+    parser.add_argument("--lcd-independence", type=int, help="LcdIndependence for Channel/SetCustomGalleryTime when present.")
+    parser.add_argument("--lcd-independence-list", action="append", type=int, help="Repeat to send LcdIndependenceList values when the endpoint/model supports it.")
+    parser.add_argument("--playlist-create", metavar="NAME", help="Create a playlist via Playlist/NewList and exit.")
+    parser.add_argument("--playlist-hide", type=int, metavar="PLAY_ID", help="Hide a playlist via Playlist/Hide and exit.")
+    parser.add_argument("--playlist-unhide", type=int, metavar="PLAY_ID", help="Unhide a playlist via Playlist/Hide and exit.")
+    parser.add_argument("--playlist-rename", nargs=2, metavar=("PLAY_ID", "NAME"), help="Rename a playlist via Playlist/Rename and exit.")
+    parser.add_argument("--playlist-set-describe", nargs=2, metavar=("PLAY_ID", "TEXT"), help="Set playlist description via Playlist/SetDescribe and exit.")
+    parser.add_argument("--playlist-set-cover", nargs=2, metavar=("PLAY_ID", "COVER_FILE_ID"), help="Set playlist cover via Playlist/SetCover and exit.")
+    parser.add_argument("--playlist-delete", type=int, metavar="PLAY_ID", help="Delete a playlist via Playlist/DeleteList and exit.")
+    parser.add_argument("--playlist-add-gallery", nargs=2, metavar=("PLAY_ID", "GALLERY_ID"), help="Add a gallery to a playlist via Playlist/AddImageToList and exit.")
+    parser.add_argument("--playlist-remove-gallery", nargs=2, metavar=("PLAY_ID", "GALLERY_ID"), help="Remove a gallery from a playlist via Playlist/RemoveImage and exit.")
+    parser.add_argument("--playlist-send", "--playlist-send-device", dest="playlist_send", type=int, metavar="PLAY_ID", help="Send a playlist to the device via Playlist/SendDevice and exit.")
+    parser.add_argument("--print-ambient-light", action="store_true", help="Print Channel/GetAmbientLight and exit.")
+    parser.add_argument("--set-ambient-light", action="store_true", help="Call Channel/SetAmbientLight and exit.")
+    parser.add_argument("--set-brightness", type=int, metavar="BRIGHTNESS", help="Call Channel/SetBrightness and exit.")
+    parser.add_argument("--print-on-off-screen", action="store_true", help="Print Channel/GetOnOffScreen and exit.")
+    parser.add_argument("--on-off-screen", type=int, metavar="ON_OFF", help="Call Channel/OnOffScreen with OnOff and exit.")
+    parser.add_argument("--print-on-off", action="store_true", help="Print Channel/GetOnOff and exit.")
+    parser.add_argument("--set-on-off", type=int, metavar="ON_OFF", help="Call Channel/SetOnOff with OnOff and exit.")
+    parser.add_argument("--ambient-on-off", type=int, help="OnOff for Channel/SetAmbientLight.")
+    parser.add_argument("--ambient-brightness", type=int, help="Brightness for Channel/SetAmbientLight.")
+    parser.add_argument("--ambient-select-light-index", type=int, help="SelectLightIndex for Channel/SetAmbientLight.")
+    parser.add_argument("--ambient-color", help="Color string for Channel/SetAmbientLight.")
+    parser.add_argument("--ambient-color-cycle", type=int, help="ColorCycle for Channel/SetAmbientLight.")
+    parser.add_argument("--ambient-key-on-off", type=int, help="KeyOnOff for Channel/SetAmbientLight.")
+    parser.add_argument("--ambient-light-list-json", help="Raw JSON array/object to send as LightList for Channel/SetAmbientLight.")
     parser.add_argument("--skip-albums", action="store_true")
     parser.add_argument("--redownload", action="store_true")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -496,20 +982,30 @@ def main() -> int:
     gallery_ids = args.gallery_ids or []
     search_queries = [value.strip() for value in (args.search_queries or []) if value.strip()]
     target_user_ids = args.target_user_ids or []
+    selected_actions = action_flags(args)
+
+    try:
+        args.ambient_light_list = parse_json_value(args.ambient_light_list_json, label="--ambient-light-list-json")
+    except ValueError as exc:
+        return error_json("invalid_json", str(exc))
+
+    if len(selected_actions) > 1:
+        return error_json(
+            "conflicting_actions",
+            "Run only one explicit action flag at a time: " + ", ".join(selected_actions),
+        )
 
     if not args.email:
-        print(json.dumps({
-            "error": "missing_credentials",
-            "message": "Set DIVOOM_EMAIL plus DIVOOM_PASSWORD or DIVOOM_MD5_PASSWORD before syncing.",
-        }, indent=2), file=sys.stderr)
-        return 2
+        return error_json(
+            "missing_credentials",
+            "Set DIVOOM_EMAIL plus DIVOOM_PASSWORD or DIVOOM_MD5_PASSWORD before syncing.",
+        )
 
     if not args.password and not args.md5_password:
-        print(json.dumps({
-            "error": "missing_credentials",
-            "message": "Set DIVOOM_PASSWORD or DIVOOM_MD5_PASSWORD before syncing.",
-        }, indent=2), file=sys.stderr)
-        return 2
+        return error_json(
+            "missing_credentials",
+            "Set DIVOOM_PASSWORD or DIVOOM_MD5_PASSWORD before syncing.",
+        )
 
     api = APIxoo(
         email=args.email,
@@ -517,19 +1013,118 @@ def main() -> int:
         md5_password=args.md5_password,
     )
     if not api.log_in():
-        print(json.dumps({
-            "error": "login_failed",
-            "message": "Divoom cloud login failed. Check credentials.",
-        }, indent=2), file=sys.stderr)
-        return 1
+        return error_json("login_failed", "Divoom cloud login failed. Check credentials.")
+
+    if args.print_store_classify:
+        request = build_store_classify_request(args)
+        response = api.get_store_clock_classify_response(
+            country_iso_code=args.store_country_iso_code,
+            language=args.store_language,
+        )
+        classify_items = build_store_classify_items(response)
+        return print_response_json(
+            {
+                "success": response_success(response),
+                "endpoint": "Channel/StoreClockGetClassify",
+                "request": request,
+                "response": response,
+                "itemCount": len(classify_items),
+                "items": [asdict(item) for item in classify_items],
+            },
+            response,
+        )
+
+    if args.print_store_list:
+        if args.store_endpoint == "list" and args.store_flag is None:
+            return error_json("missing_store_flag", "Provide --store-flag when probing Channel/StoreClockGetList.")
+        request, response = execute_store_request(api, args)
+        items = response_items(response, "ClockList")
+        return print_response_json(
+            {
+                "success": response_success(response),
+                "endpoint": STORE_ENDPOINTS[args.store_endpoint],
+                "request": request,
+                "response": response,
+                "itemCount": len(items),
+                "items": items,
+            },
+            response,
+        )
+
+    if args.print_search_results:
+        if not search_queries:
+            return error_json("missing_search_query", "Provide at least one --search-query with --print-search-results.")
+        results = []
+        all_succeeded = True
+        for query in search_queries:
+            request = build_search_request(args, query=query, page=1)
+            response = api.search_items_response(
+                key=query,
+                item_flag=args.search_item_flag,
+                item_id=args.search_item_id,
+                clock_id=args.search_clock_id or None,
+                language=args.search_language,
+                page=1,
+                per_page=args.per_page,
+            )
+            items = response_items(response, "SearchList")
+            all_succeeded = all_succeeded and response_success(response)
+            results.append({
+                "query": query,
+                "request": request,
+                "response": response,
+                "itemCount": len(items),
+                "items": items,
+            })
+        return print_status_json(
+            {
+                "success": all_succeeded,
+                "endpoint": "Channel/ItemSearch",
+                "itemFlag": args.search_item_flag,
+                "itemId": args.search_item_id,
+                "clockId": args.search_clock_id,
+                "language": args.search_language,
+                "results": results,
+            },
+            all_succeeded,
+        )
+
+    if args.print_my_list:
+        items = fetch_my_playlists(api, per_page=args.per_page, gallery_id=args.my_list_gallery_id)
+        if items is None:
+            return error_json("my_list_failed", "Playlist/GetMyList did not return a usable response.")
+        return print_json({
+            "success": True,
+            "galleryId": args.my_list_gallery_id,
+            "itemCount": len(items),
+            "items": [asdict(item) for item in items],
+        })
+
+    if args.print_someone_list:
+        if not target_user_ids:
+            return error_json("missing_target_user_id", "Provide at least one --target-user-id with --print-someone-list.")
+        grouped = []
+        for target_user_id in target_user_ids:
+            raw_items = api.get_someone_list(target_user_id=target_user_id, page=1, per_page=args.per_page)
+            if raw_items is None:
+                return error_json("someone_list_failed", f"Playlist/GetSomeOneList did not return a usable response for target user {target_user_id}.")
+            items = build_playlist_manifest_items(raw_items, owner="someone", target_user_id=target_user_id)
+            grouped.append({
+                "targetUserId": target_user_id,
+                "itemCount": len(items),
+                "items": [asdict(item) for item in items],
+            })
+        return print_json({
+            "success": True,
+            "targets": grouped,
+        })
 
     if args.like_gallery_id is not None:
         if args.like_classify is None or args.like_file_type is None:
-            print(json.dumps({
-                "error": "missing_like_arguments",
-                "message": "Provide --like-classify and --like-file-type together with --like-gallery-id.",
-            }, indent=2), file=sys.stderr)
-            return 2
+            return error_json(
+                "missing_like_arguments",
+                "Provide --like-classify and --like-file-type together with --like-gallery-id.",
+            )
         response = api.gallery_like(
             gallery_id=args.like_gallery_id,
             is_like=not args.unlike,
@@ -537,18 +1132,403 @@ def main() -> int:
             type_=args.like_file_type,
         )
         if not response:
-            print(json.dumps({
-                "error": "like_failed",
-                "message": "GalleryLikeV2 did not return a usable response.",
-            }, indent=2), file=sys.stderr)
-            return 1
-        print(json.dumps({
+            return error_json("like_failed", "GalleryLikeV2 did not return a usable response.")
+        return print_response_json({
             "success": bool(response.get("ReturnCode", 1) == 0),
             "liked": not args.unlike,
             "galleryId": args.like_gallery_id,
             "response": response,
-        }, indent=2, ensure_ascii=False))
-        return 0 if response.get("ReturnCode", 1) == 0 else 1
+        }, response)
+
+    if args.like_clock_id is not None:
+        response = api.like_clock(clock_id=args.like_clock_id, is_like=not args.unlike)
+        if not response:
+            return error_json("like_failed", "Channel/LikeClock did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "liked": not args.unlike,
+            "clockId": args.like_clock_id,
+            "response": response,
+        }, response)
+
+    if args.print_custom_gallery_time is not None:
+        timing_fields = timing_fields_from_args(args)
+        response = api.get_custom_gallery_time(
+            clock_id=args.print_custom_gallery_time,
+            parent_clock_id=args.parent_clock_id,
+            parent_item_id=args.parent_item_id,
+        )
+        if not response:
+            return error_json("custom_gallery_time_failed", "Channel/GetCustomGalleryTime did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetCustomGalleryTime",
+            "request": compact_dict({
+                "clockId": args.print_custom_gallery_time,
+                "parentClockId": timing_fields.parent_clock_id,
+                "parentItemId": timing_fields.parent_item_id,
+            }),
+            "timing": summarized_response_fields(
+                response,
+                "ClockId",
+                "ParentClockId",
+                "ParentItemId",
+                "LcdIndex",
+                "LcdIndependence",
+                "LcdIndependenceList",
+                "SingleGalleyTime",
+                "GalleryShowTimeFlag",
+                "SoundOnOff",
+            ),
+            "response": response,
+        }, response)
+
+    if args.print_subscribe_time is not None:
+        response = api.get_subscribe_time_response(
+            clock_id=args.print_subscribe_time,
+            parent_clock_id=args.parent_clock_id,
+            parent_item_id=args.parent_item_id,
+        )
+        if not response:
+            return error_json("subscribe_time_failed", "Channel/GetSubscribeTime did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetSubscribeTime",
+            "request": compact_dict({
+                "clockId": args.print_subscribe_time,
+                "parentClockId": args.parent_clock_id,
+                "parentItemId": args.parent_item_id,
+            }),
+            "timing": summarized_response_fields(
+                response,
+                "ClockId",
+                "ParentClockId",
+                "ParentItemId",
+                "LcdIndex",
+                "LcdIndependence",
+                "LcdIndependenceList",
+                "PlayId",
+                "PlayName",
+                "SubscribeType",
+            ),
+            "response": response,
+        }, response)
+
+    if args.print_album_time is not None:
+        response = api.get_album_time_response(clock_id=args.print_album_time)
+        if not response:
+            return error_json("album_time_failed", "Channel/GetAlbumTime did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetAlbumTime",
+            "request": {"clockId": args.print_album_time},
+            "timing": summarized_response_fields(
+                response,
+                "ClockId",
+                "AlbumId",
+                "AlbumName",
+                "LcdIndex",
+                "LcdIndependence",
+                "LcdIndependenceList",
+            ),
+            "response": response,
+        }, response)
+
+    if args.set_custom_gallery_time is not None:
+        timing_fields = timing_fields_from_args(args)
+        missing_fields = []
+        if args.custom_id is None:
+            missing_fields.append("--custom-id")
+        if args.single_gallery_time is None:
+            missing_fields.append("--single-gallery-time")
+        if args.gallery_show_time_flag is None:
+            missing_fields.append("--gallery-show-time-flag")
+        if args.sound_on_off is None:
+            missing_fields.append("--sound-on-off")
+        if missing_fields:
+            return error_json(
+                "missing_custom_gallery_arguments",
+                "Provide " + ", ".join(missing_fields) + " with --set-custom-gallery-time.",
+            )
+        response = api.set_custom_gallery_time(
+            clock_id=args.set_custom_gallery_time,
+            single_gallery_time=args.single_gallery_time,
+            gallery_show_time_flag=args.gallery_show_time_flag,
+            sound_on_off=args.sound_on_off,
+            custom_id=args.custom_id,
+            parent_clock_id=args.parent_clock_id,
+            parent_item_id=args.parent_item_id,
+            lcd_index=args.lcd_index,
+            lcd_independence=args.lcd_independence,
+            lcd_independence_list=args.lcd_independence_list,
+        )
+        if not response:
+            return error_json("set_custom_gallery_time_failed", "Channel/SetCustomGalleryTime did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetCustomGalleryTime",
+            "request": compact_dict({
+                "clockId": args.set_custom_gallery_time,
+                "parentClockId": timing_fields.parent_clock_id,
+                "parentItemId": timing_fields.parent_item_id,
+                "lcdIndex": timing_fields.lcd_index,
+                "lcdIndependence": timing_fields.lcd_independence,
+                "lcdIndependenceList": timing_fields.lcd_independence_list,
+                "singleGalleyTime": timing_fields.single_gallery_time,
+                "galleryShowTimeFlag": timing_fields.gallery_show_time_flag,
+                "soundOnOff": timing_fields.sound_on_off,
+                "customId": args.custom_id,
+            }),
+            "clockId": args.set_custom_gallery_time,
+            "response": response,
+        }, response)
+
+    if args.set_subscribe_time:
+        timing_fields = timing_fields_from_args(args)
+        if timing_fields.clock_id is None:
+            return error_json("missing_subscribe_time_arguments", "Provide --clock-id with --set-subscribe-time.")
+        response = api.set_subscribe_time(
+            clock_id=timing_fields.clock_id,
+            parent_clock_id=timing_fields.parent_clock_id,
+            parent_item_id=timing_fields.parent_item_id,
+            lcd_index=timing_fields.lcd_index,
+            lcd_independence=timing_fields.lcd_independence,
+            lcd_independence_list=timing_fields.lcd_independence_list,
+        )
+        if not response:
+            return error_json("set_subscribe_time_failed", "Channel/SetSubscribeTime did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetSubscribeTime",
+            "request": timing_fields_payload(timing_fields),
+            "response": response,
+        }, response)
+
+    if args.set_album_time:
+        timing_fields = timing_fields_from_args(args)
+        if timing_fields.clock_id is None:
+            return error_json("missing_album_time_arguments", "Provide --clock-id with --set-album-time.")
+        response = api.set_album_time(clock_id=timing_fields.clock_id)
+        if not response:
+            return error_json("set_album_time_failed", "Channel/SetAlbumTime did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetAlbumTime",
+            "request": {"clockId": timing_fields.clock_id},
+            "response": response,
+        }, response)
+
+    if args.playlist_create is not None:
+        response = api.create_playlist(args.playlist_create)
+        if not response:
+            return error_json("playlist_create_failed", "Playlist/NewList did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "name": args.playlist_create,
+            "response": response,
+        }, response)
+
+    if args.playlist_hide is not None:
+        response = api.set_playlist_hidden(play_id=args.playlist_hide, hide=True)
+        if not response:
+            return error_json("playlist_hide_failed", "Playlist/Hide did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": args.playlist_hide,
+            "hidden": True,
+            "response": response,
+        }, response)
+
+    if args.playlist_unhide is not None:
+        response = api.set_playlist_hidden(play_id=args.playlist_unhide, hide=False)
+        if not response:
+            return error_json("playlist_hide_failed", "Playlist/Hide did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": args.playlist_unhide,
+            "hidden": False,
+            "response": response,
+        }, response)
+
+    if args.playlist_rename is not None:
+        play_id_raw, name = args.playlist_rename
+        response = api.rename_playlist(play_id=int(play_id_raw), name=name)
+        if not response:
+            return error_json("playlist_rename_failed", "Playlist/Rename did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": int(play_id_raw),
+            "name": name,
+            "response": response,
+        }, response)
+
+    if args.playlist_set_describe is not None:
+        play_id_raw, describe = args.playlist_set_describe
+        response = api.set_playlist_description(play_id=int(play_id_raw), describe=describe)
+        if not response:
+            return error_json("playlist_set_describe_failed", "Playlist/SetDescribe did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": int(play_id_raw),
+            "describe": describe,
+            "response": response,
+        }, response)
+
+    if args.playlist_set_cover is not None:
+        play_id_raw, cover_file_id = args.playlist_set_cover
+        response = api.set_playlist_cover(play_id=int(play_id_raw), cover_file_id=cover_file_id)
+        if not response:
+            return error_json("playlist_set_cover_failed", "Playlist/SetCover did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": int(play_id_raw),
+            "coverFileId": cover_file_id,
+            "response": response,
+        }, response)
+
+    if args.playlist_delete is not None:
+        response = api.delete_playlist(play_id=args.playlist_delete)
+        if not response:
+            return error_json("playlist_delete_failed", "Playlist/DeleteList did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": args.playlist_delete,
+            "response": response,
+        }, response)
+
+    if args.playlist_add_gallery is not None:
+        play_id_raw, gallery_id_raw = args.playlist_add_gallery
+        response = api.add_gallery_to_playlist(gallery_id=int(gallery_id_raw), play_id=int(play_id_raw))
+        if not response:
+            return error_json("playlist_add_gallery_failed", "Playlist/AddImageToList did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": int(play_id_raw),
+            "galleryId": int(gallery_id_raw),
+            "response": response,
+        }, response)
+
+    if args.playlist_remove_gallery is not None:
+        play_id_raw, gallery_id_raw = args.playlist_remove_gallery
+        response = api.remove_gallery_from_playlist(gallery_id=int(gallery_id_raw), play_id=int(play_id_raw))
+        if not response:
+            return error_json("playlist_remove_gallery_failed", "Playlist/RemoveImage did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "playId": int(play_id_raw),
+            "galleryId": int(gallery_id_raw),
+            "response": response,
+        }, response)
+
+    if args.playlist_send is not None:
+        response = api.send_playlist_to_device(play_id=args.playlist_send)
+        if not response:
+            return error_json("playlist_send_failed", "Playlist/SendDevice did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Playlist/SendDevice",
+            "request": {"playId": args.playlist_send},
+            "playId": args.playlist_send,
+            "response": response,
+        }, response)
+
+    if args.print_ambient_light:
+        response = api.get_ambient_light_response()
+        if not response:
+            return error_json("ambient_light_failed", "Channel/GetAmbientLight did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetAmbientLight",
+            "ambient": summarized_response_fields(
+                response,
+                "OnOff",
+                "Brightness",
+                "SelectLightIndex",
+                "Color",
+                "ColorCycle",
+                "KeyOnOff",
+                "LightList",
+            ),
+            "response": response,
+        }, response)
+
+    if args.set_ambient_light:
+        ambient_fields = ambient_fields_from_args(args)
+        request = ambient_fields_payload(ambient_fields)
+        if not request:
+            return error_json("missing_ambient_arguments", "Provide at least one --ambient-* field with --set-ambient-light.")
+        response = api.set_ambient_light(
+            on_off=ambient_fields.on_off,
+            brightness=ambient_fields.brightness,
+            select_light_index=ambient_fields.select_light_index,
+            color=ambient_fields.color,
+            color_cycle=ambient_fields.color_cycle,
+            key_on_off=ambient_fields.key_on_off,
+            light_list=ambient_fields.light_list,
+        )
+        if not response:
+            return error_json("set_ambient_light_failed", "Channel/SetAmbientLight did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetAmbientLight",
+            "request": request,
+            "response": response,
+        }, response)
+
+    if args.set_brightness is not None:
+        response = api.set_brightness(args.set_brightness)
+        if not response:
+            return error_json("set_brightness_failed", "Channel/SetBrightness did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetBrightness",
+            "request": {"brightness": args.set_brightness},
+            "response": response,
+        }, response)
+
+    if args.print_on_off_screen:
+        response = api.get_on_off_screen()
+        if not response:
+            return error_json("on_off_screen_failed", "Channel/GetOnOffScreen did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetOnOffScreen",
+            "state": summarized_response_fields(response, "OnOff"),
+            "response": response,
+        }, response)
+
+    if args.on_off_screen is not None:
+        response = api.on_off_screen(args.on_off_screen)
+        if not response:
+            return error_json("set_on_off_screen_failed", "Channel/OnOffScreen did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/OnOffScreen",
+            "request": {"onOff": args.on_off_screen},
+            "response": response,
+        }, response)
+
+    if args.print_on_off:
+        response = api.get_on_off()
+        if not response:
+            return error_json("on_off_failed", "Channel/GetOnOff did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/GetOnOff",
+            "state": summarized_response_fields(response, "OnOff", "KeyOnOff"),
+            "response": response,
+        }, response)
+
+    if args.set_on_off is not None:
+        response = api.set_on_off(args.set_on_off)
+        if not response:
+            return error_json("set_on_off_failed", "Channel/SetOnOff did not return a usable response.")
+        return print_response_json({
+            "success": response_success(response),
+            "endpoint": "Channel/SetOnOff",
+            "request": {"onOff": args.set_on_off},
+            "response": response,
+        }, response)
 
     args.output_root.mkdir(parents=True, exist_ok=True)
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -596,7 +1576,7 @@ def main() -> int:
                 redownload=args.redownload,
             )
         )
-    if args.store_flag is not None:
+    if args.store_endpoint != "list" or args.store_flag is not None:
         synced_items.extend(
             sync_store_list(
                 api=api,
@@ -605,14 +1585,33 @@ def main() -> int:
                 classify_id=args.store_classify_id,
                 per_page=args.per_page,
                 max_items=args.max_per_category,
+                page_index=args.store_page_index,
+                clock_id=args.store_clock_id,
+                parent_clock_id=args.store_parent_clock_id,
+                parent_item_id=args.store_parent_item_id,
+                language=args.store_language,
+                country_iso_code=args.store_country_iso_code,
+                lcd_independence=args.store_lcd_independence,
+                lcd_index=args.store_lcd_index,
                 output_root=args.output_root,
                 redownload=args.redownload,
             )
         )
     synced_items = dedupe_synced_items(synced_items)
-    store_classify = fetch_store_classify(api) if args.include_store_classify else []
-    my_playlists = fetch_my_playlists(api, per_page=args.per_page) if args.include_my_list else []
+    store_classify = fetch_store_classify(
+        api,
+        country_iso_code=args.store_country_iso_code,
+        language=args.store_language,
+    ) if args.include_store_classify else []
+    my_playlists = fetch_my_playlists(
+        api,
+        per_page=args.per_page,
+        gallery_id=args.my_list_gallery_id,
+    ) if args.include_my_list else []
     someone_playlists = fetch_someone_playlists(api, target_user_ids=target_user_ids, per_page=args.per_page) if target_user_ids else []
+    store_classify = store_classify or []
+    my_playlists = my_playlists or []
+    someone_playlists = someone_playlists or []
 
     manifest = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -626,8 +1625,31 @@ def main() -> int:
             "Discover/GetAlbumImageListV3",
             "Channel/ItemSearch",
             "GalleryLikeV2",
+            "Channel/LikeClock",
             "Playlist/GetMyList",
             "Playlist/GetSomeOneList",
+            "Channel/GetCustomGalleryTime",
+            "Channel/GetSubscribeTime",
+            "Channel/GetAlbumTime",
+            "Channel/SetCustomGalleryTime",
+            "Channel/SetSubscribeTime",
+            "Channel/SetAlbumTime",
+            "Playlist/NewList",
+            "Playlist/Hide",
+            "Playlist/Rename",
+            "Playlist/SetDescribe",
+            "Playlist/SetCover",
+            "Playlist/DeleteList",
+            "Playlist/AddImageToList",
+            "Playlist/RemoveImage",
+            "Playlist/SendDevice",
+            "Channel/GetAmbientLight",
+            "Channel/SetAmbientLight",
+            "Channel/SetBrightness",
+            "Channel/GetOnOffScreen",
+            "Channel/OnOffScreen",
+            "Channel/GetOnOff",
+            "Channel/SetOnOff",
             "Channel/StoreClockGetClassify",
             "Channel/StoreClockGetList",
             "Channel/StoreTop20",

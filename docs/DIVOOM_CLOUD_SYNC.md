@@ -42,14 +42,15 @@ python3 tools/divoom_cloud_sync.py --redownload
 The native app and the sync tool share the same Divoom account model, but they do not ask for credentials in the same way:
 
 - the macOS app stores cloud login in the app Keychain
-- the macOS app can import a synced Passwords entry for `divoom-gz.com` once, then reuse the local Keychain copy
+- the macOS app can import a synced Passwords entry for `divoom-gz.com` once, or use that synced entry directly during an explicit cloud action
 - the CLI sync tool still uses `DIVOOM_EMAIL` plus `DIVOOM_PASSWORD` or `DIVOOM_MD5_PASSWORD`
 
 Recommended product path:
 
-- use the synced Passwords entry only as an import helper
-- save a local app Keychain copy
-- run cloud sync from there
+- keep passive UI reads silent
+- save a local app Keychain copy if you want the smoothest in-app path
+- or let an explicit cloud action unlock the synced `divoom-gz.com` Passwords entry for the current app session
+- use import only when you actually want to refresh the local copy
 
 Outputs:
 
@@ -117,7 +118,7 @@ Working now:
 Still rough:
 
 - cloud auth UX inside the macOS app
-- the distinction between Passwords import and stable local auth
+- the distinction between synced Passwords fallback and stable local auth
 - exact parity with the iOS store/channel browser
 
 Still pending for full Divoom iOS parity:
