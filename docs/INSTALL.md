@@ -2,12 +2,13 @@
 
 ## Current install paths
 
-There are two real install paths today.
+There are three real install modes today.
 
 Quick rule:
 
 - source install = app + CLI + support repo checkout
-- `.pkg` / `.zip` = app only
+- `.pkg` = app only
+- `.zip` = app only
 
 ### 1. One-line source install
 
@@ -64,7 +65,7 @@ Use this path if you only want the app bundle and do not need the CLI.
 ## Current release truth
 
 - current version source of truth: `VERSION`
-- current version: `0.3.0-beta.4`
+- current version: `0.3.0-beta.6`
 - release stage: early beta
 
 There is no Homebrew formula in this repo yet.

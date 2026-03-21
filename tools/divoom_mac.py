@@ -1430,6 +1430,8 @@ def cmd_native_headless(args: argparse.Namespace) -> int:
         "pixel-test": "--headless-native-pixel-test",
         "battery-status": "--headless-native-battery-status",
         "system-status": "--headless-native-system-status",
+        "memory-status": "--headless-native-memory-status",
+        "thermal-status": "--headless-native-thermal-status",
         "network-status": "--headless-native-network-status",
         "animation-sample": "--headless-native-animation-sample",
         "sample": "--headless-native-sample",
@@ -1595,7 +1597,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     native_headless.add_argument(
         "action",
-        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animation-verify", "animation-upload-oldmode", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer", "read-key-config", "reset-key-config"],
+        choices=["diagnostics", "probe", "scene-red", "scene-color", "purity-red", "purity-color", "light-mode", "pixel-test", "battery-status", "system-status", "memory-status", "thermal-status", "network-status", "animation-sample", "sample", "animation-upload", "send-gif", "animation-verify", "animation-upload-oldmode", "animated-monitor", "clock-face", "animated-clock", "pomodoro-timer", "read-key-config", "reset-key-config"],
     )
     native_headless.add_argument(
         "--color",

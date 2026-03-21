@@ -179,6 +179,21 @@ class APIxoo(object):
             payload['Flag'] = type_flag
         return self._clean_payload(payload)
 
+    def _build_store_banner_payload(
+        self,
+        page: int = 1,
+        per_page: int = 20,
+        country_iso_code: str = '',
+        language: str = '',
+    ) -> dict:
+        start_num, end_num = self._page_bounds(page, per_page)
+        return {
+            'CountryISOCode': country_iso_code,
+            'Language': language,
+            'StartNum': start_num,
+            'EndNum': end_num,
+        }
+
     def _build_item_search_payload(
         self,
         key: str,
@@ -619,6 +634,49 @@ class APIxoo(object):
 
         try:
             return self._send_request(ApiEndpoint.STORE_NEW20, payload)
+        except Exception:
+            return None
+
+    def get_store_banner(
+        self,
+        page: int = 1,
+        per_page: int = 20,
+        country_iso_code: str = '',
+        language: str = '',
+    ):
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        try:
+            resp_json = self.get_store_banner_response(
+                page=page,
+                per_page=per_page,
+                country_iso_code=country_iso_code,
+                language=language,
+            )
+            return resp_json['BannerList']
+        except Exception:
+            return None
+
+    def get_store_banner_response(
+        self,
+        page: int = 1,
+        per_page: int = 20,
+        country_iso_code: str = '',
+        language: str = '',
+    ) -> dict:
+        if not self.is_logged_in():
+            raise Exception('Not logged in!')
+
+        payload = self._build_store_banner_payload(
+            page=page,
+            per_page=per_page,
+            country_iso_code=country_iso_code,
+            language=language,
+        )
+
+        try:
+            return self._send_request(ApiEndpoint.STORE_GET_BANNER, payload)
         except Exception:
             return None
 

@@ -8,9 +8,15 @@
   - blue-device registration is live with `Type=26` and `SubType=1`
   - the current app store sync lane runs through `--auto-store-sync`
 - Recover the remaining unknowns around the live store surface instead of re-guessing the now-verified endpoints:
-  - `Channel/StoreGetBanner`
   - wider non-default `StoreClockGetList.Flag` mapping
-  - whether any store routes need additional device context beyond the current verified lane
+  - whether any additional store routes need more device context than the current verified lane
+- Keep the newly verified banner/device-context behavior explicit, then surface it in product UI:
+  - `Channel/StoreGetBanner` works once blue-device context is attached
+  - the current sync manifest now captures `storeBanners`
+  - the native library still needs a first-class banner/store shelf instead of burying that data in the cache only
+- Recover the remaining unsupported store asset family:
+  - `0x1a` payloads with inner `encrypt_type 21`
+  - examples currently still skipped: `Minimal Nightview 1/2`, `Purple orange moment`, `Love notes`, and `Plan1..5`
 - Recover additional live `Channel/ItemSearch` requirements and flags:
   - `Channel/ItemSearch` still returns `ReturnCode 1 / Failed` for the broader manual probes
   - a raw `Application/ItemSearch` probe also failed
@@ -23,7 +29,6 @@
   - `Channel/StoreTop20`
   - `Channel/StoreNew20`
   - `Channel/StoreClockGetList` for category lanes
-- Recover `Channel/StoreGetBanner` and any remaining store bootstrap routes on today’s backend so the RE-backed wrappers can cover the full iOS store shell, not just the list/detail feeds.
 - Recover the exact activation flow around `sendAllFrameToDevice:galleryModel:`, `sendAnimateSpeed`, `setCustomGalleryTimeConfig`, and `sppSetSceneGIF:` so uploaded channels can play autonomously on-device.
 - Implement custom animation channels/playlists in the macOS app with per-item timing, repeat rules, and persistent device-side playback where supported.
 - Recover the text/drawing pipeline behind the `0x87` path and add native text/frame tools in the menu bar app.

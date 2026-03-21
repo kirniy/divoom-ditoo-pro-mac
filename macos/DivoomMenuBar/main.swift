@@ -1148,7 +1148,7 @@ private final class MenuSummaryView: NSView {
         headlineLabel.font = .systemFont(ofSize: 15.5, weight: .bold)
         headlineLabel.textColor = .labelColor
         headlineLabel.lineBreakMode = .byWordWrapping
-        headlineLabel.maximumNumberOfLines = 1
+        headlineLabel.maximumNumberOfLines = 2
 
         supportTopLabel.translatesAutoresizingMaskIntoConstraints = false
         supportTopLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
@@ -1160,7 +1160,7 @@ private final class MenuSummaryView: NSView {
         supportBottomLabel.font = .systemFont(ofSize: 10.5, weight: .regular)
         supportBottomLabel.textColor = .tertiaryLabelColor
         supportBottomLabel.lineBreakMode = .byWordWrapping
-        supportBottomLabel.maximumNumberOfLines = 1
+        supportBottomLabel.maximumNumberOfLines = 2
 
         let headerStack = NSStackView(views: [titleLabel, subtitleLabel])
         headerStack.orientation = .vertical
@@ -5650,6 +5650,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         formatter.dateStyle = .none
         return formatter
     }()
+    private lazy var iso8601FractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private lazy var iso8601Formatter: ISO8601DateFormatter = {
+        ISO8601DateFormatter()
+    }()
 
     private var autoCodexItem = NSMenuItem()
     private var autoClaudeItem = NSMenuItem()
@@ -5811,6 +5819,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         deviceMenu.addItem(makeSectionHeader("Dashboards"))
         deviceMenu.addItem(makeItem("Battery Dashboard", action: #selector(runNativeBatteryStatus), symbolName: "battery.75"))
         deviceMenu.addItem(makeItem("System Dashboard", action: #selector(runNativeSystemStatus), symbolName: "cpu"))
+        deviceMenu.addItem(makeItem("Memory Dashboard", action: #selector(runNativeMemoryStatus), symbolName: "memorychip"))
+        deviceMenu.addItem(makeItem("Thermal Dashboard", action: #selector(runNativeThermalStatus), symbolName: "thermometer.medium"))
         deviceMenu.addItem(makeItem("Network Dashboard", action: #selector(runNativeNetworkStatus), symbolName: "arrow.up.arrow.down.circle"))
         deviceMenu.addItem(makeItem("Animated Monitor", action: #selector(runNativeAnimatedMonitor), symbolName: "waveform.path.ecg"))
         deviceMenu.addItem(makeItem("Analog Clock", action: #selector(runNativeClockFace), symbolName: "clock"))
@@ -6007,12 +6017,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         return try? JSONDecoder().decode(DivoomCloudManifest.self, from: data)
     }
 
+    private func parseCloudManifestDate(_ value: String) -> Date? {
+        iso8601FractionalFormatter.date(from: value) ?? iso8601Formatter.date(from: value)
+    }
+
     private func currentCloudManifestSummary() -> String {
         guard let manifest = loadCurrentCloudManifest() else {
             return "No synced Divoom cloud manifest yet. Use Sync Now after saving credentials in Settings or importing them from Passwords."
         }
 
-        let generatedAt = ISO8601DateFormatter().date(from: manifest.generatedAt)
+        let generatedAt = parseCloudManifestDate(manifest.generatedAt)
         let syncText: String
         if let generatedAt {
             syncText = "Last sync \(timestampFormatter.string(from: generatedAt))"
@@ -6816,9 +6830,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
         if facts.lightReady {
             switch autoRefreshMode {
             case .off:
-                return "Ditoo display online"
+                return "Beam-ready deck"
             case .favorites:
-                return "Favorites rotation active"
+                return "Favorites in motion"
             case .codex, .claude, .pair, .ipFlag:
                 return "\(autoRefreshMode.title) live"
             }
@@ -6827,10 +6841,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             return "Reconnecting Light Link"
         }
         if facts.audioOnly {
-            return "Audio link only"
+            return "Speaker link only"
         }
         if facts.scanInProgress {
-            return "Searching for the display link"
+            return "Searching for Light Link"
         }
         if facts.scanFinished || facts.lightIdle {
             return "Display link offline"
@@ -6883,13 +6897,29 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 ? "Something needs attention."
                 : "Needs attention: \(cleaned) • \(timestampFormatter.string(from: lastActionDate))"
         }
-        if favoritesCount > 0 || cloudItemCount > 0 {
-            return "Library ready with \(favoritesCount) favorites and \(cloudItemCount) cached cloud picks."
-        }
         if facts.lightReady {
-            return "Ready for quick beams, library picks, live feeds, and ambient light."
+            if favoritesCount > 0 || cloudItemCount > 0 {
+                return "Beam-ready deck with \(favoritesCount) favorites and \(cloudItemCount) cached cloud picks."
+            }
+            return "Beam-ready for colors, live feeds, system panels, and cloud picks."
         }
         return "Open the library, beam a color, or start a live feed."
+    }
+
+    private func currentSystemTelemetryLine() -> String {
+        let snapshot = currentSystemSnapshot()
+        let thermalSummary = snapshot.thermal.temperatureC.map { "\($0)°C" } ?? "Thermals \(snapshot.thermal.label)"
+        return "Mac CPU \(snapshot.cpuPercent)% / RAM \(snapshot.memoryPercent)% / \(thermalSummary)"
+    }
+
+    private func currentCloudSyncLine() -> String? {
+        guard let manifest = loadCurrentCloudManifest() else {
+            return nil
+        }
+        guard let generatedAt = parseCloudManifestDate(manifest.generatedAt) else {
+            return nil
+        }
+        return "Cloud synced \(timestampFormatter.string(from: generatedAt)) with \(manifest.itemCount) cached items."
     }
 
     private func currentSummaryRotatingLines(favoritesCount: Int, cloudItemCount: Int) -> [String] {
@@ -6927,15 +6957,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
                 .compactMap { $0 }
         }
         if favoritesCount > 0 && cloudLinked {
-            return [lastBeamLine, "\(favoritesCount) starred picks and \(cloudItemCount) cached cloud items are ready."]
+            return [lastBeamLine, currentSystemTelemetryLine(), currentCloudSyncLine() ?? "\(favoritesCount) starred picks and \(cloudItemCount) cached cloud items are ready."]
                 .compactMap { $0 }
         }
         if favoritesCount > 0 {
-            return [lastBeamLine, "\(favoritesCount) starred animations are ready. Open Library to build a stronger rotation."]
+            return [lastBeamLine, currentSystemTelemetryLine(), "\(favoritesCount) starred animations are ready. Open Library to build a stronger rotation."]
                 .compactMap { $0 }
         }
         if cloudLinked {
-            return [lastBeamLine, "\(cloudItemCount) cached cloud picks are ready. Start in Library for search, playlists, and likes."]
+            return [lastBeamLine, currentSystemTelemetryLine(), currentCloudSyncLine() ?? "\(cloudItemCount) cached cloud picks are ready. Start in Library for search, playlists, and likes."]
+                .compactMap { $0 }
+        }
+        if facts.lightReady {
+            return [lastBeamLine, currentSystemTelemetryLine(), "Open Library for curated picks now, then connect Cloud in Settings to unlock live search, likes, and playlists."]
                 .compactMap { $0 }
         }
         return [lastBeamLine, "Open Library for curated picks now, then connect Cloud in Settings to unlock live search, likes, and playlists."]
@@ -7278,6 +7312,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
             bluetoothDiagnostics.runNativeBLEBatteryStatus(completion: completion)
         case .nativeSystemStatus:
             bluetoothDiagnostics.runNativeBLESystemStatus(completion: completion)
+        case .nativeMemoryStatus:
+            bluetoothDiagnostics.runNativeBLEMemoryStatus(completion: completion)
+        case .nativeThermalStatus:
+            bluetoothDiagnostics.runNativeBLEThermalStatus(completion: completion)
         case .nativeNetworkStatus:
             bluetoothDiagnostics.runNativeBLENetworkStatus(completion: completion)
         case .nativeAnimationSample:
@@ -7485,7 +7523,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeBatteryStatus() {
         bluetoothDiagnostics.runNativeBLEBatteryStatus { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, summary: "Battery Dashboard")
             }
         }
     }
@@ -7493,7 +7531,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeSystemStatus() {
         bluetoothDiagnostics.runNativeBLESystemStatus { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, summary: "System Dashboard")
+            }
+        }
+    }
+
+    @objc private func runNativeMemoryStatus() {
+        bluetoothDiagnostics.runNativeBLEMemoryStatus { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleNativeActionResult(result, summary: "Memory Dashboard")
+            }
+        }
+    }
+
+    @objc private func runNativeThermalStatus() {
+        bluetoothDiagnostics.runNativeBLEThermalStatus { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleNativeActionResult(result, summary: "Thermal Dashboard")
             }
         }
     }
@@ -7501,7 +7555,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, CommandRunnerD
     @objc private func runNativeNetworkStatus() {
         bluetoothDiagnostics.runNativeBLENetworkStatus { [weak self] result in
             DispatchQueue.main.async {
-                self?.updateActionStatus(summary: result.summary, success: result.success, details: result.details)
+                self?.handleNativeActionResult(result, summary: "Network Dashboard")
             }
         }
     }
@@ -8356,6 +8410,8 @@ private enum HeadlessMode: String {
     case nativePixelTest = "--headless-native-pixel-test"
     case nativeBatteryStatus = "--headless-native-battery-status"
     case nativeSystemStatus = "--headless-native-system-status"
+    case nativeMemoryStatus = "--headless-native-memory-status"
+    case nativeThermalStatus = "--headless-native-thermal-status"
     case nativeNetworkStatus = "--headless-native-network-status"
     case nativeAnimationSample = "--headless-native-animation-sample"
     case nativeSample = "--headless-native-sample"
@@ -8573,6 +8629,14 @@ private final class HeadlessRunner {
             }
         case .nativeSystemStatus:
             bluetoothDiagnostics.runNativeBLESystemStatus { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeMemoryStatus:
+            bluetoothDiagnostics.runNativeBLEMemoryStatus { [weak self] result in
+                self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
+            }
+        case .nativeThermalStatus:
+            bluetoothDiagnostics.runNativeBLEThermalStatus { [weak self] result in
                 self?.finish(code: result.success ? 0 : 1, message: self?.format(result) ?? result.summary)
             }
         case .nativeNetworkStatus:

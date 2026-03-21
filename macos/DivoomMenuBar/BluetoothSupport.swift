@@ -405,14 +405,22 @@ private struct Divoom16AnimationFrame {
     let duration: TimeInterval
 }
 
-private struct BatterySnapshot {
+struct BatterySnapshot {
     let percent: Int
     let isCharging: Bool
 }
 
-private struct SystemSnapshot {
+struct ThermalSnapshot {
+    let percent: Int
+    let label: String
+    let state: ProcessInfo.ThermalState
+    let temperatureC: Int?
+}
+
+struct SystemSnapshot {
     let cpuPercent: Int
     let memoryPercent: Int
+    let thermal: ThermalSnapshot
     let battery: BatterySnapshot?
 }
 
@@ -740,7 +748,100 @@ private func currentBatterySnapshot() -> BatterySnapshot? {
     return nil
 }
 
-private func currentSystemSnapshot() -> SystemSnapshot {
+private func parseTemperatureReading(_ raw: String) -> Int? {
+    let pattern = #"([0-9]{2,3})(?:\.[0-9]+)?\s*(?:°?\s*[CF])?"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        return nil
+    }
+    let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+    guard
+        let match = regex.firstMatch(in: raw, options: [], range: range),
+        let valueRange = Range(match.range(at: 1), in: raw),
+        let value = Int(raw[valueRange])
+    else {
+        return nil
+    }
+    return value
+}
+
+private func runOptionalTelemetryCommand(executable: String, arguments: [String]) -> String? {
+    guard FileManager.default.isExecutableFile(atPath: executable) else {
+        return nil
+    }
+
+    let process = Process()
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+        return String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    } catch {
+        return nil
+    }
+}
+
+private func currentTemperatureReadingC() -> Int? {
+    let candidates: [(String, [String])] = [
+        ("/opt/homebrew/bin/osx-cpu-temp", []),
+        ("/usr/local/bin/osx-cpu-temp", []),
+        ("/opt/homebrew/bin/istats", ["cpu", "temp", "--value-only"]),
+        ("/usr/local/bin/istats", ["cpu", "temp", "--value-only"]),
+    ]
+
+    for (executable, arguments) in candidates {
+        guard let output = runOptionalTelemetryCommand(executable: executable, arguments: arguments),
+              let temperature = parseTemperatureReading(output)
+        else {
+            continue
+        }
+        return temperature
+    }
+
+    return nil
+}
+
+private func currentThermalSnapshot() -> ThermalSnapshot {
+    let state = ProcessInfo.processInfo.thermalState
+    let percent: Int
+    let label: String
+
+    switch state {
+    case .nominal:
+        percent = 20
+        label = "Nominal"
+    case .fair:
+        percent = 45
+        label = "Fair"
+    case .serious:
+        percent = 75
+        label = "Serious"
+    case .critical:
+        percent = 100
+        label = "Critical"
+    @unknown default:
+        percent = 35
+        label = "Unknown"
+    }
+
+    return ThermalSnapshot(
+        percent: percent,
+        label: label,
+        state: state,
+        temperatureC: currentTemperatureReadingC()
+    )
+}
+
+func currentSystemSnapshot() -> SystemSnapshot {
     var loadAverages = [Double](repeating: 0, count: 3)
     let loadResult = getloadavg(&loadAverages, 3)
     let coreCount = max(1, ProcessInfo.processInfo.processorCount)
@@ -778,6 +879,7 @@ private func currentSystemSnapshot() -> SystemSnapshot {
     return SystemSnapshot(
         cpuPercent: cpuPercent,
         memoryPercent: memoryPercent,
+        thermal: currentThermalSnapshot(),
         battery: currentBatterySnapshot()
     )
 }
@@ -873,7 +975,7 @@ private func buildSystemStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
     let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
     let cpu = RGBColor(r: 0xff, g: 0x8a, b: 0x00)
     let memory = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
-    let battery = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+    let thermal = RGBColor(r: 0xff, g: 0x55, b: 0x6a)
     let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
 
     for x in 0..<16 {
@@ -887,8 +989,9 @@ private func buildSystemStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
 
     let cpuHeight = max(1, min(10, Int(round(Double(snapshot.cpuPercent) / 10.0))))
     let memoryHeight = max(1, min(10, Int(round(Double(snapshot.memoryPercent) / 10.0))))
+    let thermalHeight = max(1, min(10, Int(round(Double(snapshot.thermal.percent) / 10.0))))
 
-    for x in 3...5 {
+    for x in 2...4 {
         for y in 4...13 {
             setPixel(x: x, y: y, color: dim)
         }
@@ -897,7 +1000,7 @@ private func buildSystemStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
         }
     }
 
-    for x in 10...12 {
+    for x in 6...8 {
         for y in 4...13 {
             setPixel(x: x, y: y, color: dim)
         }
@@ -906,19 +1009,115 @@ private func buildSystemStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
         }
     }
 
-    for x in 6...9 {
-        setPixel(x: x, y: 4, color: frame)
-        setPixel(x: x, y: 5, color: frame)
+    for x in 10...12 {
+        for y in 4...13 {
+            setPixel(x: x, y: y, color: dim)
+        }
+        for offset in 0..<thermalHeight {
+            setPixel(x: x, y: 13 - offset, color: thermal)
+        }
     }
 
-    if let batterySnapshot = snapshot.battery {
-        let batteryColumns = max(1, min(4, Int(round(Double(batterySnapshot.percent) / 25.0))))
-        for x in 6..<(6 + batteryColumns) {
-            setPixel(x: x, y: 4, color: battery)
-            setPixel(x: x, y: 5, color: battery)
+    setPixel(x: 3, y: 2, color: cpu)
+    setPixel(x: 3, y: 3, color: cpu)
+    setPixel(x: 7, y: 2, color: memory)
+    setPixel(x: 7, y: 3, color: memory)
+    setPixel(x: 11, y: 2, color: thermal)
+    setPixel(x: 11, y: 3, color: thermal)
+
+    if let temperatureC = snapshot.thermal.temperatureC {
+        let accent = frame
+        let filled = max(0, min(4, Int(round(Double(temperatureC) / 25.0))))
+        for x in 5..<(5 + filled) {
+            setPixel(x: x, y: 1, color: accent)
         }
-        if batterySnapshot.isCharging {
-            setPixel(x: 8, y: 6, color: battery)
+    }
+
+    return colors
+}
+
+private func buildMemoryStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
+    var colors = Array(repeating: RGBColor(r: 0x06, g: 0x0d, b: 0x16), count: 16 * 16)
+
+    func setPixel(x: Int, y: Int, color: RGBColor) {
+        guard (0..<16).contains(x), (0..<16).contains(y) else { return }
+        colors[y * 16 + x] = color
+    }
+
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let fill = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+    let glow = RGBColor(r: 0x85, g: 0xd6, b: 0xff)
+    let width = max(1, min(12, Int(round(Double(snapshot.memoryPercent) / 100.0 * 12.0))))
+
+    for x in 1...14 {
+        setPixel(x: x, y: 2, color: frame)
+        setPixel(x: x, y: 13, color: frame)
+    }
+    for y in 2...13 {
+        setPixel(x: 1, y: y, color: frame)
+        setPixel(x: 14, y: y, color: frame)
+    }
+
+    for x in 2...13 {
+        for y in 5...10 {
+            setPixel(x: x, y: y, color: dim)
+        }
+    }
+    for x in 2..<(2 + width) {
+        for y in 5...10 {
+            setPixel(x: x, y: y, color: fill)
+        }
+    }
+
+    for x in 3...12 where x.isMultiple(of: 2) {
+        setPixel(x: x, y: 3, color: glow)
+    }
+
+    return colors
+}
+
+private func buildThermalStatusImage(snapshot: SystemSnapshot) -> [RGBColor] {
+    var colors = Array(repeating: RGBColor(r: 0x06, g: 0x0d, b: 0x16), count: 16 * 16)
+
+    func setPixel(x: Int, y: Int, color: RGBColor) {
+        guard (0..<16).contains(x), (0..<16).contains(y) else { return }
+        colors[y * 16 + x] = color
+    }
+
+    let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
+    let fill = RGBColor(r: 0xff, g: 0x55, b: 0x6a)
+    let accent = RGBColor(r: 0xff, g: 0xb0, b: 0x5c)
+    let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
+    let height = max(1, min(9, Int(round(Double(snapshot.thermal.percent) / 100.0 * 9.0))))
+
+    for x in 5...10 {
+        setPixel(x: x, y: 2, color: frame)
+    }
+    for y in 3...12 {
+        setPixel(x: 6, y: y, color: frame)
+        setPixel(x: 9, y: y, color: frame)
+    }
+    for y in 4...11 {
+        setPixel(x: 7, y: y, color: dim)
+        setPixel(x: 8, y: y, color: dim)
+    }
+    for offset in 0..<height {
+        setPixel(x: 7, y: 11 - offset, color: fill)
+        setPixel(x: 8, y: 11 - offset, color: fill)
+    }
+    for x in 4...11 {
+        setPixel(x: x, y: 13, color: accent)
+        setPixel(x: x, y: 14, color: accent)
+    }
+    for x in 5...10 {
+        setPixel(x: x, y: 12, color: fill)
+    }
+
+    if let temperatureC = snapshot.thermal.temperatureC {
+        let marks = max(1, min(4, Int(round(Double(temperatureC) / 25.0))))
+        for x in 1..<(1 + marks) {
+            setPixel(x: x, y: 1, color: frame)
         }
     }
 
@@ -931,14 +1130,13 @@ private func buildAnimatedSystemMonitorFrames() -> [Divoom16AnimationFrame] {
     let frame = RGBColor(r: 0xf4, g: 0xf7, b: 0xfb)
     let cpuColor = RGBColor(r: 0xff, g: 0x8a, b: 0x00)
     let memColor = RGBColor(r: 0x3a, g: 0xa0, b: 0xff)
-    let batteryColor = RGBColor(r: 0x33, g: 0xf7, b: 0x73)
+    let thermalColor = RGBColor(r: 0xff, g: 0x55, b: 0x6a)
     let dim = RGBColor(r: 0x1b, g: 0x28, b: 0x40)
     let scanColor = RGBColor(r: 0xff, g: 0xff, b: 0xff)
 
     let cpuHeight = max(1, min(10, Int(round(Double(snapshot.cpuPercent) / 10.0))))
     let memHeight = max(1, min(10, Int(round(Double(snapshot.memoryPercent) / 10.0))))
-    let batteryPercent = snapshot.battery?.percent ?? 0
-    let batteryColumns = max(1, min(4, Int(round(Double(batteryPercent) / 25.0))))
+    let thermalHeight = max(1, min(10, Int(round(Double(snapshot.thermal.percent) / 10.0))))
 
     var frames: [Divoom16AnimationFrame] = []
 
@@ -961,26 +1159,22 @@ private func buildAnimatedSystemMonitorFrames() -> [Divoom16AnimationFrame] {
             setPixel(x: 15, y: y, color: frame)
         }
 
-        // CPU bar (columns 3-5)
-        for x in 3...5 {
+        // CPU bar
+        for x in 2...4 {
             for y in 4...13 { setPixel(x: x, y: y, color: dim) }
             for offset in 0..<cpuHeight { setPixel(x: x, y: 13 - offset, color: cpuColor) }
         }
 
-        // Memory bar (columns 10-12)
-        for x in 10...12 {
+        // Memory bar
+        for x in 6...8 {
             for y in 4...13 { setPixel(x: x, y: y, color: dim) }
             for offset in 0..<memHeight { setPixel(x: x, y: 13 - offset, color: memColor) }
         }
 
-        // Battery indicator (rows 4-5, columns 6-9)
-        for x in 6...9 {
-            setPixel(x: x, y: 4, color: dim)
-            setPixel(x: x, y: 5, color: dim)
-        }
-        for x in 6..<(6 + batteryColumns) {
-            setPixel(x: x, y: 4, color: batteryColor)
-            setPixel(x: x, y: 5, color: batteryColor)
+        // Thermal bar
+        for x in 10...12 {
+            for y in 4...13 { setPixel(x: x, y: y, color: dim) }
+            for offset in 0..<thermalHeight { setPixel(x: x, y: 13 - offset, color: thermalColor) }
         }
 
         // Scan line
@@ -2530,7 +2724,26 @@ final class BluetoothDiagnostics: NSObject, CBCentralManagerDelegate, CBPeripher
         let snapshot = currentSystemSnapshot()
         runNativeBLEStaticImage(
             colors: buildSystemStatusImage(snapshot: snapshot),
-            label: "system-cpu\(snapshot.cpuPercent)-mem\(snapshot.memoryPercent)",
+            label: "system-cpu\(snapshot.cpuPercent)-mem\(snapshot.memoryPercent)-thermal\(snapshot.thermal.percent)",
+            completion: completion
+        )
+    }
+
+    func runNativeBLEMemoryStatus(completion: @escaping (NativeActionResult) -> Void) {
+        let snapshot = currentSystemSnapshot()
+        runNativeBLEStaticImage(
+            colors: buildMemoryStatusImage(snapshot: snapshot),
+            label: "memory-\(snapshot.memoryPercent)",
+            completion: completion
+        )
+    }
+
+    func runNativeBLEThermalStatus(completion: @escaping (NativeActionResult) -> Void) {
+        let snapshot = currentSystemSnapshot()
+        let temperatureSuffix = snapshot.thermal.temperatureC.map { "-\($0)c" } ?? ""
+        runNativeBLEStaticImage(
+            colors: buildThermalStatusImage(snapshot: snapshot),
+            label: "thermal-\(snapshot.thermal.label.lowercased())\(temperatureSuffix)",
             completion: completion
         )
     }

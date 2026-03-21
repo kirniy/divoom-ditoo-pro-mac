@@ -1,10 +1,13 @@
 import json
+import shutil
+import subprocess
 from enum import Enum
-from io import IOBase
+from io import BytesIO, IOBase
 from struct import unpack
 
 import lzo
 from Crypto.Cipher import AES
+from PIL import Image
 
 from .pixel_bean import PixelBean
 
@@ -15,6 +18,9 @@ class FileFormat(Enum):
     ANIM_SINGLE = 9  # 16x16
     ANIM_MULTIPLE = 18  # 32x32 or 64x64
     ANIM_MULTIPLE_64 = 26  # 64x64, new format
+    ANIM_MIXED = 35  # 128x160 hybrid LZO/JPEG/ZSTD payload
+    ANIM_JPEG_ZSTD = 41  # mixed ZSTD/JPEG payload
+    ANIM_ZSTD_256 = 42  # 256x256 ZSTD payload
 
 
 class BaseDecoder(object):
@@ -78,11 +84,55 @@ class BaseDecoder(object):
                     y = 0
                     grid_x += 1
 
-                    if grid_x == row_count:
+                    if grid_x == column_count:
                         grid_x = 0
                         grid_y += 1
 
         return (palettes, frames_compact)
+
+    def _decode_bitmap_to_rgb(self, data, width, height):
+        img = Image.open(BytesIO(data)).convert('RGB')
+        if img.size != (width, height):
+            img = img.resize((width, height), Image.NEAREST)
+        return img.tobytes()
+
+    def _zstd_decompress(self, data, expected_size=None):
+        try:
+            import zstandard as zstd
+
+            decompressor = zstd.ZstdDecompressor()
+            if expected_size is not None:
+                return decompressor.decompress(data, max_output_size=expected_size)
+            return decompressor.decompress(data)
+        except ImportError:
+            zstd_binary = shutil.which('zstd')
+            if not zstd_binary:
+                raise
+
+            completed = subprocess.run(
+                [zstd_binary, '-d', '-q', '-c'],
+                input=data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            return completed.stdout
+
+    def _pixel_bean_from_raw_frames(
+        self, frames_data, total_frames, speed, row_count, column_count
+    ):
+        palettes, frames_compact = self._compact(
+            frames_data, total_frames, row_count, column_count
+        )
+
+        return PixelBean(
+            total_frames,
+            speed,
+            row_count,
+            column_count,
+            palettes,
+            frames_compact,
+        )
 
 
 class AnimSingleDecoder(BaseDecoder):
@@ -267,6 +317,110 @@ class AnimMulti64Decoder(BaseDecoder):
         pass
 
 
+class AnimMixedDecoder(BaseDecoder):
+    def decode(self) -> PixelBean:
+        total_frames, speed, row_count, column_count = unpack('>BHBB', self._fp.read(5))
+        frame_size = row_count * column_count * 16 * 16 * 3
+        width = 16 * column_count
+        height = 16 * row_count
+        frames_data = []
+
+        for _ in range(total_frames):
+            chunk_type = unpack('B', self._fp.read(1))[0]
+            chunk_size = unpack('>I', self._fp.read(4))[0]
+            chunk = self._fp.read(chunk_size)
+
+            if chunk_type == 0:
+                frame_data = lzo.decompress(chunk, False, frame_size)
+            elif chunk_type == 1:
+                frame_data = self._decode_bitmap_to_rgb(chunk, width, height)
+            elif chunk_type == 2:
+                frame_data = self._zstd_decompress(chunk)
+            elif chunk_type == 3:
+                frame_data = self._zstd_decompress(chunk, expected_size=frame_size)
+            else:
+                raise Exception(f'Unsupported mixed frame type {chunk_type}')
+
+            if len(frame_data) != frame_size:
+                raise Exception(
+                    f'Unexpected frame size for format 0x23: {len(frame_data)} != {frame_size}'
+                )
+
+            frames_data.append(frame_data)
+
+        return self._pixel_bean_from_raw_frames(
+            frames_data, total_frames, speed, row_count, column_count
+        )
+
+
+class AnimJpegZstdDecoder(BaseDecoder):
+    def decode(self) -> PixelBean:
+        total_frames, speed, row_count, column_count = unpack('>BHBB', self._fp.read(5))
+        frame_size = row_count * column_count * 16 * 16 * 3
+        width = 16 * column_count
+        height = 16 * row_count
+
+        text_len = unpack('>I', self._fp.read(4))[0]
+        if text_len > 0:
+            self._fp.read(text_len)
+
+        frames_data = []
+        for _ in range(total_frames):
+            chunk_type = unpack('B', self._fp.read(1))[0]
+            chunk_size = unpack('>I', self._fp.read(4))[0]
+            chunk = self._fp.read(chunk_size)
+
+            if chunk_type == 0:
+                frame_data = self._zstd_decompress(chunk)
+            elif chunk_type == 1:
+                frame_data = self._zstd_decompress(chunk, expected_size=frame_size)
+            elif chunk_type == 2:
+                frame_data = self._decode_bitmap_to_rgb(chunk, width, height)
+            else:
+                raise Exception(f'Unsupported jpeg-zstd frame type {chunk_type}')
+
+            if len(frame_data) != frame_size:
+                raise Exception(
+                    f'Unexpected frame size for format 0x29: {len(frame_data)} != {frame_size}'
+                )
+
+            frames_data.append(frame_data)
+
+        return self._pixel_bean_from_raw_frames(
+            frames_data, total_frames, speed, row_count, column_count
+        )
+
+
+class AnimZstd256Decoder(BaseDecoder):
+    def decode(self) -> PixelBean:
+        total_frames, speed, row_count, column_count = unpack('>BHBB', self._fp.read(5))
+        frame_size = row_count * column_count * 16 * 16 * 3
+
+        text_len = unpack('>I', self._fp.read(4))[0]
+        if text_len > 0:
+            self._fp.read(text_len)
+
+        compressed_size = unpack('>I', self._fp.read(4))[0]
+        compressed_data = self._fp.read(compressed_size)
+        raw_data = self._zstd_decompress(compressed_data, expected_size=frame_size * total_frames)
+
+        expected_size = frame_size * total_frames
+        if len(raw_data) != expected_size:
+            raise Exception(
+                f'Unexpected frame payload size for format 0x2a: {len(raw_data)} != {expected_size}'
+            )
+
+        frames_data = []
+        for frame_index in range(total_frames):
+            start = frame_index * frame_size
+            end = start + frame_size
+            frames_data.append(raw_data[start:end])
+
+        return self._pixel_bean_from_raw_frames(
+            frames_data, total_frames, speed, row_count, column_count
+        )
+
+
 class PicMultiDecoder(BaseDecoder):
     def decode(self) -> PixelBean:
         row_count, column_count, length = unpack('>BBI', self._fp.read(6))
@@ -317,3 +471,9 @@ class PixelBeanDecoder(object):
             return PicMultiDecoder(fp).decode()
         elif file_format == FileFormat.ANIM_MULTIPLE_64:
             return AnimMulti64Decoder(fp).decode()
+        elif file_format == FileFormat.ANIM_MIXED:
+            return AnimMixedDecoder(fp).decode()
+        elif file_format == FileFormat.ANIM_JPEG_ZSTD:
+            return AnimJpegZstdDecoder(fp).decode()
+        elif file_format == FileFormat.ANIM_ZSTD_256:
+            return AnimZstd256Decoder(fp).decode()

@@ -91,6 +91,22 @@ class StoreClassifyItem:
 
 
 @dataclass
+class StoreBannerClockItem:
+    clock_id: int
+    clock_name: str
+    image_pixel_id: str
+    clock_type: int
+    add_flag: int
+
+
+@dataclass
+class StoreBannerItem:
+    banner_name: str
+    banner_image_id: str
+    clock_list: list[StoreBannerClockItem]
+
+
+@dataclass
 class PlaylistManifestItem:
     owner: str
     target_user_id: int | None
@@ -726,6 +742,27 @@ def load_existing_store_classify(path: Path) -> list[StoreClassifyItem]:
     return values
 
 
+def load_existing_store_banners(path: Path) -> list[StoreBannerItem]:
+    manifest = load_existing_manifest(path)
+    values: list[StoreBannerItem] = []
+    for item in manifest.get("storeBanners", []):
+        try:
+            clock_list = [
+                StoreBannerClockItem(**clock_item)
+                for clock_item in item.get("clock_list", [])
+            ]
+            values.append(
+                StoreBannerItem(
+                    banner_name=str(item.get("banner_name", "") or ""),
+                    banner_image_id=str(item.get("banner_image_id", "") or ""),
+                    clock_list=clock_list,
+                )
+            )
+        except TypeError:
+            continue
+    return values
+
+
 def load_existing_playlists(path: Path, key: str) -> list[PlaylistManifestItem]:
     manifest = load_existing_manifest(path)
     values: list[PlaylistManifestItem] = []
@@ -1006,6 +1043,48 @@ def build_store_classify_items(response: dict | None) -> list[StoreClassifyItem]
             )
         )
     return values
+
+
+def build_store_banner_items(response: dict | None) -> list[StoreBannerItem]:
+    if not response_success(response):
+        return []
+
+    values: list[StoreBannerItem] = []
+    for item in response.get("BannerList", []) or []:
+        clock_list = [
+            StoreBannerClockItem(
+                clock_id=int(clock.get("ClockId", 0) or 0),
+                clock_name=str(clock.get("ClockName", "") or ""),
+                image_pixel_id=str(clock.get("ImagePixelId", "") or ""),
+                clock_type=int(clock.get("ClockType", 0) or 0),
+                add_flag=int(clock.get("AddFlag", 0) or 0),
+            )
+            for clock in (item.get("ClockList", []) or [])
+        ]
+        values.append(
+            StoreBannerItem(
+                banner_name=str(item.get("BannerName", "") or ""),
+                banner_image_id=str(item.get("BannerImageId", "") or ""),
+                clock_list=clock_list,
+            )
+        )
+    return values
+
+
+def fetch_store_banner(
+    api: APIxoo,
+    *,
+    per_page: int,
+    country_iso_code: str,
+    language: str,
+) -> list[StoreBannerItem]:
+    response = api.get_store_banner_response(
+        page=1,
+        per_page=per_page,
+        country_iso_code=country_iso_code,
+        language=language,
+    )
+    return build_store_banner_items(response)
 
 
 def response_items(response: dict | None, key: str) -> list[dict]:
@@ -1928,9 +2007,16 @@ def main() -> int:
             )
         )
     auto_store_classify: list[StoreClassifyItem] | None = None
+    auto_store_banners: list[StoreBannerItem] | None = None
     if args.auto_store_sync:
         auto_store_classify = fetch_store_classify(
             api,
+            country_iso_code=args.store_country_iso_code,
+            language=args.store_language,
+        ) or []
+        auto_store_banners = fetch_store_banner(
+            api,
+            per_page=args.per_page,
             country_iso_code=args.store_country_iso_code,
             language=args.store_language,
         ) or []
@@ -2032,6 +2118,7 @@ def main() -> int:
     ) if args.include_my_list else []
     someone_playlists = fetch_someone_playlists(api, target_user_ids=target_user_ids, per_page=args.per_page) if target_user_ids else []
     store_classify = store_classify or load_existing_store_classify(args.manifest)
+    store_banners = auto_store_banners or load_existing_store_banners(args.manifest)
     my_playlists = my_playlists or load_existing_playlists(args.manifest, "myPlaylists")
     someone_playlists = someone_playlists or load_existing_playlists(args.manifest, "someonePlaylists")
     previous_categories = [str(value) for value in existing_manifest.get("categories", []) if str(value).strip()]
@@ -2087,6 +2174,7 @@ def main() -> int:
             "Channel/StoreClockGetList",
             "Channel/StoreTop20",
             "Channel/StoreNew20",
+            "Channel/StoreGetBanner",
             "download",
         ],
         "outputRoot": str(args.output_root),
@@ -2102,6 +2190,7 @@ def main() -> int:
         "storeClassifyId": args.store_classify_id,
         "deviceContext": api.get_device_context(),
         "storeClassify": [asdict(item) for item in store_classify],
+        "storeBanners": [asdict(item) for item in store_banners],
         "myPlaylists": [asdict(item) for item in my_playlists],
         "someonePlaylists": [asdict(item) for item in someone_playlists],
         "items": [asdict(item) for item in synced_items],
@@ -2111,6 +2200,7 @@ def main() -> int:
         "success": True,
         "itemCount": len(synced_items),
         "storeClassifyCount": len(store_classify),
+        "storeBannerCount": len(store_banners),
         "myPlaylistCount": len(my_playlists),
         "someonePlaylistCount": len(someone_playlists),
         "outputRoot": str(args.output_root),
